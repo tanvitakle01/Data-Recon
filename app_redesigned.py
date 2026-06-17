@@ -6,19 +6,19 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from excel_comparator.core.auto_mapper import auto_map_columns
-from excel_comparator.core.comparator import ExcelComparator
-from excel_comparator.core.loader import load_excel
-from excel_comparator.core.mapper import ColumnMapper
-from excel_comparator.core.writer import write_annotated_excel
-from excel_comparator.utils.helpers import classify_remark, get_output_filename
-from API_conn.services.reconcilation_service import ReconciliationService
-from ai.mismatch_analyzer import MismatchAnalyzer
-from ai.summary_generator import SummaryGenerator
-from ai.reason_engine import ReasonEngine
-from ai.pattern_detector import PatternDetector
-from ai.root_cause_engine import RootCauseEngine
-
+from backend.excel_comparator.core.auto_mapper import auto_map_columns
+from backend.excel_comparator.core.comparator import ExcelComparator
+from backend.excel_comparator.core.loader import load_excel
+from backend.excel_comparator.core.mapper import ColumnMapper
+from backend.excel_comparator.core.writer import write_annotated_excel
+from backend.excel_comparator.utils.helpers import classify_remark, get_output_filename
+from backend.API_conn.services.reconcilation_service import ReconciliationService
+from backend.ai.mismatch_analyzer import MismatchAnalyzer
+from backend.ai.summary_generator import SummaryGenerator
+from backend.ai.reason_engine import ReasonEngine
+from backend.ai.pattern_detector import PatternDetector
+from backend.ai.root_cause_engine import RootCauseEngine
+from backend.ai.insight_engine import InsightEngine
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_icon="📊", page_title="DataSync Comparator")
 
@@ -782,12 +782,14 @@ if source_payload and target_payload:
         reason_engine = ReasonEngine()
         pattern_detector = PatternDetector()
         root_engine = RootCauseEngine()
+        insight_engine = InsightEngine()
 
         stats = analyzer.analyze(summary)
         summary_text = summary_gen.generate(stats)
         reasons = reason_engine.generate(stats)
         patterns = pattern_detector.detect(stats)
         root_causes = root_engine.identify(stats)
+        insights = insight_engine.generate(annotated_df)
 
         st.markdown("### AI Summary")
         st.write(summary_text)
@@ -804,7 +806,10 @@ if source_payload and target_payload:
         for r in root_causes:
             st.write("*", r)
 
-
+        st.markdown("Business Insights")
+        for insight in insights:
+            st.write("*", insight)
+            
         filter_options = ["All", "MATCHED", "QTY MISMATCH", "MISSING IN TARGET", "EXTRA IN TARGET", "Unremarked"]
         filter_val = st.selectbox("Filter by scenario", filter_options, key="result_filter")
         display_df = (

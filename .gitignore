@@ -1,1 +1,82 @@
 API_conn/config/*.yaml
+
+# =========================
+# React / Node
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+build/
+dist/
+.next/
+out/
+
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+venv/
+.venv/
+env/
+
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Excel Outputs
+# =========================
+*_compared_*.xlsx
+*.tmp
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# Streamlit (if keeping old app)
+# =========================
+.streamlit/
+
+# =========================
+# React Cache
+# =========================
+.cache/
+.parcel-cache/
+vite.svg
+
+# =========================
+# Uploads / Generated Files
+# =========================
+uploads/
+outputs/
+temp/

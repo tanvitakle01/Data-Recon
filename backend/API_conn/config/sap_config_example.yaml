@@ -1,0 +1,14 @@
+s4:
+  enabled: false
+  base_url: "https://s4prd.company.com"
+  service: "API_SALES_ORDER_SRV"
+  username: ""
+  password: ""
+  client: 100
+  
+ibp:
+  enabled: false
+  base_url: "https://mycompany.ibp.cloud.sap"
+  service: "/IBP/PLANNING_DATA_API_SRV"
+  username: ""
+  password: ""

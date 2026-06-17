@@ -1,0 +1,16 @@
+s4:
+  enabled: false
+  base_url: ""
+  service: ""
+  username: ""
+  password: ""
+
+ibp:
+  enabled: true
+  base_url: "https://my400230.scmibp.ondemand.com"
+  service: "/sap/opu/odata/IBP/PLANNING_DATA_API_SRV"
+  username: "IBP_APP_JOB_EXTERNAL"
+  password: "wAFw~<f%YsU)7JWpBd7n8R#q$>Qz)=v#Uh>lGEzu"
+  planning_area: "HPA2508"
+  key_figure: "I_SALESORDERREQUEST"
+  planning_level: "I_DAYPRODLOCDEMAND"
