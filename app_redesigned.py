@@ -16,6 +16,8 @@ from API_conn.services.reconcilation_service import ReconciliationService
 from ai.mismatch_analyzer import MismatchAnalyzer
 from ai.summary_generator import SummaryGenerator
 from ai.reason_engine import ReasonEngine
+from ai.pattern_detector import PatternDetector
+from ai.root_cause_engine import RootCauseEngine
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_icon="📊", page_title="DataSync Comparator")
@@ -778,10 +780,14 @@ if source_payload and target_payload:
         analyzer = MismatchAnalyzer()
         summary_gen = SummaryGenerator()
         reason_engine = ReasonEngine()
+        pattern_detector = PatternDetector()
+        root_engine = RootCauseEngine()
 
         stats = analyzer.analyze(summary)
         summary_text = summary_gen.generate(stats)
         reasons = reason_engine.generate(stats)
+        patterns = pattern_detector.detect(stats)
+        root_causes = root_engine.identify(stats)
 
         st.markdown("### AI Summary")
         st.write(summary_text)
@@ -789,6 +795,14 @@ if source_payload and target_payload:
         st.markdown("Possible causes")
         for reason in reasons:
             st.write("*", reason)
+        
+        st.markdown("Key findings")
+        for p in patterns:
+            st.write("*", p)
+        
+        st.markdown("Likely root causes")
+        for r in root_causes:
+            st.write("*", r)
 
 
         filter_options = ["All", "MATCHED", "QTY MISMATCH", "MISSING IN TARGET", "EXTRA IN TARGET", "Unremarked"]
