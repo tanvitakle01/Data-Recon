@@ -5,7 +5,6 @@ from typing import Any
 
 import pandas as pd
 
-
 def _materialize_file(file_obj: Any) -> Any:
     if file_obj is None:
         raise ValueError("No file provided.")

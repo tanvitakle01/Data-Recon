@@ -46,3 +46,73 @@ product
 location
 period
 quantity
+
+request flow for ibp:
+
+Python Script
+     ↓
+IBP Tenant
+     ↓
+"Please login through SAML"
+     ↓
+HTML Login Page Returned
+
+
+## flow
+
+UI (Streamlit)
+      │
+      ▼
+Data Sources
+(Excel / S4 / IBP / Datasphere)
+      │
+      ▼
+Comparison Engine
+      │
+      ▼
+AI Explanation Layer
+      │
+      ▼
+Agent Layer
+      │
+      ▼
+Alert / Reprocess / Ticket Creation
+
+## AI helps define comparison logic
+
+User says:
+
+Compare S4 Sales Orders against IBP Demand.
+Join on Plant + Material + Week.
+Compare Quantity.
+Ignore records older than 90 days.
+
+AI converts that into:
+
+keys = ["Plant","Material","Week"]
+compare = ["Quantity"]
+filters = ...
+
+
+
+
+## workflow
+
+Comparison Engine
+        │
+        ▼
+Mismatch Dataset
+        │
+        ├── Row-Level Rules
+        │      ↓
+        │   AI_REASON
+        │
+        └── Aggregation Engine
+               ↓
+         Summary Statistics
+               ↓
+              LLM
+               ↓
+      Executive Insights
+               ↓
+       Recommendations

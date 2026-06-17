@@ -1,17 +1,15 @@
 from API_conn.connectors.base_connector import SAPConnector
+from API_conn.config.config_loader import load_config
 import pandas as pd
 
 class S4SalesOrderConnector(SAPConnector):
 
+    def __init__(self):
+        config = load_config()["s4"]
+        super().__init__(config)
+
     def fetch(self):
-        """
-        Future:
-        GET API_SALES_ORDER_SRV
-        """
-
         return pd.DataFrame()
-    
-
 """
 s4:
   base_url: https://<s4-host>
