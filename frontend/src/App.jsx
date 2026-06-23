@@ -1,9 +1,14 @@
+import { useState } from "react";
+import ReconciliationPage from "./pages/ReconciliationPage";
+
 function App() {
-  return (
-    <div>
-      <h1>Data Reconciliation</h1>
-    </div>
-  );
+  const [mode] = useState("s4-preview");
+
+  return <ReconciliationPage />;
 }
 
+
 export default App;
+
+
+

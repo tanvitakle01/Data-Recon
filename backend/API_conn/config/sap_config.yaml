@@ -1,16 +1,16 @@
 s4:
-  enabled: false
-  base_url: ""
-  service: ""
-  username: ""
-  password: ""
+  enabled: true
+  base_url: "https://ALINHANA21.bristlecone.com:44307"
+  service: "API_SALES_ORDER_SRV"
+  username: "TRAIN_51_S21"
+  password: "Integration@123"
 
 ibp:
   enabled: true
-  base_url: "https://my400230.scmibp.ondemand.com"
-  service: "/sap/opu/odata/IBP/PLANNING_DATA_API_SRV"
-  username: "IBP_APP_JOB_EXTERNAL"
-  password: "wAFw~<f%YsU)7JWpBd7n8R#q$>Qz)=v#Uh>lGEzu"
+  base_url: "https://my400230-api.scmibp.ondemand.com/sap/opu/odata/sap/"
+  service: "IBP_APP_JOB_EXTERNAL"
+  username: "Richard.m@bristlecone.com"
+  password: "Monday@1234"
   planning_area: "HPA2508"
   key_figure: "I_SALESORDERREQUEST"
   planning_level: "I_DAYPRODLOCDEMAND"

@@ -5,3 +5,16 @@ xlrd>=2.0.1
 plotly>=5.18.0
 yaml
 requests
+fastapi 
+uvicorn 
+pandas 
+openpyxl 
+python-multipart
+node 
+npm 
+axios 
+react-router-dom
+react-dropzone
+ag-grid-react 
+ag-grid-community
+recharts
