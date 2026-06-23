@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import api from "../api/api";
 import UploadSection from "../components/UploadSection";
+import Mapping from "../components/Mapping";
 
 function ReconciliationPage() {
   const pageStyle = useMemo(
@@ -14,10 +15,8 @@ function ReconciliationPage() {
 
   return (
     <div style={pageStyle}>
-      <h1>Data Reconciliation</h1>
-      <p>Select Source + Target files, then run reconciliation (mapping happens inside the backend).</p>
-
-      {/* Single Step-1 UI source of truth (prevents duplicate radio groups/forms). */}
+      <h1>Data Reconciliation Module</h1>
+      <p>Select Source & Target files, then run reconciliation</p>
       <UploadSection />
     </div>
   );

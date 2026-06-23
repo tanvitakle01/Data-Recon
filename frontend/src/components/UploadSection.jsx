@@ -1,9 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import FileUploadCard from "./FileUploadCard";
 import SAPFetchSection from "./SAPFetchSection";
 import api from "../services/api";
-import SummaryCards from "./SummaryCards";
-import ReconciliationResults from "./ReconciliationResults";
+import Mapping from "./Mapping";
 
 function UploadSection() {
   const [mode, setMode] = useState("excel");
@@ -20,7 +19,9 @@ function UploadSection() {
 
   // SAP mode source rows (must drive reconciliation)
   const [sapSourceRows, setSapSourceRows] = useState(null);
-
+  const [mappingData, setMappingData] = useState(null);
+  const [mappingLoading, setMappingLoading] = useState(false);
+  const [mappingError, setMappingError] = useState(null);
 
   const canRunReconciliation = useMemo(() => {
     if (mode === "sap") {
@@ -29,6 +30,68 @@ function UploadSection() {
     }
     return !!sourceFile && !!targetFile;
   }, [mode, sapSourceRows, targetFile, sourceFile]);
+
+
+  useEffect(() => {
+  const detectMapping = async () => {
+    if (!sourceFile || !targetFile) return;
+
+    try {
+      setMappingLoading(true);
+      setMappingError(null);
+
+      const formData = new FormData();
+
+      formData.append("source_file", sourceFile);
+      formData.append("target_file", targetFile);
+
+      formData.append(
+        "sheet_name_source",
+        sourceMeta?.sheet_name || ""
+      );
+
+      formData.append(
+        "sheet_name_target",
+        targetMeta?.sheet_name || ""
+      );
+
+      const response = await api.post(
+        "/automap",
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        }
+      );
+
+      setMappingData(response.data);
+    } catch (err) {
+      console.error(err);
+
+      setMappingError(
+        err?.response?.data?.detail ||
+        "Failed to detect mapping"
+      );
+    } finally {
+      setMappingLoading(false);
+    }
+  };
+
+  if (
+    mode === "excel" &&
+    sourceFile &&
+    targetFile
+  ) {
+    detectMapping();
+  }
+}, [
+  sourceFile,
+  targetFile,
+  sourceMeta,
+  targetMeta,
+  mode,
+]);
 
 
   const runReconciliation = async () => {
@@ -115,8 +178,12 @@ function UploadSection() {
               onLoaded={(d, file, meta) => {
                 setSourceFile(file);
                 setSourceMeta(meta ?? null);
+
                 setResult(null);
                 setReconError(null);
+
+                setMappingData(null);
+                setMappingError(null);
               }}
             />
 
@@ -125,11 +192,21 @@ function UploadSection() {
               onLoaded={(d, file, meta) => {
                 setTargetFile(file);
                 setTargetMeta(meta ?? null);
+
                 setResult(null);
                 setReconError(null);
-              }}
+
+                setMappingData(null);
+                setMappingError(null);
+             }}
             />
           </div>
+
+          <Mapping
+              mappingData={mappingData}
+              loading={mappingLoading}
+              error={mappingError}
+          />
 
           <div style={{ marginTop: 16 }}>
             <button
@@ -196,6 +273,7 @@ function UploadSection() {
                 }}
               />
             </div>
+
             <div style={{ marginTop: 16 }}>
               <button
                 onClick={async () => {
