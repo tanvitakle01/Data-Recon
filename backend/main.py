@@ -9,6 +9,7 @@ from backend.routes.sap_preview import router as sap_preview_router
 from backend.routes.automap import router as automap_router
 from backend.routes.s4_test_preview import router as s4_test_preview_router
 from backend.routes.ibp_test_preview import router as ibp_test_preview_router
+from backend.routes.auto_map_preview import router as auto_map_preview_router
 
 
 app = FastAPI()

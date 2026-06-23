@@ -24,9 +24,12 @@ def _df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
 @router.post("/reconcile")
 async def reconcile_route(
     request: Request,
+    # New JSON payload mode (frontend can send previews + mapping)
+    source_data: Optional[list[dict[str, Any]]] = None,
+    target_data: Optional[list[dict[str, Any]]] = None,
+    mapping: Optional[dict[str, Any]] = None,
 
     # Excel mode inputs
-
     source_file: Optional[UploadFile] = File(default=None),
     target_file: Optional[UploadFile] = File(default=None),
 
@@ -84,24 +87,35 @@ async def reconcile_route(
             target_df: pd.DataFrame = target_loaded["df"]
 
         else:
-            # SAP mode: source comes from either provided preview rows OR connector fetch.
-            service = ReconciliationService()
-
-            # If frontend provides `source_rows` (JSON string), use it as the source dataset.
-            source_df: pd.DataFrame
-            if source_rows:
-                try:
-                    import json
-
-                    parsed = json.loads(source_rows)
-                    source_df = pd.DataFrame(parsed)
-                except Exception as exc:
-                    raise HTTPException(status_code=400, detail=f"Invalid source_rows JSON: {exc}")
+            # New JSON payload mode (frontend sends previews + mapping)
+            if source_data is not None and target_data is not None:
+                source_df = pd.DataFrame(source_data)
+                target_df = pd.DataFrame(target_data)
             else:
-                source_df = service.get_source_data()
+                # Existing SAP mode: use connector fetch or provided source_rows
+                service = ReconciliationService()
 
-            # Target is still fetched from IBP connector for SAP mode.
-            target_df = service.get_target_data()
+                # If frontend provides `source_rows` (JSON string), use it as the source dataset.
+                if source_rows:
+                    try:
+                        import json
+
+                        parsed = json.loads(source_rows)
+                        source_df = pd.DataFrame(parsed)
+                    except Exception as exc:
+                        raise HTTPException(status_code=400, detail=f"Invalid source_rows JSON: {exc}")
+                else:
+                    source_df = service.get_source_data()
+
+                # Target is still fetched from IBP connector for SAP mode.
+                target_df = service.get_target_data()
+
+            # Mapping: use explicit mapping if provided, otherwise run auto-mapping.
+            if mapping is not None:
+                mapping_result = auto_map_columns(source_df, target_df)
+                mapping_result["mapping"] = mapping
+            else:
+                mapping_result = auto_map_columns(source_df, target_df)
 
 
 

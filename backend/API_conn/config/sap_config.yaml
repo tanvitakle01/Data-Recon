@@ -7,10 +7,13 @@ s4:
 
 ibp:
   enabled: true
-  base_url: "https://my400230-api.scmibp.ondemand.com/sap/opu/odata/sap/"
-  service: "IBP_APP_JOB_EXTERNAL"
+  base_url: "https://my400230-api.scmibp.ondemand.com"
+  service: "/IBP/PLANNING_DATA_API_SRV"
   username: "Richard.m@bristlecone.com"
   password: "Monday@1234"
-  planning_area: "HPA2508"
-  key_figure: "I_SALESORDERREQUEST"
-  planning_level: "I_DAYPRODLOCDEMAND"
+
+
+  #planning_area: "HPA2508"
+  #key_figure: "I_SALESORDERREQUEST"
+  #planning_level: "I_DAYPRODLOCDEMAND"
+ 
