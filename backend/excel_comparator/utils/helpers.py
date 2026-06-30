@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
@@ -78,6 +78,14 @@ def build_summary(annotated_df: pd.DataFrame) -> dict[str, int]:
 
 
 def get_output_filename(original_name: str) -> str:
-    """Return the output file name with a compared date suffix."""
+    """Return the output file name with a compared timestamp suffix.
+
+    Requirements:
+    - Preserve original base name (minus extension)
+    - Append "_compared"
+    - Append YYYY-MM-DD_HHMMSS (local time)
+    - Restore .xlsx extension
+    """
     base_name = original_name.rsplit(".", 1)[0] if "." in original_name else original_name
-    return f"{base_name}_compared_{date.today().isoformat()}.xlsx"
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    return f"{base_name}_compared_{ts}.xlsx"

@@ -41,7 +41,7 @@ function SAPFetchSection({ onSourceLoaded }) {
       // PreviewTable expects shape: { columns: [...], preview: [...] }
       const transformedSource = {
         rows: data.length,
-        columns: ["Material", "Plnt", "ReqDlvDt", "ReqDlvQty"],
+        columns: ["Material", "Plnt", "ReqDlvDate", "ReqDlvQty"],
         preview: (data || []).slice(0, 10),
       };
 

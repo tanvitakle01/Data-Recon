@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
+
 import api from "../services/api";
 import PreviewTable from "./PreviewTable";
 
@@ -55,8 +56,17 @@ function FileUploadCard({
 
 
   return (
-    <div className="card" style={{ border: "1px solid #ddd", padding: 16, borderRadius: 10 }}>
-      <h3 style={{ marginTop: 0 }}>{title}</h3>
+    <div
+      className="recon-upload-card"
+      style={{
+        border: "1px solid rgba(229,231,235,0.85)",
+        padding: 16,
+        borderRadius: 14,
+        background: "rgba(255,255,255,0.85)",
+      }}
+    >
+      <h3 style={{ marginTop: 0, fontSize: 16, fontWeight: 700, color: "rgba(15,23,42,0.92)" }}>{title}</h3>
+
 
       <input type="file" accept={accept} onChange={handleUpload} />
 
@@ -74,7 +84,19 @@ function FileUploadCard({
             {fileInfo.rows} rows × {fileInfo.cols} cols
           </div>
 
-          <button style={{ marginTop: 10 }} onClick={() => setShowPreview((s) => !s)}>
+          <button
+            style={{
+              marginTop: 10,
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid rgba(203,213,225,0.95)",
+              background: "rgba(255,255,255,0.9)",
+              color: "rgba(15,23,42,0.86)",
+              cursor: "pointer",
+              fontWeight: 650,
+            }}
+            onClick={() => setShowPreview((s) => !s)}
+          >
             {showPreview ? "Hide Preview" : "Preview"}
           </button>
 

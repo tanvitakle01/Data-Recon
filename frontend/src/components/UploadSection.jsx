@@ -3,8 +3,12 @@ import FileUploadCard from "./FileUploadCard";
 import SAPFetchSection from "./SAPFetchSection";
 import api from "../services/api";
 import Mapping from "./Mapping";
+import SummaryCards from "./SummaryCards";
+import ReconciliationResults from "./ReconciliationResults";
+import BorderGlow from "./BorderGlow";
 
 function UploadSection() {
+
   const [mode, setMode] = useState("excel");
 
   const [sourceFile, setSourceFile] = useState(null);
@@ -112,9 +116,28 @@ function UploadSection() {
       if (sheet_name_source) formData.append("sheet_name_source", sheet_name_source);
       if (sheet_name_target) formData.append("sheet_name_target", sheet_name_target);
 
+      if (!mappingData?.mapping) {
+        throw new Error(
+          "Missing detected mapping. Please wait for mapping detection (or run auto-map) before reconciling."
+        );
+      }
+
+      const payloadMapping = mappingData.mapping;
+      const payloadMappingJson = JSON.stringify(payloadMapping);
+
+      // TEMP DEBUG: inspect the exact /reconcile payload being sent.
+      console.group("Reconciliation Payload");
+      console.log("MappingData:", mappingData);
+      console.log("Mapping (backend):", payloadMapping);
+      console.log("Mapping JSON:", payloadMappingJson);
+      console.groupEnd();
+
+      formData.append("mapping_json", payloadMappingJson);
+
       const response = await api.post("/reconcile", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
+
 
       // TEMP DEBUG: inspect the exact /reconcile response shape
       console.log("RECON RESPONSE", response.data);
@@ -173,33 +196,37 @@ function UploadSection() {
       {mode === "excel" && (
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <FileUploadCard
-              title="Source File"
-              onLoaded={(d, file, meta) => {
-                setSourceFile(file);
-                setSourceMeta(meta ?? null);
+            <BorderGlow>
+              <FileUploadCard
+                title="Source File"
+                onLoaded={(d, file, meta) => {
+                  setSourceFile(file);
+                  setSourceMeta(meta ?? null);
 
-                setResult(null);
-                setReconError(null);
+                  setResult(null);
+                  setReconError(null);
 
-                setMappingData(null);
-                setMappingError(null);
-              }}
-            />
+                  setMappingData(null);
+                  setMappingError(null);
+                }}
+              />
+            </BorderGlow>
 
-            <FileUploadCard
-              title="Target File"
-              onLoaded={(d, file, meta) => {
-                setTargetFile(file);
-                setTargetMeta(meta ?? null);
+            <BorderGlow>
+              <FileUploadCard
+                title="Target File"
+                onLoaded={(d, file, meta) => {
+                  setTargetFile(file);
+                  setTargetMeta(meta ?? null);
 
-                setResult(null);
-                setReconError(null);
+                  setResult(null);
+                  setReconError(null);
 
-                setMappingData(null);
-                setMappingError(null);
-             }}
-            />
+                  setMappingData(null);
+                  setMappingError(null);
+                }}
+              />
+            </BorderGlow>
           </div>
 
           <Mapping
@@ -235,11 +262,13 @@ function UploadSection() {
             </div>
           )}
 
-          {result?.results && (
+          {result?.preview_rows?.length > 0 && (
             <div style={{ marginTop: 16 }}>
-              <ReconciliationResults results={result} />
+              <ReconciliationResults reconResult={result} />
             </div>
           )}
+
+
         </div>
       )}
 
@@ -262,16 +291,18 @@ function UploadSection() {
           {/* Target side remains unchanged (Excel IBP upload) */}
           <div style={{ marginTop: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
-              <FileUploadCard
-                title="Target File — IBP"
-                accept=".xlsx,.xls"
-                onLoaded={(d, file, meta) => {
-                  setTargetFile(file);
-                  setTargetMeta(meta ?? null);
-                  setResult(null);
-                  setReconError(null);
-                }}
-              />
+              <BorderGlow>
+                <FileUploadCard
+                  title="Target File — IBP"
+                  accept=".xlsx,.xls"
+                  onLoaded={(d, file, meta) => {
+                    setTargetFile(file);
+                    setTargetMeta(meta ?? null);
+                    setResult(null);
+                    setReconError(null);
+                  }}
+                />
+              </BorderGlow>
             </div>
 
             <div style={{ marginTop: 16 }}>
@@ -330,9 +361,9 @@ function UploadSection() {
               </div>
             )}
 
-            {result?.results && (
+            {result && (
               <div style={{ marginTop: 16 }}>
-                <ReconciliationResults results={result} />
+                <ReconciliationResults reconResult={result} />
               </div>
             )}
           </div>

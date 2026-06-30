@@ -8,9 +8,9 @@ s4:
 ibp:
   enabled: true
   base_url: "https://my400230-api.scmibp.ondemand.com"
-  service: "/IBP/PLANNING_DATA_API_SRV"
-  username: "Richard.m@bristlecone.com"
-  password: "Monday@1234"
+  service: "IBP/PLANNING_DATA_API_SRV/"
+  username: "IBP_FILE_CI"
+  password: "IbpApiconn@123456789"
 
 
   #planning_area: "HPA2508"
