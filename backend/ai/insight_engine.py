@@ -1,5 +1,7 @@
 import pandas as pd
 
+from backend.ai.insight_adapter import CockpitAdapter
+
 
 class InsightEngine:
     """ 
@@ -168,7 +170,7 @@ class InsightEngine:
         # Phase 2 (operational intelligence)
         operational_payload = self._build_operational_intelligence(mismatches=mismatches, full_df=df)
 
-        return {
+        payload = {
             "summary": summary,
             "executiveSummary": executive_summary,
             "risk": risk,
@@ -189,6 +191,14 @@ class InsightEngine:
             "trendInsights": operational_payload.get("trendInsights", []),
             "paretoAnalysis": operational_payload.get("paretoAnalysis", {}),
         }
+
+        # Phase 3 (Enterprise Reconciliation Intelligence Center) — purely additive,
+        # reshapes the payload above; existing consumers are unaffected.
+        payload["cockpit"] = CockpitAdapter(self).build(
+            payload=payload, df=df, mismatches=mismatches, type_counts=type_counts
+        )
+
+        return payload
 
     # ----------------------------
     # Column detection helpers
@@ -1162,6 +1172,7 @@ class InsightEngine:
             "comparisons": [],
             "trendInsights": [],
             "paretoAnalysis": {},
+            "cockpit": {},
         }
 
     def _dedupe_insights(self, items: list[str]) -> list[str]:
