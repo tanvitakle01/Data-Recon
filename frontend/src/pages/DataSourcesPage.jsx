@@ -1,6 +1,8 @@
+import ComingSoon from "../components/ComingSoon";
+
 function DataSourcesPage() {
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+    <div>
       <h2 style={{ margin: 0, fontWeight: 900, letterSpacing: "-0.02em" }}>
         Data Sources
       </h2>
@@ -8,15 +10,9 @@ function DataSourcesPage() {
         Connect and validate source systems (SAP, SQL, Excel/CSV).
       </div>
 
-      <div style={{ marginTop: 18, background: "rgba(255,255,255,0.8)", border: "1px solid rgba(148,163,184,0.25)", borderRadius: 18, padding: 16 }}>
-        <div style={{ fontWeight: 850, marginBottom: 6 }}>Coming soon</div>
-        <div style={{ color: "#64748b", fontWeight: 600 }}>
-          This module will be expanded to support reusable connector configurations.
-        </div>
-      </div>
+      <ComingSoon note="This module will be expanded to support reusable connector configurations." />
     </div>
   );
 }
 
 export default DataSourcesPage;
-

@@ -1,0 +1,1075 @@
+.wizard-shell {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+@media (max-width: 900px) {
+  .wizard-shell {
+    flex-direction: column;
+  }
+}
+
+/* ---- Stepper rail ---- */
+.wizard-stepper {
+  flex: 0 0 224px;
+  position: sticky;
+  top: 16px;
+}
+
+@media (max-width: 900px) {
+  .wizard-stepper {
+    position: static;
+    width: 100%;
+  }
+  .wizard-stepper ol {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px !important;
+  }
+  .wizard-stepper__item {
+    flex: 1 1 auto;
+  }
+}
+
+.wizard-stepper ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wizard-stepper__item button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(71, 85, 105, 0.9);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wizard-stepper__item button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.wizard-stepper__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(148, 163, 184, 0.18);
+  color: rgba(71, 85, 105, 0.9);
+  flex: none;
+}
+
+.wizard-stepper__item.is-complete .wizard-stepper__num {
+  background: rgba(13, 148, 136, 0.15);
+  color: #0d9488;
+}
+
+.wizard-stepper__item.is-active button {
+  background: rgba(13, 148, 136, 0.08);
+  border-color: rgba(13, 148, 136, 0.35);
+  color: #0f172a;
+}
+
+.wizard-stepper__item.is-active .wizard-stepper__num {
+  background: #0d9488;
+  color: #fff;
+}
+
+.wizard-stepper__item.is-locked .wizard-stepper__label {
+  color: rgba(100, 116, 139, 0.6);
+}
+
+/* ---- Step content card ---- */
+.wizard-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wizard-step {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(229, 231, 235, 0.85);
+  border-radius: 16px;
+  padding: 28px 30px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.04);
+}
+
+.wizard-step__eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #0d9488;
+}
+
+.wizard-step__title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.92);
+}
+
+.wizard-step__desc {
+  margin: 0;
+  max-width: 60ch;
+  color: rgba(71, 85, 105, 0.9);
+  font-size: 14px;
+}
+
+.wizard-step__body {
+  margin-top: 22px;
+}
+
+.wizard-step__footer {
+  margin-top: 28px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(229, 231, 235, 0.85);
+  padding-top: 18px;
+}
+
+.wizard-btn {
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.wizard-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.wizard-btn--ghost {
+  background: transparent;
+  border-color: rgba(203, 213, 225, 0.9);
+  color: rgba(71, 85, 105, 0.9);
+}
+
+.wizard-btn--primary {
+  background: #0d9488;
+  color: #fff;
+}
+
+.wizard-btn--primary:hover:not(:disabled) {
+  background: #0b7a70;
+}
+
+/* ---- Option grid: comparison type (Step 1), connector picker (Steps 2 & 3) ---- */
+.wizard-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.wizard-option-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(229, 231, 235, 0.85);
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wizard-option-card.is-selected {
+  border-color: #0d9488;
+  box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.15);
+}
+
+.wizard-option-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.wizard-option-card__label {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.9);
+}
+
+.wizard-option-card__meta {
+  font-size: 11px;
+  color: rgba(100, 116, 139, 0.85);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.wizard-option-card__desc {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: rgba(100, 116, 139, 0.95);
+}
+
+.wizard-option-card__badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  color: rgba(71, 85, 105, 0.85);
+}
+
+.wizard-connector-panel {
+  margin-top: 18px;
+}
+
+.wizard-step__hint {
+  color: rgba(100, 116, 139, 0.9);
+  font-size: 13px;
+}
+
+.wizard-step__error {
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.wizard-dataset-summary {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: rgba(71, 85, 105, 0.9);
+}
+
+.wizard-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.wizard-pill--complete {
+  background: rgba(13, 148, 136, 0.12);
+  color: #0d9488;
+}
+
+/* ---- Sub-stage progress pills (progressive disclosure within Source/Target) ---- */
+.wizard-substage-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+  flex-wrap: wrap;
+}
+
+.wizard-substage-pills__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.wizard-substage-pills__item:not(:last-child)::after {
+  content: "›";
+  margin-left: 8px;
+  color: rgba(203, 213, 225, 0.9);
+  font-weight: 400;
+}
+
+.wizard-substage-pills__marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 10px;
+  background: rgba(148, 163, 184, 0.18);
+  color: inherit;
+}
+
+.wizard-substage-pills__item.is-done {
+  color: #0d9488;
+}
+
+.wizard-substage-pills__item.is-done .wizard-substage-pills__marker {
+  background: rgba(13, 148, 136, 0.15);
+  color: #0d9488;
+}
+
+.wizard-substage-pills__item.is-active {
+  color: rgba(15, 23, 42, 0.92);
+}
+
+.wizard-substage-pills__item.is-active .wizard-substage-pills__marker {
+  background: #0d9488;
+  color: #fff;
+}
+
+/* ---- "Change connector" back-link (SAP flow, above the workspace) ---- */
+.wizard-link {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(71, 85, 105, 0.85);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.wizard-link:hover {
+  color: #0d9488;
+  text-decoration: underline;
+}
+
+/* ---- Dataset Preview card (Excel/CSV, Card 2) ---- */
+.wizard-preview-card {
+  border: 1px solid rgba(229, 231, 235, 0.85);
+  border-radius: 14px;
+  background: #fff;
+  padding: 20px;
+}
+
+.wizard-preview-card__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.wizard-preview-card__filename {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(71, 85, 105, 0.95);
+}
+
+.wizard-preview-card__stats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 8px;
+}
+
+.wizard-preview-card__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wizard-preview-card__stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(100, 116, 139, 0.85);
+}
+
+.wizard-preview-card__stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.92);
+}
+
+.wizard-preview-card .wizard-btn {
+  margin-top: 16px;
+}
+
+/* ---- Form fields (select / input / textarea) ---- */
+.wizard-field {
+  max-width: 520px;
+}
+
+.wizard-field__label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(15, 23, 42, 0.85);
+  margin-bottom: 6px;
+}
+
+.wizard-field__help {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: rgba(100, 116, 139, 0.9);
+}
+
+.wizard-select,
+.wizard-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.wizard-select--sm,
+.wizard-input--sm {
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wizard-btn--sm {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.wizard-textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #fff;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #0f172a;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.wizard-select:focus-visible,
+.wizard-input:focus-visible,
+.wizard-textarea:focus-visible {
+  outline: 2px solid rgba(13, 148, 136, 0.5);
+  outline-offset: 1px;
+}
+
+/* ---- Sections inside a step ---- */
+.wizard-section {
+  padding: 18px 0;
+  border-bottom: 1px solid rgba(229, 231, 235, 0.85);
+}
+
+.wizard-section:first-of-type {
+  padding-top: 0;
+}
+
+.wizard-section:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.wizard-section__title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.9);
+}
+
+/* ---- SAP fetch panel ---- */
+.sap-fetch__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sap-fetch__status {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sap-fetch__status.is-idle {
+  color: rgba(100, 116, 139, 0.9);
+}
+
+.sap-fetch__status.is-connecting {
+  color: #b4700f;
+}
+
+.sap-fetch__status.is-connected {
+  color: #0d9488;
+}
+
+.sap-fetch__status.is-error {
+  color: #b91c1c;
+}
+
+.sap-fetch__preview {
+  margin-top: 12px;
+}
+
+/* ---- Mapping sheet upload (Step 4 Section A) ---- */
+.doc-upload {
+  max-width: 420px;
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(229, 231, 235, 0.85);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.6);
+  font-size: 13px;
+}
+
+.doc-upload__file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.results-actions {
+  margin-bottom: 16px;
+}
+
+.doc-upload__badge {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(13, 148, 136, 0.12);
+  color: #0d9488;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ---- Mapping editor (Step 4 Section C) ---- */
+.mapping-editor__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.mapping-editor__table-wrap {
+  overflow-x: auto;
+}
+
+.mapping-editor__table {
+  width: 100%;
+  min-width: 560px;
+}
+
+.mapping-editor__logical {
+  font-weight: 800;
+}
+
+/* ---- Business Rules Builder (Step 4 Section B) ---- */
+.rule-builder__section {
+  margin-bottom: 22px;
+}
+
+.rule-builder__section:last-child {
+  margin-bottom: 0;
+}
+
+.rule-builder__section-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.9);
+}
+
+/* ---- Transformation preview placeholder (Step 4 Section D) ---- */
+.transform-preview-placeholder {
+  border: 1px dashed rgba(203, 213, 225, 0.9);
+  border-radius: 12px;
+  padding: 18px 20px;
+  background: rgba(248, 250, 252, 0.7);
+  color: rgba(71, 85, 105, 0.9);
+  font-size: 14px;
+}
+
+.transform-preview-placeholder__title {
+  margin: 0 0 4px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.85);
+}
+
+/* ---- Transformation contract panel (Step 4 Section D) ---- */
+.contract-checklist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 12px 0;
+}
+
+.contract-status {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.contract-status--pending {
+  background: rgba(148, 163, 184, 0.14);
+  color: rgba(100, 116, 139, 0.95);
+}
+
+.contract-status--ok {
+  background: rgba(13, 148, 136, 0.12);
+  color: #0d9488;
+}
+
+.contract-status--fail {
+  background: rgba(185, 28, 28, 0.1);
+  color: #b91c1c;
+}
+
+.contract-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 14px;
+}
+
+.contract-gate-errors {
+  margin: 8px 0;
+}
+
+.contract-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.contract-summary__chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 148, 136, 0.25);
+  background: rgba(13, 148, 136, 0.06);
+  color: rgba(15, 23, 42, 0.85);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.contract-json-wrap {
+  margin-top: 10px;
+}
+
+.contract-json {
+  max-height: 420px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(229, 231, 235, 0.9);
+  border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* ---- Reconciliation run (Step 5) ---- */
+.recon-run {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+/* ---- Contract run results (Step 5, contract runtime path) ---- */
+.class-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.class-card {
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(229, 231, 235, 0.9);
+  background: rgba(248, 250, 252, 0.7);
+  text-align: center;
+}
+
+.class-card__value {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.9);
+}
+
+.class-card__label {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(100, 116, 139, 0.95);
+}
+
+.class-card--ok .class-card__value {
+  color: #0d9488;
+}
+
+.class-card--fail .class-card__value {
+  color: #b91c1c;
+}
+
+.class-card--warn .class-card__value {
+  color: #b4700f;
+}
+
+.run-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.run-meta__card {
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(229, 231, 235, 0.9);
+  background: rgba(248, 250, 252, 0.7);
+}
+
+.run-meta__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.9);
+}
+
+.run-meta__list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.run-meta__list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.run-meta__list dt {
+  color: rgba(100, 116, 139, 0.95);
+  font-weight: 700;
+}
+
+.run-meta__list dd {
+  margin: 0;
+  color: rgba(15, 23, 42, 0.9);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.run-meta__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.class-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.class-pill--match {
+  background: rgba(13, 148, 136, 0.12);
+  color: #0d9488;
+}
+
+.class-pill--mismatch,
+.class-pill--exception {
+  background: rgba(185, 28, 28, 0.1);
+  color: #b91c1c;
+}
+
+.class-pill--missing_in_source,
+.class-pill--missing_in_target {
+  background: rgba(180, 112, 15, 0.12);
+  color: #b4700f;
+}
+
+/* Transformation Preview: modified-columns change-type pills. */
+.class-pill--added {
+  background: rgba(13, 148, 136, 0.12);
+  color: #0d9488;
+}
+
+.class-pill--removed {
+  background: rgba(185, 28, 28, 0.1);
+  color: #b91c1c;
+}
+
+.class-pill--renamed,
+.class-pill--modified {
+  background: rgba(180, 112, 15, 0.12);
+  color: #b4700f;
+}
+
+.recon-run__hint {
+  font-size: 13px;
+  color: rgba(100, 116, 139, 0.9);
+}
+
+.field-diffs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.field-diff-chip {
+  padding: 3px 9px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(185, 28, 28, 0.08);
+  color: #7f1d1d;
+  border: 1px solid rgba(185, 28, 28, 0.18);
+  white-space: nowrap;
+}
+
+.field-diff-chip strong {
+  color: #b91c1c;
+}
+
+.date-diag {
+  margin: 16px 0;
+  padding: 16px;
+}
+
+.date-diag__title {
+  margin: 0 0 10px 0;
+}
+
+.date-diag__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.date-diag__label {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.date-diag__value {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.date-diag__value--ok {
+  color: #047857;
+}
+
+.date-diag__value--warn {
+  color: #b4700f;
+}
+
+.date-diag__note {
+  color: #92400e;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.date-diag__note--warn {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.recon-run__section {
+  margin-top: 20px;
+}
+
+.wizard-btn--lg {
+  padding: 12px 24px;
+  font-size: 14px;
+}
+
+/* ---- Review Changes step ---- */
+.review-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.review-pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.review-pager__label {
+  font-size: 12px;
+  color: rgba(100, 116, 139, 0.9);
+}
+
+.review-arrow {
+  text-align: center;
+  font-weight: 700;
+  color: #b4700f;
+}
+.review-arrow--added { color: #0d9488; }
+.review-arrow--removed { color: #b91c1c; }
+
+/* ---- Before / After curtain ---- */
+.curtain {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(148, 163, 184, 0.05);
+}
+
+.curtain__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: rgba(100, 116, 139, 0.95);
+}
+.curtain__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.curtain-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.curtain-swatch--add { background: rgba(13, 148, 136, 0.35); }
+.curtain-swatch--mod { background: rgba(180, 112, 15, 0.35); }
+.curtain-swatch--del { background: rgba(185, 28, 28, 0.3); }
+.curtain-swatch--agg { background: rgba(37, 99, 235, 0.3); }
+
+.curtain__scroll {
+  overflow-x: auto;
+  max-height: 460px;
+  overflow-y: auto;
+  border-radius: 8px;
+}
+
+/* The stage sizes itself to the table content; both layers overlay it exactly
+   so the clipped "after" layer aligns with the "before" layer underneath. */
+.curtain__stage {
+  position: relative;
+  width: max-content;
+  min-width: 100%;
+  user-select: none;
+}
+
+.curtain__layer {
+  top: 0;
+  left: 0;
+}
+.curtain__layer--after {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  /* clip-path is set inline from the divider position. */
+}
+
+.curtain-table {
+  border-collapse: collapse;
+  width: 100%;
+  background: var(--surface, #fff);
+  font-size: 12px;
+}
+.curtain-table th,
+.curtain-table td {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  padding: 6px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+.curtain-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(148, 163, 184, 0.14);
+  font-weight: 700;
+  z-index: 1;
+}
+.curtain__layer--after .curtain-table {
+  background: var(--surface, #fff);
+}
+
+.curtain-cell--add { background: rgba(13, 148, 136, 0.22); font-weight: 700; }
+.curtain-cell--mod { background: rgba(180, 112, 15, 0.22); font-weight: 700; }
+.curtain-cell--del { background: rgba(185, 28, 28, 0.18); font-weight: 700; }
+.curtain-cell--agg { background: rgba(37, 99, 235, 0.18); font-weight: 700; }
+
+.curtain__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  margin-left: -1.5px;
+  background: #2563eb;
+  cursor: ew-resize;
+  z-index: 3;
+}
+.curtain__grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #2563eb;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.curtain__grip::before {
+  content: "⇔";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+}
+
+.curtain__tag {
+  position: absolute;
+  top: 6px;
+  z-index: 2;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  pointer-events: none;
+}
+.curtain__tag--left { left: 8px; }
+.curtain__tag--right { right: 8px; }

@@ -6,6 +6,8 @@ import Mapping from "./Mapping";
 import SummaryCards from "./SummaryCards";
 import ReconciliationResults from "./ReconciliationResults";
 import BorderGlow from "./BorderGlow";
+import DateAlignmentSummary from "./DateAlignmentSummary";
+import ReconciliationScopeToggle from "./ReconciliationScopeToggle";
 
 function UploadSection() {
 
@@ -22,18 +24,25 @@ function UploadSection() {
   const [reconError, setReconError] = useState(null);
 
   // SAP mode source rows (must drive reconciliation)
-  const [sapSourceRows, setSapSourceRows] = useState(null);
+  const [s4Rows, setS4Rows] = useState(null);
+  const [ibpRows, setIBPRows] = useState(null);
   const [mappingData, setMappingData] = useState(null);
   const [mappingLoading, setMappingLoading] = useState(false);
   const [mappingError, setMappingError] = useState(null);
 
+  // Date Range Alignment
+  const [dateScope, setDateScope] = useState("overlap");
+  const [dateAlignment, setDateAlignment] = useState(null);
+  const [noOverlapBlock, setNoOverlapBlock] = useState(null); // holds blocking date_alignment when reconciliation is blocked
+  const [overriding, setOverriding] = useState(false);
+
   const canRunReconciliation = useMemo(() => {
     if (mode === "sap") {
       // Source comes from SAP fetch (no uploaded source file)
-      return !!sapSourceRows && !!targetFile;
+      return !!s4Rows && !!ibpRows;;
     }
     return !!sourceFile && !!targetFile;
-  }, [mode, sapSourceRows, targetFile, sourceFile]);
+  }, [mode, s4Rows, ibpRows, targetFile, sourceFile]);
 
 
   useEffect(() => {
@@ -59,17 +68,10 @@ function UploadSection() {
         targetMeta?.sheet_name || ""
       );
 
-      const response = await api.post(
-        "/automap",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        }
-      );
+      const response = await api.post("/automap", formData);
 
       setMappingData(response.data);
+      setDateAlignment(response.data?.date_alignment ?? null);
     } catch (err) {
       console.error(err);
 
@@ -97,11 +99,35 @@ function UploadSection() {
   mode,
 ]);
 
+useEffect(() => {
+  const previewSapAlignment = async () => {
+    if (!s4Rows || !ibpRows) return;
 
-  const runReconciliation = async () => {
+    try {
+      const formData = new FormData();
+      formData.append("source_rows", JSON.stringify(s4Rows));
+      formData.append("target_rows", JSON.stringify(ibpRows));
+
+      const response = await api.post("/api/date-alignment/preview", formData);
+
+      setDateAlignment(response.data);
+    } catch (err) {
+      console.error("Date alignment preview failed:", err);
+    }
+  };
+
+  if (mode === "sap") {
+    previewSapAlignment();
+  }
+}, [s4Rows, ibpRows, mode]);
+
+
+  const runReconciliation = async (override = false) => {
     if (!canRunReconciliation) return;
 
     setReconError(null);
+    setNoOverlapBlock(null);
+    if (override) setOverriding(true);
     setReconLoading(true);
     setResult(null);
 
@@ -125,72 +151,124 @@ function UploadSection() {
       const payloadMapping = mappingData.mapping;
       const payloadMappingJson = JSON.stringify(payloadMapping);
 
-      // TEMP DEBUG: inspect the exact /reconcile payload being sent.
-      console.group("Reconciliation Payload");
-      console.log("MappingData:", mappingData);
-      console.log("Mapping (backend):", payloadMapping);
-      console.log("Mapping JSON:", payloadMappingJson);
-      console.groupEnd();
-
       formData.append("mapping_json", payloadMappingJson);
+      formData.append("date_scope", dateScope);
+      if (override) formData.append("override_no_overlap", "true");
 
-      const response = await api.post("/reconcile", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-
-      // TEMP DEBUG: inspect the exact /reconcile response shape
-      console.log("RECON RESPONSE", response.data);
-      console.log("has summary?", !!response.data?.summary);
-      console.log("has mapping?", !!response.data?.mapping);
-      console.log("has columns?", !!response.data?.columns);
-      console.log("has results array?", Array.isArray(response.data?.results));
-      console.log(
-        "results length",
-        Array.isArray(response.data?.results) ? response.data.results.length : 0,
-      );
+      const response = await api.post("/reconcile", formData);
 
       setResult(response.data);
+      setDateAlignment(response.data?.date_alignment ?? null);
     } catch (e) {
       const detail = e?.response?.data?.detail;
-      setReconError(typeof detail === "string" ? detail : "Reconciliation failed");
+      if (detail?.no_overlap) {
+        setNoOverlapBlock(detail.date_alignment ?? null);
+      } else {
+        setReconError(typeof detail === "string" ? detail : "Reconciliation failed");
+      }
     } finally {
       setReconLoading(false);
+      setOverriding(false);
+    }
+  };
+
+  const runSapReconciliation = async (override = false) => {
+    setReconError(null);
+    setNoOverlapBlock(null);
+    if (override) setOverriding(true);
+    setReconLoading(true);
+    setResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("source_mode", "s4");
+      formData.append("target_mode", "ibp");
+
+      formData.append("source_rows", JSON.stringify(s4Rows || []));
+      formData.append("target_rows", JSON.stringify(ibpRows || []));
+      formData.append("date_scope", dateScope);
+      if (override) formData.append("override_no_overlap", "true");
+
+      const response = await api.post("/reconcile", formData);
+
+      setResult(response.data);
+      setDateAlignment(response.data?.date_alignment ?? null);
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      if (detail?.no_overlap) {
+        setNoOverlapBlock(detail.date_alignment ?? null);
+      } else {
+        setReconError(typeof detail === "string" ? detail : "Reconciliation failed");
+      }
+    } finally {
+      setReconLoading(false);
+      setOverriding(false);
     }
   };
 
   return (
     <div>
-      <h3 style={{ marginTop: 0 }}>Step 1 — Select Data Source</h3>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <span
+          style={{
+            display: "inline-flex",
+            height: 24,
+            width: 24,
+            borderRadius: 999,
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(59,130,246,0.14)",
+            color: "#1d4ed8",
+            fontWeight: 900,
+            fontSize: 12,
+          }}
+        >
+          1
+        </span>
+        <h3 style={{ margin: 0 }}>Select Data Source</h3>
+      </div>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="radio"
-            value="excel"
-            checked={mode === "excel"}
-            onChange={() => {
-              setMode("excel");
+      <div
+        style={{
+          display: "inline-flex",
+          gap: 4,
+          padding: 4,
+          borderRadius: 14,
+          background: "rgba(148,163,184,0.14)",
+          marginTop: 14,
+          marginBottom: 18,
+        }}
+      >
+        {[
+          { key: "excel", label: "Excel Upload" },
+          { key: "sap", label: "SAP APIs" },
+        ].map((opt) => (
+          <button
+            key={opt.key}
+            type="button"
+            onClick={() => {
+              setMode(opt.key);
               setResult(null);
               setReconError(null);
+              setDateAlignment(null);
+              setNoOverlapBlock(null);
             }}
-          />
-          Excel Upload
-        </label>
-
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="radio"
-            value="sap"
-            checked={mode === "sap"}
-            onChange={() => {
-              setMode("sap");
-              setResult(null);
-              setReconError(null);
+            style={{
+              padding: "8px 16px",
+              borderRadius: 10,
+              border: "none",
+              fontWeight: 800,
+              fontSize: 13,
+              cursor: "pointer",
+              background: mode === opt.key ? "#fff" : "transparent",
+              color: mode === opt.key ? "#0f172a" : "#64748b",
+              boxShadow: mode === opt.key ? "0 4px 12px rgba(2,6,23,0.08)" : "none",
+              transition: "all 160ms ease",
             }}
-          />
-          SAP APIs
-        </label>
+          >
+            {opt.label}
+          </button>
+        ))}
       </div>
 
       {mode === "excel" && (
@@ -208,6 +286,9 @@ function UploadSection() {
 
                   setMappingData(null);
                   setMappingError(null);
+
+                  setDateAlignment(null);
+                  setNoOverlapBlock(null);
                 }}
               />
             </BorderGlow>
@@ -224,6 +305,9 @@ function UploadSection() {
 
                   setMappingData(null);
                   setMappingError(null);
+
+                  setDateAlignment(null);
+                  setNoOverlapBlock(null);
                 }}
               />
             </BorderGlow>
@@ -235,18 +319,22 @@ function UploadSection() {
               error={mappingError}
           />
 
+          {(dateAlignment || noOverlapBlock) && (
+            <>
+              <ReconciliationScopeToggle value={dateScope} onChange={setDateScope} />
+              <DateAlignmentSummary
+                alignment={noOverlapBlock || dateAlignment}
+                onOverride={dateScope === "overlap" ? () => runReconciliation(true) : undefined}
+                overriding={overriding}
+              />
+            </>
+          )}
+
           <div style={{ marginTop: 16 }}>
             <button
-              onClick={runReconciliation}
+              onClick={() => runReconciliation(false)}
               disabled={!canRunReconciliation || reconLoading}
-              style={{
-                padding: "10px 18px",
-                borderRadius: 10,
-                border: "1px solid #6b7280",
-                background: !canRunReconciliation || reconLoading ? "#f3f4f6" : "#111827",
-                color: !canRunReconciliation || reconLoading ? "#6b7280" : "white",
-                cursor: !canRunReconciliation || reconLoading ? "not-allowed" : "pointer",
-              }}
+              className="btn-primary"
             >
               {reconLoading ? "Reconciling…" : "Run Reconciliation"}
             </button>
@@ -275,77 +363,44 @@ function UploadSection() {
       {mode === "sap" && (
         <div>
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Source System — SAP S/4</div>
+            <div style={{ fontWeight: 800, marginBottom: 8, color: "#334155" }}>Source System — SAP S/4</div>
           </div>
           <SAPFetchSection
-            onSourceLoaded={(loadedSource) => {
-              // Store fetched SAP preview rows so reconciliation can use them.
-              // loadedSource.preview is already limited to first 10 rows.
-              setSapSourceRows((loadedSource && loadedSource.preview) || null);
+            onSourceLoaded={(sources) => {
+              if (sources?.s4){
+                setS4Rows(sources.s4.data || []);
+              }
+              if (sources?.ibp){
+                setIBPRows(sources.ibp.data || []);
+              }
+
               setResult(null);
               setReconError(null);
+              setDateAlignment(null);
+              setNoOverlapBlock(null);
             }}
           />
 
 
           {/* Target side remains unchanged (Excel IBP upload) */}
           <div style={{ marginTop: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
-              <BorderGlow>
-                <FileUploadCard
-                  title="Target File — IBP"
-                  accept=".xlsx,.xls"
-                  onLoaded={(d, file, meta) => {
-                    setTargetFile(file);
-                    setTargetMeta(meta ?? null);
-                    setResult(null);
-                    setReconError(null);
-                  }}
+
+            {(dateAlignment || noOverlapBlock) && (
+              <>
+                <ReconciliationScopeToggle value={dateScope} onChange={setDateScope} />
+                <DateAlignmentSummary
+                  alignment={noOverlapBlock || dateAlignment}
+                  onOverride={dateScope === "overlap" ? () => runSapReconciliation(true) : undefined}
+                  overriding={overriding}
                 />
-              </BorderGlow>
-            </div>
+              </>
+            )}
 
             <div style={{ marginTop: 16 }}>
               <button
-                onClick={async () => {
-                  // Keep existing engine; switch backend to SAP mode only.
-                  setReconError(null);
-                  setReconLoading(true);
-                  setResult(null);
-                  try {
-                    const formData = new FormData();
-                    formData.append("source_mode", "sap");
-                    formData.append("target_mode", "sap");
-
-                    // Pass SAP preview rows as source dataset so backend reconciliation uses them.
-                    if (sapSourceRows) {
-                      formData.append("source_rows", JSON.stringify(sapSourceRows));
-                    }
-
-                    const sheet_name_target = targetMeta?.sheet_name ?? null;
-                    if (sheet_name_target) formData.append("sheet_name_target", sheet_name_target);
-
-                    const response = await api.post("/reconcile", formData, {
-                      headers: { "Content-Type": "multipart/form-data" },
-                    });
-                    setResult(response.data);
-                  } catch (e) {
-                    const detail = e?.response?.data?.detail;
-                    setReconError(typeof detail === "string" ? detail : "Reconciliation failed");
-                  } finally {
-                    setReconLoading(false);
-                  }
-                }}
+                onClick={() => runSapReconciliation(false)}
                 disabled={!canRunReconciliation || reconLoading}
-
-                style={{
-                  padding: "10px 18px",
-                  borderRadius: 10,
-                  border: "1px solid #6b7280",
-                  background: !targetFile || reconLoading ? "#f3f4f6" : "#111827",
-                  color: !targetFile || reconLoading ? "#6b7280" : "white",
-                  cursor: !targetFile || reconLoading ? "not-allowed" : "pointer",
-                }}
+                className="btn-primary"
               >
                 {reconLoading ? "Reconciling…" : "Run Reconciliation"}
               </button>

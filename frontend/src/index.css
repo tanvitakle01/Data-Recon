@@ -1,3 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-mint-50: #F8FCFC;
+  --color-mint-100: #EEF8F7;
+  --color-mint-200: #D9ECE9;
+  --color-mint-300: #B8DFD9;
+  --color-mint-400: #9BDACC;
+  --color-mint-500: #7DD3C7;
+  --color-mint-600: #5FC4B6;
+  --color-mint-700: #3AA99A;
+  --color-mint-800: #2C8377;
+  --color-mint-900: #1F5F56;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 :root {
   /* Luxury pastel palette (light) */
   --bg: #fafaf8; /* warm white */
@@ -26,6 +52,17 @@
 
   --rose: #f2dde3;
   --rose-2: rgba(242, 221, 227, 0.85);
+
+  /* Mint-blue enterprise accent system */
+  --accent: #7DD3C7;
+  --accent-hover: #5FC4B6;
+  --accent-strong: #0D9488;
+  --accent-strong-hover: #0F766E;
+  --sidebar-bg: #EEF8F7;
+  --card-bg: #FFFFFF;
+  --border-color: #D9ECE9;
+  --text-primary: #1F2937;
+  --text-secondary: #6B7280;
 
   --shadow: rgba(0, 0, 0, 0.04) 0 12px 30px, rgba(0, 0, 0, 0.03) 0 4px 12px;
 
@@ -129,5 +166,119 @@ code {
   line-height: 135%;
   padding: 4px 8px;
   background: var(--code-bg);
+}
+
+/* ----------------------------------------------------------------
+   Shared elevation layer — activates the pastel/glass tokens above
+   (--sage/--mist/--lav/--peach/--rose/--glass-*) that were defined
+   from the start but never actually used anywhere. This is the one
+   place app-wide "premium" treatment lives, so every page (Home,
+   Reconciliation, placeholders, Insights) draws from the same small
+   vocabulary instead of each inventing its own card/button/table.
+   ---------------------------------------------------------------- */
+.surface-elevated {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--glass-border-2);
+  box-shadow: var(--shadow);
+  border-radius: var(--radius-xl);
+  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+}
+
+.surface-elevated:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--glass-shadow);
+}
+
+.accent-bar {
+  border-left: 3px solid transparent;
+}
+.accent-bar-sage { border-left-color: var(--sage); }
+.accent-bar-mist { border-left-color: var(--mist); }
+.accent-bar-lav { border-left-color: var(--lav); }
+.accent-bar-peach { border-left-color: var(--peach); }
+.accent-bar-rose { border-left-color: var(--rose); }
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 18px;
+  border-radius: 14px;
+  font-weight: 800;
+  font-size: 14px;
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-strong-hover));
+  color: #fff;
+  border: 1px solid rgba(13, 148, 136, 0.4);
+  box-shadow: 0 8px 20px rgba(13, 148, 136, 0.2);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+  cursor: pointer;
+}
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(13, 148, 136, 0.28);
+  filter: brightness(1.03);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  font-weight: 800;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background: #fff;
+  border-color: var(--accent-hover);
+  transform: translateY(-1px);
+}
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.table-elevated {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table-elevated th {
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+.table-elevated td {
+  padding: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid rgba(217, 236, 233, 0.6);
+}
+.table-elevated tbody tr {
+  transition: background 140ms ease;
+}
+.table-elevated tbody tr:hover {
+  background: rgba(95, 196, 182, 0.06);
 }
 

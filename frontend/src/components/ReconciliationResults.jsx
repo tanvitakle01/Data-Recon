@@ -68,7 +68,14 @@ function ReconciliationResults({ reconResult }) {
         <select
           value={scenario}
           onChange={(e) => setScenario(e.target.value)}
-          style={{ padding: 8, borderRadius: 8, border: "1px solid #d1d5db" }}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 10,
+            border: "1px solid rgba(148,163,184,0.35)",
+            background: "#fff",
+            fontWeight: 700,
+            color: "#0f172a",
+          }}
         >
           <option value="All">All</option>
           <option value="Matched">Matched</option>
@@ -79,40 +86,27 @@ function ReconciliationResults({ reconResult }) {
       </div>
 
       {Array.isArray(filteredPreview) && filteredPreview.length > 0 && columns.length > 0 ? (
-        <div style={{ marginTop: 8, overflowX: "auto" }}>
-          <div style={{ maxHeight: 320, overflow: "auto" }}>
-            <table
-              border="1"
-              cellPadding="8"
-              style={{
-                borderCollapse: "collapse",
-                width: "100%",
-                minWidth: Math.max(600, columns.length * 120),
-              }}
-            >
-              <thead>
-                <tr>
+        <div className="surface-elevated" style={{ marginTop: 8, maxHeight: 320, overflow: "auto" }}>
+          <table className="table-elevated" style={{ minWidth: Math.max(600, columns.length * 120) }}>
+            <thead>
+              <tr>
+                {columns.map((col) => (
+                  <th key={col} style={{ position: "sticky", top: 0, background: "#f8fafc" }}>
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredPreview.map((row, idx) => (
+                <tr key={idx}>
                   {columns.map((col) => (
-                    <th
-                      key={col}
-                      style={{ position: "sticky", top: 0, background: "#f3f4f6" }}
-                    >
-                      {col}
-                    </th>
+                    <td key={col}>{String(row?.[col] ?? "")}</td>
                   ))}
                 </tr>
-              </thead>
-              <tbody>
-                {filteredPreview.map((row, idx) => (
-                  <tr key={idx}>
-                    {columns.map((col) => (
-                      <td key={col}>{String(row?.[col] ?? "")}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : (
         <div style={{ marginTop: 12, color: "#64748b" }}>
@@ -173,16 +167,7 @@ function ReconciliationResults({ reconResult }) {
                     alert(String(err?.message || "Download failed"));
                   }
                 }}
-                style={{
-                  display: "inline-block",
-                  padding: "10px 16px",
-                  borderRadius: 10,
-                  border: "1px solid #6b7280",
-                  background: "#111827",
-                  color: "white",
-                  textDecoration: "none",
-                  cursor: "pointer",
-                }}
+                className="btn-primary"
               >
                 Download Results
               </button>
@@ -191,17 +176,7 @@ function ReconciliationResults({ reconResult }) {
                 <button
                   type="button"
                   onClick={() => navigate(`/insights?file_id=${encodeURIComponent(fileId)}`)}
-                  style={{
-                    display: "inline-block",
-                    padding: "10px 16px",
-                    borderRadius: 10,
-                    border: "1px solid #6b7280",
-                    background: "transparent",
-                    color: "#111827",
-                    textDecoration: "none",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                  }}
+                  className="btn-secondary"
                 >
                   View Insights
                 </button>

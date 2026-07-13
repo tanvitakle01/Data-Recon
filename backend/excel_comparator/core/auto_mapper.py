@@ -10,7 +10,7 @@ import pandas as pd
 _KEYWORD_GROUPS: list[tuple[str, list[str]]] = [
     ("location", [
         "locid", "loc_id", "plantid", "plant_id",
-        "plant", "location", "site", "facility",
+        "plant", "plnt", "location", "site", "facility",
         "warehouse", "depot", "wh", "loc",
     ]),
     ("product", [

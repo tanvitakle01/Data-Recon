@@ -1,0 +1,314 @@
+import { useEffect, useState } from "react";
+import api from "../../services/api";
+import { useWizard } from "../context/useWizard";
+import { WizardActions } from "../context/wizardReducer";
+import { appendDatasetSide, cleanBusinessRules } from "../lib/payload";
+import {
+  createBothSnapshots,
+  createSnapshot,
+  generateInsightsForRun,
+  identicalDatasetReason,
+  runContractReconciliation,
+} from "../lib/reconRun";
+import StepShell from "../components/StepShell";
+import ContractRunResults from "../components/ContractRunResults";
+import DateAlignmentDiagnostic from "../components/DateAlignmentDiagnostic";
+import SummaryCards from "../../components/SummaryCards";
+import ReconciliationResults from "../../components/ReconciliationResults";
+
+// Derives business_key / compare_fields for the script-flow production run
+// from the same (possibly hand-edited) field mapping the contract flow uses.
+// The script may have renamed source columns to their target names in the
+// Shadow_Source; the backend resolves whichever name actually exists there.
+function keysFromMapping(mapping) {
+  const display = mapping?.display ?? [];
+  const business_key = [];
+  const compare_fields = [];
+  for (const row of display) {
+    if (!row.source_col || !row.target_col) continue;
+    const pair = { source_field: row.source_col, target_field: row.target_col };
+    if (/key/i.test(String(row.role))) business_key.push(pair);
+    else compare_fields.push(pair);
+  }
+  return { business_key, compare_fields };
+}
+
+function ReconciliationRunStep() {
+  const { state, dispatch } = useWizard();
+  const { source, target, comparisonType, transformationSpec, reconciliation } = state;
+  const approvedContract = transformationSpec.contract;
+  const scriptApproval = transformationSpec.scriptApproval;
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [phase, setPhase] = useState(null); // "snapshots" | "run" | null
+  const [alignment, setAlignment] = useState(null);
+
+  // Pre-run date-overlap diagnostic (spec Step 7). Runs once the immutable
+  // snapshots reviewed in Review Changes exist; read-only, never blocks the run.
+  const srcSnapshotId = transformationSpec.sourceSnapshotId;
+  const tgtSnapshotId = transformationSpec.targetSnapshotId;
+  useEffect(() => {
+    if (!srcSnapshotId || !tgtSnapshotId) return undefined;
+    let cancelled = false;
+    api
+      .post("/api/recon/date-alignment", {
+        source_snapshot_id: srcSnapshotId,
+        target_snapshot_id: tgtSnapshotId,
+      })
+      .then((res) => {
+        if (!cancelled) setAlignment(res.data?.alignment ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setAlignment(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [srcSnapshotId, tgtSnapshotId]);
+
+  // Contract runtime path: immutable snapshots -> deterministic engine
+  // (Raw_Source + approved contract -> Shadow_Source vs Raw_Target). Reuses the
+  // snapshots created during Review Changes and passes the approved shadow
+  // fingerprint so the engine verifies the reconciled shadow is the reviewed
+  // one (409 -> the review must be redone). Falls back to fresh snapshots only
+  // if the review state is somehow absent.
+  const runContractReconciliationStep = async () => {
+    let srcId = transformationSpec.sourceSnapshotId;
+    let tgtId = transformationSpec.targetSnapshotId;
+    if (!srcId || !tgtId) {
+      setPhase("snapshots");
+      const { sourceSnapshot, targetSnapshot } = await createBothSnapshots(
+        source,
+        target,
+        comparisonType,
+      );
+      srcId = sourceSnapshot.snapshot_id;
+      tgtId = targetSnapshot.snapshot_id;
+    }
+
+    setPhase("run");
+    const result = await runContractReconciliation({
+      contract: approvedContract,
+      sourceSnapshotId: srcId,
+      targetSnapshotId: tgtId,
+      expectedShadowFingerprint: transformationSpec.shadowApproved ?? null,
+    });
+
+    dispatch({
+      type: WizardActions.SET_RECONCILIATION_RESULT,
+      result: {
+        ...result,
+        source_snapshot: result.source_snapshot ?? { snapshot_id: srcId },
+        target_snapshot: result.target_snapshot ?? { snapshot_id: tgtId },
+      },
+    });
+    dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
+    // Warm the insight payload immediately after completion (fire-and-forget).
+    generateInsightsForRun(result.run_id);
+  };
+
+  // Script runtime path (Transformation Preview → Approval): immutable
+  // snapshots -> hash-pinned approved script -> Shadow_Source -> the same
+  // unchanged deterministic reconciler. Only the source-transformation stage
+  // differs from the contract path.
+  const runScriptReconciliation = async () => {
+    const { business_key, compare_fields } = keysFromMapping(transformationSpec.mapping);
+    if (!business_key.length) {
+      throw new Error(
+        "Confirm at least one key field in Field Mapping before running reconciliation.",
+      );
+    }
+
+    setPhase("snapshots");
+    const [sourceSnapshot, targetSnapshot] = await Promise.all([
+      createSnapshot("source", source, "Raw_Source", comparisonType),
+      createSnapshot("target", target, "Raw_Target", comparisonType),
+    ]);
+
+    setPhase("run");
+    const runRes = await api.post("/api/recon/transformations/run", {
+      approval_id: scriptApproval.approval_id,
+      source_snapshot_id: sourceSnapshot.snapshot_id,
+      target_snapshot_id: targetSnapshot.snapshot_id,
+      business_key,
+      compare_fields,
+      comparison_type: comparisonType?.id ?? "custom",
+      source_type: source.kind ?? "excel",
+      target_type: target.kind ?? "excel",
+      actor: "wizard-user",
+    });
+
+    let detail = null;
+    try {
+      const detailRes = await api.get(`/api/recon/results/${runRes.data.result_id}?preview=500`);
+      detail = detailRes.data;
+    } catch {
+      // Metadata + summary still render without the detail preview.
+    }
+
+    dispatch({
+      type: WizardActions.SET_RECONCILIATION_RESULT,
+      result: {
+        engine: "script",
+        ...runRes.data,
+        source_snapshot: runRes.data.source_snapshot ?? sourceSnapshot,
+        target_snapshot: runRes.data.target_snapshot ?? targetSnapshot,
+        detail,
+      },
+    });
+    dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
+    generateInsightsForRun(runRes.data.run_id);
+  };
+
+  const runReconciliation = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Debug trace: confirm the two sides are the datasets we expect.
+      console.debug(
+        `[wizard] RECONCILE | source="${source.dataset?.filename}" (${source.dataset?.rowCount} rows) ` +
+          `vs target="${target.dataset?.filename}" (${target.dataset?.rowCount} rows)`,
+      );
+
+      const identical = identicalDatasetReason(source, target);
+      if (identical) {
+        throw new Error(
+          `Source and target must be different datasets — ${identical}. ` +
+            "Re-upload the correct file for one side before reconciling.",
+        );
+      }
+
+      // With an approved contract or an approved transformation preview,
+      // reconciliation runs through the matching runtime (never Raw_Source vs
+      // Raw_Target directly). The legacy /reconcile path below only applies
+      // when neither exists.
+      if (approvedContract) {
+        await runContractReconciliationStep();
+        return;
+      }
+      if (scriptApproval) {
+        await runScriptReconciliation();
+        return;
+      }
+
+      const formData = new FormData();
+      const okSource = appendDatasetSide(formData, "source", source);
+      const okTarget = appendDatasetSide(formData, "target", target);
+      if (!okSource || !okTarget) {
+        throw new Error(
+          "Source or target data is no longer available. Go back to Steps 1–2 and re-fetch or re-upload it.",
+        );
+      }
+
+      if (transformationSpec.mapping?.mapping) {
+        formData.append("mapping_json", JSON.stringify(transformationSpec.mapping.mapping));
+      }
+
+      // Carry business context + structured rules + mapping-sheet metadata
+      // alongside the reconciliation. /reconcile ignores fields it doesn't use.
+      formData.append("comparison_type", comparisonType?.id ?? "");
+      formData.append(
+        "rules_text",
+        JSON.stringify({
+          transformation_rules: cleanBusinessRules(transformationSpec.transformationRules),
+          matching_rules: cleanBusinessRules(transformationSpec.matchingRules),
+          filter_rules: cleanBusinessRules(transformationSpec.filterRules),
+        }),
+      );
+      if (transformationSpec.mappingSheet?.name) {
+        formData.append("mapping_sheet_name", transformationSpec.mappingSheet.name);
+      }
+
+      // Date Alignment UI was removed; filter to the overlap window when one
+      // exists and otherwise proceed on the full data instead of hard-erroring.
+      formData.append("date_scope", "overlap");
+      formData.append("override_no_overlap", "true");
+
+      const res = await api.post("/reconcile", formData);
+      dispatch({ type: WizardActions.SET_RECONCILIATION_RESULT, result: res.data });
+      dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
+    } catch (err) {
+      if (err?.response?.status === 409) {
+        // The reviewed shadow is stale (contract/source changed since review).
+        setError(
+          "The shadow dataset no longer matches what was approved in Review Changes. " +
+            "Go back to Review Changes and re-approve the shadow before running.",
+        );
+      } else {
+        const detail = err?.response?.data?.detail;
+        const message =
+          typeof detail === "string"
+            ? detail
+            : detail?.message || err?.message || "Reconciliation failed.";
+        setError(message);
+      }
+    } finally {
+      setLoading(false);
+      setPhase(null);
+    }
+  };
+
+  const loadingLabel =
+    phase === "snapshots"
+      ? "Creating snapshots…"
+      : phase === "run"
+        ? "Executing transformation…"
+        : "Reconciling…";
+  const isContractResult = reconciliation?.engine === "contract" || reconciliation?.engine === "script";
+
+  return (
+    <StepShell stepKey="reconciliation" canContinue>
+      <div className="recon-run">
+        <button
+          type="button"
+          className="wizard-btn wizard-btn--primary wizard-btn--lg"
+          onClick={runReconciliation}
+          disabled={loading}
+        >
+          {loading ? loadingLabel : reconciliation ? "Re-run Reconciliation" : "Run Reconciliation"}
+        </button>
+        <span className="recon-run__hint">
+          {source.dataset?.filename} → {target.dataset?.filename}
+          {comparisonType ? ` · ${comparisonType.label}` : ""}
+          {approvedContract
+            ? ` · Transformation Rules ${approvedContract.contract_id} v${approvedContract.contract_version}`
+            : scriptApproval
+              ? ` · Approved transformation (${scriptApproval.approval_id})`
+              : " · no transformation rules (direct comparison)"}
+        </span>
+      </div>
+
+      {error && <p className="wizard-step__error">⚠️ {error}</p>}
+
+      {alignment && (
+        <div className="recon-run__section">
+          <DateAlignmentDiagnostic alignment={alignment} />
+        </div>
+      )}
+
+      {isContractResult ? (
+        <div className="recon-run__section">
+          <ContractRunResults result={reconciliation} />
+        </div>
+      ) : (
+        <>
+          {reconciliation?.summary && (
+            <div className="recon-run__section">
+              <SummaryCards summary={reconciliation.summary} />
+            </div>
+          )}
+
+          {reconciliation && (
+            <div className="recon-run__section">
+              <ReconciliationResults reconResult={reconciliation} />
+            </div>
+          )}
+        </>
+      )}
+    </StepShell>
+  );
+}
+
+export default ReconciliationRunStep;

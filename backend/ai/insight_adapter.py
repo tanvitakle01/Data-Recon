@@ -55,18 +55,122 @@ _RISK_LENS_ORDER = [
 
 _PRIORITY_LABELS = {1: "High", 2: "High", 3: "Medium", 4: "Medium", 5: "Low"}
 
+# Recon Score contributor weights (sum to 100) — the score is *literally*
+# 100 minus the sum of these weighted penalties, so the breakdown shown in the
+# UI is the actual arithmetic behind the number, not an approximation of it.
+_RECON_CONTRIBUTOR_WEIGHTS = {
+    "Record Mismatches": 40.0,
+    "Mapping Failures": 25.0,
+    "Quantity Variances": 20.0,
+    "Duplicate Records": 15.0,
+}
+
+_SEVERITY_WEIGHT = {"High": 1.5, "Medium": 1.0, "Low": 0.5}
+
+# Short, punchy labels for confidence drivers — the verbose `detail` sentence
+# stays available for the full explanation, this is just the headline phrase
+# used wherever space is tight (executive summary bullet lists).
+_DRIVER_SHORT_LABELS = {
+    "Record Key Overlap": "Low key overlap",
+    "Material Mapping Coverage": "Poor material mapping coverage",
+    "Plant/Location Mapping Coverage": "Poor location mapping coverage",
+    "Date Range Overlap": "Misaligned date ranges",
+    "Exception Concentration": "High exception concentration",
+}
+
+
+def driver_short_label(name: str | None) -> str | None:
+    return _DRIVER_SHORT_LABELS.get(name or "")
+
+# Confidence formulas mirrored from InsightEngine._generate_root_causes, kept
+# here as prose so root-cause "reasoning" can cite the actual rule without
+# re-deriving raw counts the adapter doesn't have at this point.
+_ENGINE_CAUSE_FORMULA = {
+    "Integration Failure": "Base confidence 70%, plus up to 25 points scaled by the share of exceptions that are quantity mismatches (capped at 95%).",
+    "Mapping or Synchronization Issue": "Base confidence 70%, plus up to 25 points scaled by the share of exceptions that are missing-in-target records (capped at 95%).",
+    "Master Data Issue": "Base confidence 65%, plus up to 20 points scaled by the share of exceptions that are extra-in-target records (capped at 90%), or a fixed 78% when exceptions concentrate on a small set of materials.",
+    "Timing Delay": "Fixed 80% confidence, triggered when a single plant accounts for 35%+ of all exceptions.",
+    "Source Data Quality Issue": "Fallback cause at 60% confidence, used when no other pattern (quantity, missing, extra, concentration) dominates.",
+}
+
 
 # ----------------------------
 # Pure, unit-testable helpers
 # ----------------------------
-def compute_reconciliation_score(accuracy: float, risk_score: float, readiness_score: float) -> int:
-    """Composite headline score — deliberately distinct from accuracy% so the
-    hero doesn't just repeat a number shown elsewhere on the page."""
-    accuracy = float(accuracy or 0.0)
-    risk_score = float(risk_score or 0.0)
-    readiness_score = float(readiness_score or 0.0)
-    score = accuracy * 0.5 + (100.0 - risk_score) * 0.3 + readiness_score * 0.2
-    return int(round(max(0.0, min(100.0, score))))
+def severity_contribution(share_pct: float) -> str:
+    """Shared High/Medium/Low tiering by share-of-total, used for both
+    exception-landscape severity and hotspot risk tiering."""
+    share_pct = float(share_pct or 0.0)
+    if share_pct >= 50:
+        return "High"
+    if share_pct >= 20:
+        return "Medium"
+    return "Low"
+
+
+def compute_reconciliation_score_breakdown(
+    total_records: int,
+    record_mismatches: int,
+    mapping_failures: int,
+    quantity_variances: int,
+    duplicate_records: int,
+) -> dict:
+    """Recon Score as a direct sum of weighted category penalties. Each
+    category's penalty is its weight scaled by how much of the dataset it
+    affects, capped at the category's full weight — so `contributors` is the
+    exact arithmetic behind `score`, auditable line by line."""
+    total_records = int(total_records or 0)
+
+    counts = {
+        "Record Mismatches": max(0, int(record_mismatches or 0)),
+        "Mapping Failures": max(0, int(mapping_failures or 0)),
+        "Quantity Variances": max(0, int(quantity_variances or 0)),
+        "Duplicate Records": max(0, int(duplicate_records or 0)),
+    }
+
+    contributors: list[dict] = []
+    penalties: dict[str, float] = {}
+    for name, weight in _RECON_CONTRIBUTOR_WEIGHTS.items():
+        count = counts[name]
+        share_pct = round(count / total_records * 100.0, 1) if total_records else 0.0
+        penalty = weight * min(1.0, count / total_records) if total_records else 0.0
+        penalties[name] = penalty
+        contributors.append({
+            "name": name,
+            "count": count,
+            "sharePct": share_pct,
+            "weight": weight,
+            "penaltyPoints": round(penalty, 2),
+        })
+
+    total_penalty = sum(penalties.values())
+    score = int(round(max(0.0, min(100.0, 100.0 - total_penalty))))
+
+    for c in contributors:
+        contribution_pct = round(penalties[c["name"]] / total_penalty * 100.0, 1) if total_penalty > 0 else 0.0
+        c["contributionPct"] = contribution_pct
+        c["impact"] = "High" if contribution_pct >= 50 else ("Medium" if contribution_pct >= 20 else "Low")
+
+    contributors.sort(key=lambda c: c["penaltyPoints"], reverse=True)
+
+    formula = (
+        "Score = 100 − Σ(category weight × affected-record share). "
+        "Weights: Record Mismatches 40, Mapping Failures 25, Quantity Variances 20, Duplicate Records 15."
+    )
+
+    return {"score": score, "contributors": contributors, "formula": formula}
+
+
+def detect_duplicate_records(df: pd.DataFrame) -> int:
+    """Counts full-row duplicates (identical across every column except
+    Remarks) in the reconciled dataset — the only duplicate signal available
+    without depending on the original key-mapping config."""
+    if df is None or df.empty:
+        return 0
+    subset = [c for c in df.columns if c != "Remarks"]
+    if not subset:
+        return 0
+    return int(df.duplicated(subset=subset, keep=False).sum())
 
 
 def classify_system_health(severity: str | None, risk_category: str | None) -> str:
@@ -103,18 +207,46 @@ def readiness_status_for(overlap_pct: float, fail_below: float = 40.0, pass_abov
     return "Fail"
 
 
+_READINESS_FORMULA = "Score = Σ(status score × weight) / Σ(weight) × 100"
+
+
 def compute_readiness_score(factors: list[dict]) -> dict:
     """Pure scoring function: derives a trust score purely from factor
     statuses/weights, so it can be unit tested without a DataFrame fixture.
 
     factors: [{"name": str, "status": "Pass"|"Partial"|"Fail", "weight": float, "detail": str}]
+
+    Each returned factor is enriched with `statusScore` (1.0/0.5/0.0),
+    `weightPct` (its share of total weight) and `contributionPoints`
+    (statusScore × weightPct) — the per-factor arithmetic that sums to
+    `score`, so the UI can show the weighted calculation rather than just
+    Pass/Partial/Fail pills.
     """
     if not factors:
-        return {"score": 100, "reason": "No readiness signals were available for this dataset.", "factors": []}
+        return {
+            "score": 100,
+            "reason": "No readiness signals were available for this dataset.",
+            "factors": [],
+            "formula": _READINESS_FORMULA,
+        }
 
     status_score = {"Pass": 1.0, "Partial": 0.5, "Fail": 0.0}
     total_weight = sum(float(f.get("weight", 1.0)) for f in factors) or 1.0
-    weighted = sum(status_score.get(f.get("status", "Fail"), 0.0) * float(f.get("weight", 1.0)) for f in factors)
+
+    enriched_factors: list[dict] = []
+    weighted = 0.0
+    for f in factors:
+        weight = float(f.get("weight", 1.0))
+        s_score = status_score.get(f.get("status", "Fail"), 0.0)
+        weight_pct = round(weight / total_weight * 100.0, 1)
+        weighted += s_score * weight
+        enriched_factors.append({
+            **f,
+            "statusScore": s_score,
+            "weightPct": weight_pct,
+            "contributionPoints": round(s_score * weight_pct, 1),
+        })
+
     score = int(round((weighted / total_weight) * 100.0))
 
     failing = [f["name"] for f in factors if f.get("status") == "Fail"]
@@ -126,7 +258,35 @@ def compute_readiness_score(factors: list[dict]) -> dict:
     else:
         reason = "Datasets show strong overlap and mapping coverage; the reconciliation result is trustworthy."
 
-    return {"score": score, "reason": reason, "factors": factors}
+    return {"score": score, "reason": reason, "factors": enriched_factors, "formula": _READINESS_FORMULA}
+
+
+def generate_executive_brief(
+    total_exceptions: int,
+    top_cause_labels: list[str] | None = None,
+    readiness_score: float = 100.0,
+) -> str:
+    """Pure, longer-form management summary (email/reporting), distinct from
+    the shorter hero narrative — this one always names the readiness caveat
+    explicitly rather than folding it into a single lead sentence."""
+    total_exceptions = int(total_exceptions or 0)
+    if total_exceptions <= 0:
+        return "The current reconciliation cycle identified no exceptions; source and target systems are fully aligned for the analyzed scope."
+
+    lead = f"The current reconciliation identified {total_exceptions} exceptions."
+
+    causes = [c for c in (top_cause_labels or []) if c][:2]
+    cause_sentence = f" Analysis indicates the primary cause is {', '.join(causes).lower()}." if causes else ""
+
+    caveat_sentence = ""
+    if readiness_score < 50:
+        caveat_sentence = (
+            " Direct record-level comparison is therefore not fully representative of operational "
+            "performance; master-data harmonization and aligned date filtering are recommended before "
+            "further reconciliation activities."
+        )
+
+    return (lead + cause_sentence + caveat_sentence).strip()
 
 
 def generate_executive_narrative(
@@ -168,6 +328,57 @@ def generate_executive_narrative(
     return (lead + cause_sentence).strip()
 
 
+def _readiness_band(score: float) -> str:
+    if score >= 70:
+        return "strong"
+    if score >= 40:
+        return "moderate"
+    return "low"
+
+
+def generate_executive_brief_bullets(
+    total_exceptions: int,
+    root_causes: list[dict] | None,
+    score_breakdown: dict | None,
+    readiness: dict | None,
+) -> list[str]:
+    """Deterministic, Python-only bulleted executive brief — no LLM. Every
+    statement is read directly off numbers `CockpitAdapter.build()` has
+    already computed elsewhere (root cause confidence, the recon score's
+    weighted contributors, the readiness score/reason), so the brief can
+    never disagree with what Detailed Insights shows for the same payload."""
+    total_exceptions = int(total_exceptions or 0)
+    if total_exceptions <= 0:
+        return ["No reconciliation exceptions were detected; source and target datasets are fully aligned for the analyzed scope."]
+
+    bullets = [f"{total_exceptions} exception{'s' if total_exceptions != 1 else ''} identified."]
+
+    root_causes = root_causes or []
+    if root_causes:
+        bullets.append(f"Primary issue is {root_causes[0]['cause'].lower()} between source and target systems.")
+
+    contributors = (score_breakdown or {}).get("contributors") or []
+    dominant = contributors[0] if contributors else None
+    if dominant and dominant.get("count", 0) > 0:
+        bullets.append(f"{dominant['name']} account for {dominant['sharePct']}% of reconciliation failures.")
+
+    if readiness:
+        readiness_score = float(readiness.get("score", 100) or 0)
+        reason = readiness.get("reason") or ""
+        reason = reason[:1].lower() + reason[1:] if reason else ""
+        band = _readiness_band(readiness_score)
+        suffix = f" — {reason}" if reason else ""
+        bullets.append(f"Readiness remains {band} at {int(round(readiness_score))}%{suffix}")
+
+    if dominant and dominant.get("penaltyPoints", 0) > 0:
+        bullets.append(
+            f"Resolving {dominant['name'].lower()} could improve reconciliation accuracy by "
+            f"approximately {int(round(dominant['penaltyPoints']))}%."
+        )
+
+    return bullets
+
+
 class CockpitAdapter:
     """Builds the `cockpit` section of the insights payload from InsightEngine's
     already-computed analytics plus a small set of new detections."""
@@ -183,16 +394,73 @@ class CockpitAdapter:
         detections = self._detect_taxonomy_causes(missing_df, extra_df)
         readiness = self._build_readiness(payload, detections)
 
+        duplicate_records = detect_duplicate_records(df)
+        mapping_failure_records = self._count_mapping_failure_records(missing_df, extra_df, detections)
+
         root_cause_explorer = self._build_root_cause_explorer(payload, detections)
+        situation_room = self._build_situation_room(
+            payload,
+            readiness,
+            detections,
+            type_counts,
+            duplicate_records=duplicate_records,
+            mapping_failure_records=mapping_failure_records,
+        )
+
+        total_exceptions = situation_room["totalExceptions"]
+        top_cause_labels = [c["cause"] for c in root_cause_explorer[:2]]
+
+        hotspots = self._build_hotspots(mismatches, payload)
+        self._apply_concentration_driver(situation_room, hotspots)
 
         return {
-            "situationRoom": self._build_situation_room(payload, readiness, detections, type_counts),
+            "situationRoom": situation_room,
             "exceptionLandscape": self._build_exception_landscape(payload, type_counts),
             "rootCauseExplorer": root_cause_explorer,
-            "hotspots": self._build_hotspots(mismatches, payload),
+            "hotspots": hotspots,
             "businessImpact": self._build_business_impact(payload),
+            "patternIntelligence": self._build_pattern_intelligence(payload),
             "actionCenter": self._build_action_center(payload, root_cause_explorer),
+            "executiveBrief": generate_executive_brief(
+                total_exceptions=total_exceptions,
+                top_cause_labels=top_cause_labels,
+                readiness_score=float(readiness.get("score", 100) or 100),
+            ),
+            "executiveBriefBullets": generate_executive_brief_bullets(
+                total_exceptions=total_exceptions,
+                root_causes=root_cause_explorer,
+                score_breakdown=situation_room.get("reconciliationScoreBreakdown"),
+                readiness=readiness,
+            ),
         }
+
+    # ----------------------------
+    # Confidence: exception-concentration driver (needs hotspots, computed
+    # after situationRoom, so applied as a small post-process step)
+    # ----------------------------
+    def _apply_concentration_driver(self, situation_room: dict, hotspots: dict) -> None:
+        top_entity = None
+        top_share = 0.0
+        for dimension in ("plants", "materials"):
+            entities = hotspots.get(dimension) or []
+            if entities and entities[0]["share"] > top_share:
+                top_share = entities[0]["share"]
+                top_entity = entities[0]["entity"]
+
+        if not top_entity or top_share < 50:
+            return
+
+        drivers = situation_room.get("confidence", {}).get("drivers")
+        if drivers is None:
+            return
+
+        drivers.append({
+            "name": "Exception Concentration",
+            "status": "Fail" if top_share >= 70 else "Partial",
+            "shortLabel": driver_short_label("Exception Concentration"),
+            "detail": f"{top_share}% of exceptions concentrate in {top_entity}.",
+            "weightPct": None,
+        })
 
     # ----------------------------
     # Shared row-subset helper
@@ -239,16 +507,24 @@ class CockpitAdapter:
         span_days = max(1, (max(m_end, e_end) - min(m_start, e_start)).days)
         overlap_pct = round(overlap_days / span_days * 100.0, 1)
         confidence = int(round(max(0.0, 100.0 - overlap_pct)))
+        affected_records = int(len(missing_dates) + len(extra_dates))
 
         return {
             "overlapPct": overlap_pct,
             "confidence": confidence,
-            "affectedRecords": int(len(missing_dates) + len(extra_dates)),
+            "affectedRecords": affected_records,
             "evidence": (
                 f"Source-side records span {m_start.date()}–{m_end.date()}; "
                 f"target-only records span {e_start.date()}–{e_end.date()} "
                 f"({overlap_pct}% date-range overlap)."
             ),
+            "reasoning": f"Confidence = 100% − {overlap_pct}% date-range overlap between source-only and target-only records.",
+            "metrics": {
+                "overlapPct": overlap_pct,
+                "affectedRecords": affected_records,
+                "spanDays": span_days,
+                "overlapDays": overlap_days,
+            },
         }
 
     def _detect_mapping_gap(self, missing_df: pd.DataFrame, extra_df: pd.DataFrame, candidates: list[str]) -> dict | None:
@@ -266,16 +542,59 @@ class CockpitAdapter:
         intersection = missing_vals & extra_vals
         overlap_pct = round(len(intersection) / max(1, len(union)) * 100.0, 1)
         confidence = int(round(max(0.0, 100.0 - overlap_pct)))
+        affected_records = int(len(missing_df) + len(extra_df))
 
         return {
             "overlapPct": overlap_pct,
             "confidence": confidence,
-            "affectedRecords": int(len(missing_df) + len(extra_df)),
+            "affectedRecords": affected_records,
             "evidence": (
                 f"Only {len(intersection)} of {len(union)} distinct values are shared between "
                 f"source-only and target-only records ({overlap_pct}% overlap)."
             ),
+            "reasoning": (
+                f"Confidence = 100% − {overlap_pct}% shared-value overlap "
+                f"({len(intersection)} of {len(union)} distinct values shared)."
+            ),
+            "metrics": {
+                "overlapPct": overlap_pct,
+                "affectedRecords": affected_records,
+                "sharedValues": len(intersection),
+                "totalDistinctValues": len(union),
+            },
+            "col": col,
+            "unmappedInMissing": missing_vals - intersection,
+            "unmappedInExtra": extra_vals - intersection,
         }
+
+    # ----------------------------
+    # Mapping-failure record counting (feeds Recon Score breakdown)
+    # ----------------------------
+    def _count_mapping_failure_records(self, missing_df: pd.DataFrame, extra_df: pd.DataFrame, detections: dict) -> int:
+        """Counts rows specifically explained by a detected mapping gap — i.e.
+        missing/extra rows whose material or plant value falls outside the
+        shared intersection identified by `_detect_mapping_gap` — rather than
+        double-counting every missing/extra row as a mapping failure."""
+        flagged_missing: set = set()
+        flagged_extra: set = set()
+
+        for key in ("productMappingGap", "locationMappingGap"):
+            d = detections.get(key)
+            if not d:
+                continue
+            col = d.get("col")
+            if not col:
+                continue
+            if col in missing_df.columns:
+                unmapped = d.get("unmappedInMissing") or set()
+                mask = missing_df[col].fillna("Unknown").astype(str).isin(unmapped)
+                flagged_missing.update(missing_df.index[mask])
+            if col in extra_df.columns:
+                unmapped = d.get("unmappedInExtra") or set()
+                mask = extra_df[col].fillna("Unknown").astype(str).isin(unmapped)
+                flagged_extra.update(extra_df.index[mask])
+
+        return len(flagged_missing) + len(flagged_extra)
 
     # ----------------------------
     # Readiness
@@ -325,20 +644,39 @@ class CockpitAdapter:
     # ----------------------------
     # Situation Room
     # ----------------------------
-    def _build_situation_room(self, payload: dict, readiness: dict, detections: dict, type_counts: dict) -> dict:
+    def _build_situation_room(
+        self,
+        payload: dict,
+        readiness: dict,
+        detections: dict,
+        type_counts: dict,
+        duplicate_records: int = 0,
+        mapping_failure_records: int = 0,
+    ) -> dict:
         summary = payload.get("summary") or {}
         risk = payload.get("risk") or {}
 
-        accuracy = float(summary.get("accuracy", 0.0) or 0.0)
-        risk_score = float(risk.get("score", 0) or 0)
+        total_records = int(summary.get("totalRecords", 0) or 0)
         readiness_score = float(readiness.get("score", 0) or 0)
-
-        recon_score = compute_reconciliation_score(accuracy, risk_score, readiness_score)
-        system_health = classify_system_health(summary.get("severity"), risk.get("category"))
 
         missing = int(type_counts.get("Missing in Target", 0) or 0)
         extra = int(type_counts.get("Extra in Target", 0) or 0)
         qty = int(type_counts.get("Quantity Mismatch", 0) or 0)
+
+        score_breakdown = compute_reconciliation_score_breakdown(
+            total_records=total_records,
+            record_mismatches=missing + extra,
+            mapping_failures=mapping_failure_records,
+            quantity_variances=qty,
+            duplicate_records=duplicate_records,
+        )
+        recon_score = score_breakdown["score"]
+
+        system_health = classify_system_health(summary.get("severity"), risk.get("category"))
+        confidence = {
+            "score": int(round(readiness_score)),
+            "drivers": self._confidence_drivers(readiness.get("factors") or []),
+        }
 
         top_causes = []
         if detections.get("dateRangeMismatch") and detections["dateRangeMismatch"]["confidence"] >= 60:
@@ -358,13 +696,37 @@ class CockpitAdapter:
 
         return {
             "reconciliationScore": recon_score,
+            "reconciliationScoreBreakdown": score_breakdown,
             "totalExceptions": int(summary.get("mismatchedRecords", 0) or 0),
             "severity": summary.get("severity", "Low"),
             "confidenceLevel": confidence_label(readiness_score),
+            "confidence": confidence,
             "systemHealth": system_health,
             "narrative": narrative,
             "readiness": readiness,
         }
+
+    def _confidence_drivers(self, factors: list[dict]) -> list[dict]:
+        """What's actually moving the confidence number: factors dragging it
+        down (Partial/Fail) take priority; if everything passes, surface the
+        passing factors instead so confidence isn't a number with no story."""
+        if not factors:
+            return []
+
+        non_passing = [f for f in factors if f.get("status") != "Pass"]
+        source = non_passing if non_passing else factors
+
+        drivers = [
+            {
+                "name": f.get("name"),
+                "status": f.get("status"),
+                "detail": f.get("detail"),
+                "weightPct": f.get("weightPct"),
+                "shortLabel": f.get("shortLabel") or driver_short_label(f.get("name")),
+            }
+            for f in source
+        ]
+        return sorted(drivers, key=lambda d: d.get("weightPct") or 0, reverse=True)
 
     # ----------------------------
     # Exception Landscape
@@ -377,13 +739,6 @@ class CockpitAdapter:
         def pct(n: int) -> float:
             return round(n / total * 100.0, 1) if total else 0.0
 
-        def contribution(p: float) -> str:
-            if p >= 50:
-                return "High"
-            if p >= 20:
-                return "Medium"
-            return "Low"
-
         missing = int(type_counts.get("Missing in Target", 0) or 0)
         extra = int(type_counts.get("Extra in Target", 0) or 0)
         qty = int(type_counts.get("Quantity Mismatch", 0) or 0)
@@ -392,9 +747,9 @@ class CockpitAdapter:
         high_severity_areas = sum(1 for b in business_impacts if b.get("severity") == "High")
 
         return {
-            "missing": {"count": missing, "distributionPct": missing_pct, "severityContribution": contribution(missing_pct)},
-            "extra": {"count": extra, "distributionPct": extra_pct, "severityContribution": contribution(extra_pct)},
-            "qtyMismatch": {"count": qty, "distributionPct": qty_pct, "severityContribution": contribution(qty_pct)},
+            "missing": {"count": missing, "distributionPct": missing_pct, "severityContribution": severity_contribution(missing_pct)},
+            "extra": {"count": extra, "distributionPct": extra_pct, "severityContribution": severity_contribution(extra_pct)},
+            "qtyMismatch": {"count": qty, "distributionPct": qty_pct, "severityContribution": severity_contribution(qty_pct)},
             "dominantCategory": summary.get("dominantMismatchCategory", "No mismatches"),
             "businessImpactEstimate": {
                 "affectedAreas": len(business_impacts),
@@ -424,6 +779,8 @@ class CockpitAdapter:
                     "impact": "High" if d["confidence"] >= 80 else "Medium",
                     "affectedRecords": d["affectedRecords"],
                     "evidence": d["evidence"],
+                    "reasoning": d.get("reasoning"),
+                    "metrics": d.get("metrics"),
                 })
 
         for rc in payload.get("rootCauses") or []:
@@ -437,28 +794,70 @@ class CockpitAdapter:
                 "impact": "High" if confidence >= 80 else "Medium",
                 "affectedRecords": total_exceptions,
                 "evidence": rc.get("reason"),
+                "reasoning": self._engine_cause_reasoning(rc),
+                "metrics": {"confidence": confidence, "affectedRecords": total_exceptions, "internalCause": rc.get("cause")},
             })
 
         return sorted(causes, key=lambda c: c["confidence"], reverse=True)[:6]
+
+    def _engine_cause_reasoning(self, rc: dict) -> str:
+        formula = _ENGINE_CAUSE_FORMULA.get(
+            rc.get("cause"), "Derived from the dominant mismatch-type share within total exceptions."
+        )
+        return f"{formula} Computed confidence: {rc.get('confidence')}%."
 
     # ----------------------------
     # Hotspots
     # ----------------------------
     def _build_hotspots(self, mismatches: pd.DataFrame, payload: dict) -> dict:
-        pareto = payload.get("paretoAnalysis") or {}
+        plant_col = self._engine._detect_column(mismatches, _PLANT_CANDIDATES) if mismatches is not None and not mismatches.empty else None
+        material_col = self._engine._detect_column(mismatches, _MATERIAL_CANDIDATES) if mismatches is not None and not mismatches.empty else None
 
         return {
-            "plants": self._top_from_pareto(pareto.get("plants")),
-            "materials": self._top_from_pareto(pareto.get("materials")),
+            "plants": self._build_hotspot_entities(mismatches, plant_col),
+            "materials": self._build_hotspot_entities(mismatches, material_col),
             "dates": self._top_dates(mismatches),
             "matrix": self._build_hotspot_matrix(mismatches),
         }
 
-    @staticmethod
-    def _top_from_pareto(bucket: dict | None, limit: int = 10) -> list[dict]:
-        if not bucket:
+    def _issue_diagnostics(self, mismatches: pd.DataFrame, mask: pd.Series, total: int) -> dict:
+        """Actionable per-hotspot diagnostics: how many of each exception type
+        this entity/date contributes, plus a risk contribution weighted by how
+        severe its share of total exceptions is — not just a bare percentage."""
+        count = int(mask.sum())
+        share = round(count / max(1, total) * 100.0, 1)
+
+        if "Remarks" in mismatches.columns:
+            entity_remarks = mismatches.loc[mask, "Remarks"].fillna("").astype(str)
+            issue_breakdown = {
+                "missing": int(entity_remarks.str.contains(_MISSING_RE, case=False, na=False).sum()),
+                "extra": int(entity_remarks.str.contains(_EXTRA_RE, case=False, na=False).sum()),
+                "qtyMismatch": int(entity_remarks.str.contains(_QTY_MISMATCH_RE, case=False, na=False).sum()),
+            }
+        else:
+            issue_breakdown = {"missing": 0, "extra": 0, "qtyMismatch": 0}
+
+        tier = severity_contribution(share)
+        return {
+            "mismatchCount": count,
+            "share": share,
+            "issueBreakdown": issue_breakdown,
+            "riskTier": tier,
+            "riskContribution": round(share * _SEVERITY_WEIGHT[tier], 1),
+        }
+
+    def _build_hotspot_entities(self, mismatches: pd.DataFrame, dimension_col: str | None, limit: int = 10) -> list[dict]:
+        if mismatches is None or mismatches.empty or not dimension_col or dimension_col not in mismatches.columns:
             return []
-        return (bucket.get("topContributors") or [])[:limit]
+
+        total = len(mismatches)
+        values = mismatches[dimension_col].fillna("Unknown").astype(str)
+        top_entities = values.value_counts().head(limit).index
+
+        return [
+            {"entity": str(entity), **self._issue_diagnostics(mismatches, values == entity, total)}
+            for entity in top_entities
+        ]
 
     def _top_dates(self, mismatches: pd.DataFrame, limit: int = 10) -> list[dict]:
         if mismatches is None or mismatches.empty:
@@ -467,15 +866,18 @@ class CockpitAdapter:
         if not date_col or date_col not in mismatches.columns:
             return []
 
-        dt = pd.to_datetime(mismatches[date_col], errors="coerce").dropna()
-        if dt.empty:
+        dt = pd.to_datetime(mismatches[date_col], errors="coerce")
+        valid = dt.notna()
+        if not valid.any():
             return []
 
         total = len(mismatches)
-        counts = dt.dt.date.astype(str).value_counts().head(limit)
+        date_strs = dt.dt.date.astype(str)
+        top_dates = date_strs[valid].value_counts().head(limit).index
+
         return [
-            {"date": str(k), "mismatchCount": int(v), "share": round(v / max(1, total) * 100.0, 1)}
-            for k, v in counts.items()
+            {"date": str(date_str), **self._issue_diagnostics(mismatches, valid & (date_strs == date_str), total)}
+            for date_str in top_dates
         ]
 
     def _build_hotspot_matrix(self, mismatches: pd.DataFrame, top_n: int = 8) -> dict:
@@ -528,6 +930,14 @@ class CockpitAdapter:
                 }
 
         return [by_lens[lens] for lens in _RISK_LENS_ORDER if lens in by_lens]
+
+    # ----------------------------
+    # Pattern Intelligence (gated — hidden entirely below confidence threshold)
+    # ----------------------------
+    def _build_pattern_intelligence(self, payload: dict, min_confidence: int = 70) -> dict:
+        patterns = payload.get("patterns") or []
+        strong = [p for p in patterns if int(p.get("confidence", 0) or 0) >= min_confidence]
+        return {"show": bool(strong), "patterns": strong[:6]}
 
     # ----------------------------
     # Action Center

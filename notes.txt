@@ -1,4 +1,0 @@
-Material = A_SalesOrderItem.Material
-Plnt = A_SalesOrderItem.ProductionPlant
-ReqDlvQty = A_SalesOrderItem.RequestedQuantity
-ReqDlvDate = A_SalesOrderScheduleLine.RequestedDeliveryDate

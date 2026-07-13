@@ -231,8 +231,12 @@ class InsightEngine:
         return df["Remarks"].fillna("").astype(str)
 
     def _is_any_mismatch(self, remarks: pd.Series) -> pd.Series:
+        # EXCEPTION is emitted only by the V2 contract engine (duplicate keys,
+        # runtime compare failures). Including it here keeps those records out of
+        # the "matched" count. V1 output never contains the phrase, so this is a
+        # no-op for the legacy Excel flow.
         return remarks.str.contains(
-            r"MISSING IN TARGET|EXTRA IN TARGET|QTY MISMATCH",
+            r"MISSING IN TARGET|EXTRA IN TARGET|QTY MISMATCH|EXCEPTION",
             case=False,
             regex=True,
             na=False,

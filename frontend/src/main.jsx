@@ -1,16 +1,11 @@
 import ReactDOM from "react-dom/client";
 
+import "./index.css";
+import "./styles/reconciliation.css";
+
 import App from "./App";
 
-import {
-  ReconciliationProvider,
-} from "./context/ReconciliationContext";
-
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <ReconciliationProvider>
-    <App />
-  </ReconciliationProvider>
-);
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
 
 

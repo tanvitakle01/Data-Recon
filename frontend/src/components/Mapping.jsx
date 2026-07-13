@@ -42,46 +42,38 @@ function Mapping({ mappingData, loading, error }) {
         quantity differences.
       </p>
 
-      <div
-        style={{
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          overflow: "hidden",
-          background: "#fff",
-        }}
-      >
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-          }}
-        >
+      <div className="surface-elevated" style={{ overflow: "hidden" }}>
+        <table className="table-elevated">
           <thead>
-            <tr
-              style={{
-                background: "#f9fafb",
-                textAlign: "left",
-              }}
-            >
-              <th style={{ padding: 12 }}>Logical Field</th>
-              <th style={{ padding: 12 }}>Source Column</th>
-              <th style={{ padding: 12 }}>Target Column</th>
-              <th style={{ padding: 12 }}>Role</th>
+            <tr>
+              <th>Logical Field</th>
+              <th>Source Column</th>
+              <th>Target Column</th>
+              <th>Role</th>
             </tr>
           </thead>
 
           <tbody>
             {mappingData.display.map((row, idx) => (
-              <tr
-                key={idx}
-                style={{
-                  borderTop: "1px solid #e5e7eb",
-                }}
-              >
-                <td style={{ padding: 12 }}>{row.logical}</td>
-                <td style={{ padding: 12 }}>{row.source_col}</td>
-                <td style={{ padding: 12 }}>{row.target_col}</td>
-                <td style={{ padding: 12 }}>{row.role}</td>
+              <tr key={idx}>
+                <td style={{ fontWeight: 800 }}>{row.logical}</td>
+                <td>{row.source_col}</td>
+                <td>{row.target_col}</td>
+                <td>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      padding: "3px 10px",
+                      borderRadius: 999,
+                      fontSize: 12,
+                      fontWeight: 800,
+                      background: String(row.role).toLowerCase().includes("key") ? "rgba(59,130,246,0.12)" : "rgba(16,185,129,0.12)",
+                      color: String(row.role).toLowerCase().includes("key") ? "#1d4ed8" : "#047857",
+                    }}
+                  >
+                    {row.role}
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>

@@ -71,8 +71,10 @@ class S4SalesOrderConnector(SAPConnector):
         url = (
             f"{self._service_base_url()}/"
             f"{entity_set}"
-            f"?$top={top}&$format=json"
+            f"?$format=json"
         )
+
+        #$top=1000&
 
         response = self.session.get(
             url,

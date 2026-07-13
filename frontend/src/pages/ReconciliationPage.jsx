@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 
@@ -11,15 +11,6 @@ import "../styles/reconciliation.css";
 gsap.registerPlugin(ScrollTrigger);
 
 function ReconciliationPage() {
-  const pageStyle = useMemo(
-    () => ({
-      maxWidth: "1200px",
-      margin: "0 auto",
-      padding: "26px 20px 32px",
-    }),
-    [],
-  );
-
   const rootRef = useRef(null);
 
 
@@ -96,7 +87,7 @@ function ReconciliationPage() {
   }, []);
 
   return (
-    <div ref={rootRef} style={pageStyle}>
+    <div ref={rootRef}>
       <HeroSection />
 
       <div data-scroll-reveal-summary-wrap className="recon-section" />

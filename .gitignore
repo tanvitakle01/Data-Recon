@@ -80,3 +80,9 @@ vite.svg
 uploads/
 outputs/
 temp/
+
+# =========================
+# Reconciliation engine persistent store
+# (raw snapshots, shadow sources, results, SQLite DBs)
+# =========================
+data/recon_store/

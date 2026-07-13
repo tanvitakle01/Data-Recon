@@ -8,7 +8,7 @@ s4:
 ibp:
   enabled: true
   base_url: "https://my400230-api.scmibp.ondemand.com"
-  service: "IBP/PLANNING_DATA_API_SRV/"
+  service: "IBP/PLANNING_DATA_API_SRV"
   username: "IBP_FILE_CI"
   password: "IbpApiconn@123456789"
 
@@ -16,4 +16,5 @@ ibp:
   #planning_area: "HPA2508"
   #key_figure: "I_SALESORDERREQUEST"
   #planning_level: "I_DAYPRODLOCDEMAND"
+ 
  

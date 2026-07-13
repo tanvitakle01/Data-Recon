@@ -79,24 +79,26 @@ function FileUploadCard({
 
       {fileInfo && (
         <div style={{ marginTop: 10 }}>
-          <div>✅ {fileInfo.filename}</div>
-          <div>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 10px",
+              borderRadius: 999,
+              background: "rgba(16,185,129,0.12)",
+              color: "#047857",
+              fontWeight: 800,
+              fontSize: 12,
+            }}
+          >
+            ✓ {fileInfo.filename}
+          </div>
+          <div style={{ marginTop: 6, color: "#64748b", fontWeight: 600, fontSize: 13 }}>
             {fileInfo.rows} rows × {fileInfo.cols} cols
           </div>
 
-          <button
-            style={{
-              marginTop: 10,
-              padding: "8px 12px",
-              borderRadius: 10,
-              border: "1px solid rgba(203,213,225,0.95)",
-              background: "rgba(255,255,255,0.9)",
-              color: "rgba(15,23,42,0.86)",
-              cursor: "pointer",
-              fontWeight: 650,
-            }}
-            onClick={() => setShowPreview((s) => !s)}
-          >
+          <button className="btn-secondary" style={{ marginTop: 10 }} onClick={() => setShowPreview((s) => !s)}>
             {showPreview ? "Hide Preview" : "Preview"}
           </button>
 

@@ -5,38 +5,100 @@ Run with: venv/Scripts/python.exe -m pytest backend/ai/insight_adapter_test.py -
 
 from backend.ai.insight_adapter import (
     classify_system_health,
-    compute_reconciliation_score,
+    compute_reconciliation_score_breakdown,
     compute_readiness_score,
     confidence_label,
+    detect_duplicate_records,
+    driver_short_label,
+    generate_executive_brief,
+    generate_executive_brief_bullets,
     generate_executive_narrative,
     map_area_to_risk_lens,
     map_cause_to_taxonomy,
     readiness_status_for,
+    severity_contribution,
 )
 
 
 # ----------------------------
-# compute_reconciliation_score
+# compute_reconciliation_score_breakdown
 # ----------------------------
-def test_reconciliation_score_perfect_inputs_is_100():
-    assert compute_reconciliation_score(accuracy=100, risk_score=0, readiness_score=100) == 100
+def test_reconciliation_score_breakdown_no_issues_is_100():
+    result = compute_reconciliation_score_breakdown(
+        total_records=100, record_mismatches=0, mapping_failures=0, quantity_variances=0, duplicate_records=0
+    )
+    assert result["score"] == 100
+    assert all(c["penaltyPoints"] == 0 for c in result["contributors"])
 
 
-def test_reconciliation_score_worst_inputs_is_0():
-    assert compute_reconciliation_score(accuracy=0, risk_score=100, readiness_score=0) == 0
+def test_reconciliation_score_breakdown_every_record_affected_is_0():
+    result = compute_reconciliation_score_breakdown(
+        total_records=100, record_mismatches=100, mapping_failures=100, quantity_variances=100, duplicate_records=100
+    )
+    assert result["score"] == 0
 
 
-def test_reconciliation_score_differs_from_raw_accuracy_when_readiness_low():
-    # Same accuracy, but low readiness should pull the composite score below accuracy.
-    high_readiness = compute_reconciliation_score(accuracy=90, risk_score=10, readiness_score=90)
-    low_readiness = compute_reconciliation_score(accuracy=90, risk_score=10, readiness_score=20)
-    assert low_readiness < high_readiness
+def test_reconciliation_score_breakdown_penalties_sum_to_deduction():
+    result = compute_reconciliation_score_breakdown(
+        total_records=200, record_mismatches=40, mapping_failures=10, quantity_variances=20, duplicate_records=5
+    )
+    total_penalty = sum(c["penaltyPoints"] for c in result["contributors"])
+    assert result["score"] == round(100 - total_penalty)
 
 
-def test_reconciliation_score_handles_none_inputs():
-    # None accuracy/readiness -> 0, but None risk_score also means "no known risk" (0),
-    # which contributes +30 via the (100 - risk_score) * 0.3 term.
-    assert compute_reconciliation_score(None, None, None) == 30
+def test_reconciliation_score_breakdown_contribution_pct_sums_to_100():
+    result = compute_reconciliation_score_breakdown(
+        total_records=200, record_mismatches=40, mapping_failures=10, quantity_variances=20, duplicate_records=5
+    )
+    assert round(sum(c["contributionPct"] for c in result["contributors"]), 0) == 100
+
+
+def test_reconciliation_score_breakdown_zero_total_records_is_100():
+    result = compute_reconciliation_score_breakdown(
+        total_records=0, record_mismatches=0, mapping_failures=0, quantity_variances=0, duplicate_records=0
+    )
+    assert result["score"] == 100
+
+
+def test_reconciliation_score_breakdown_handles_none_inputs():
+    result = compute_reconciliation_score_breakdown(None, None, None, None, None)
+    assert result["score"] == 100
+
+
+# ----------------------------
+# detect_duplicate_records
+# ----------------------------
+def test_detect_duplicate_records_flags_full_row_duplicates():
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "Material": ["A", "A", "B"],
+        "Plant": ["P1", "P1", "P2"],
+        "Remarks": ["✅ MATCH", "⚠️ QTY MISMATCH", "✅ MATCH"],
+    })
+    assert detect_duplicate_records(df) == 2
+
+
+def test_detect_duplicate_records_no_duplicates_is_zero():
+    import pandas as pd
+
+    df = pd.DataFrame({"Material": ["A", "B"], "Plant": ["P1", "P2"], "Remarks": ["", ""]})
+    assert detect_duplicate_records(df) == 0
+
+
+def test_detect_duplicate_records_empty_df_is_zero():
+    import pandas as pd
+
+    assert detect_duplicate_records(pd.DataFrame()) == 0
+
+
+# ----------------------------
+# severity_contribution
+# ----------------------------
+def test_severity_contribution_thresholds():
+    assert severity_contribution(60) == "High"
+    assert severity_contribution(20) == "Medium"
+    assert severity_contribution(5) == "Low"
 
 
 # ----------------------------
@@ -141,6 +203,19 @@ def test_readiness_score_mixed_weights_partial_credit():
     assert result["score"] == 50
 
 
+def test_readiness_score_enriches_factors_with_weighted_breakdown():
+    factors = [
+        {"name": "A", "status": "Pass", "weight": 1.0},
+        {"name": "B", "status": "Partial", "weight": 3.0},
+    ]
+    result = compute_readiness_score(factors)
+    a, b = result["factors"]
+    assert a["statusScore"] == 1.0 and b["statusScore"] == 0.5
+    assert a["weightPct"] == 25.0 and b["weightPct"] == 75.0
+    assert a["contributionPoints"] == 25.0 and b["contributionPoints"] == 37.5
+    assert "formula" in result
+
+
 def test_readiness_score_reflects_this_conversations_example():
     # Mirrors the "1210 missing / 1000 extra, non-overlapping periods" scenario
     # from the design discussion: date overlap fails -> low readiness.
@@ -193,3 +268,82 @@ def test_narrative_high_readiness_uses_driver_phrasing_not_no_match_phrasing():
     )
     assert "primary driver is quantity variance" in text
     assert "No direct matches" not in text
+
+
+# ----------------------------
+# generate_executive_brief
+# ----------------------------
+def test_executive_brief_no_exceptions():
+    text = generate_executive_brief(0, [], 100)
+    assert "no exceptions" in text.lower()
+
+
+def test_executive_brief_low_readiness_includes_caveat():
+    text = generate_executive_brief(2210, ["Date Range Mismatch", "Master Data Misalignment"], readiness_score=35)
+    assert "2210 exceptions" in text
+    assert "date range mismatch" in text.lower()
+    assert "master-data harmonization" in text.lower()
+
+
+def test_executive_brief_high_readiness_omits_caveat():
+    text = generate_executive_brief(10, ["Quantity Variance"], readiness_score=90)
+    assert "10 exceptions" in text
+    assert "master-data harmonization" not in text.lower()
+
+
+# ----------------------------
+# driver_short_label
+# ----------------------------
+def test_driver_short_label_known_names():
+    assert driver_short_label("Record Key Overlap") == "Low key overlap"
+    assert driver_short_label("Date Range Overlap") == "Misaligned date ranges"
+
+
+def test_driver_short_label_unknown_returns_none():
+    assert driver_short_label("Something Else") is None
+    assert driver_short_label(None) is None
+
+
+# ----------------------------
+# generate_executive_brief_bullets
+# ----------------------------
+def test_brief_bullets_no_exceptions():
+    bullets = generate_executive_brief_bullets(0, [], None, None)
+    assert len(bullets) == 1
+    assert "aligned" in bullets[0].lower()
+
+
+def test_brief_bullets_names_dominant_contributor():
+    score_breakdown = compute_reconciliation_score_breakdown(
+        total_records=100, record_mismatches=10, mapping_failures=67, quantity_variances=5, duplicate_records=0
+    )
+    bullets = generate_executive_brief_bullets(
+        total_exceptions=6,
+        root_causes=[{"cause": "Product Mapping Gap", "confidence": 87}],
+        score_breakdown=score_breakdown,
+        readiness={"score": 21, "reason": "Poor mapping coverage indicates the datasets may not be directly comparable."},
+    )
+    assert bullets[0] == "6 exceptions identified."
+    assert "primary issue is product mapping gap" in bullets[1].lower()
+    assert any("Mapping Failures account for" in b for b in bullets)
+    assert any("Readiness remains low at 21%" in b for b in bullets)
+
+
+def test_brief_bullets_improvement_uses_penalty_points():
+    score_breakdown = compute_reconciliation_score_breakdown(
+        total_records=100, record_mismatches=0, mapping_failures=100, quantity_variances=0, duplicate_records=0
+    )
+    dominant_penalty = score_breakdown["contributors"][0]["penaltyPoints"]
+    bullets = generate_executive_brief_bullets(
+        total_exceptions=6,
+        root_causes=[],
+        score_breakdown=score_breakdown,
+        readiness={"score": 50, "reason": "Some caution advised."},
+    )
+    assert any(f"approximately {int(round(dominant_penalty))}%" in b for b in bullets)
+
+
+def test_brief_bullets_no_readiness_or_causes_still_returns_count():
+    bullets = generate_executive_brief_bullets(3, None, None, None)
+    assert bullets[0] == "3 exceptions identified."
+    assert len(bullets) == 1

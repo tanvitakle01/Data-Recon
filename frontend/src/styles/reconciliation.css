@@ -1,9 +1,7 @@
 /* Executive Dashboard — enterprise-neutral UI */
 
 .recon-hero-exec {
-  height: 520px;
-  min-height: 330px;
-  max-height: 380px;
+  min-height: 420px;
 
   position: relative;
   overflow: hidden;
@@ -15,22 +13,22 @@
   background:
     radial-gradient(
       circle at top right,
-      rgba(37,99,235,0.08),
+      rgba(95,196,182,0.1),
       transparent 45%
     ),
     radial-gradient(
       circle at top left,
-      rgba(99,102,241,0.06),
+      rgba(125,211,199,0.08),
       transparent 50%
     ),
     linear-gradient(
       180deg,
       #FFFFFF 0%,
-      #F8FAFC 100%
+      #F8FCFC 100%
     );
 
-  border: 1px solid rgba(229, 231, 235, 0.95);
-  box-shadow: 0 20px 60px rgba(2, 6, 23, 0.06);
+  border: 1px solid var(--border-color, #D9ECE9);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.06);
 }
 
 .recon-hero-exec-inner {
@@ -61,12 +59,12 @@
   letter-spacing: -0.04em;
   font-size: 40px;
   font-weight: 800;
-  color: #000000;
+  color: var(--text-primary, #1F2937);
 }
 
-/* GradientText uses a span with transparent text; force it visible/black */
+/* GradientText uses a span with transparent text; force it visible/dark */
 .recon-hero-exec-title .recon-gradient-text {
-  color: #000000 !important;
+  color: var(--text-primary, #1F2937) !important;
   background-image: none !important;
 }
 
@@ -135,11 +133,11 @@
 .recon-gradient-text {
   background-image: linear-gradient(
     var(--recon-grad-dir, horizontal),
-    rgba(15, 23, 42, 1),
-    rgba(51, 65, 85, 1),
-    rgba(37, 99, 235, 1),
-    rgba(51, 65, 85, 1),
-    rgba(15, 23, 42, 1)
+    rgba(31, 41, 55, 1),
+    rgba(44, 131, 119, 1),
+    rgba(13, 148, 136, 1),
+    rgba(44, 131, 119, 1),
+    rgba(31, 41, 55, 1)
   );
   background-size: 260% 100%;
   -webkit-background-clip: text;
@@ -217,11 +215,11 @@
   border-radius: 18px;
   background: conic-gradient(
     from 90deg,
-    rgba(37,99,235,0) 0%,
-    rgba(37,99,235,0.35) 15%,
-    rgba(14,165,233,0.35) 35%,
-    rgba(56,189,248,0.35) 55%,
-    rgba(37,99,235,0) 80%
+    rgba(95,196,182,0) 0%,
+    rgba(95,196,182,0.35) 15%,
+    rgba(125,211,199,0.35) 35%,
+    rgba(184,223,217,0.35) 55%,
+    rgba(95,196,182,0) 80%
   );
   filter: blur(12px);
   opacity: 0;
@@ -274,7 +272,7 @@
 
 @media (max-width: 900px) {
   .recon-hero-exec {
-    height: auto;
+    min-height: 0;
     padding: 26px 18px;
   }
   .recon-hero-exec-inner {
@@ -290,6 +288,28 @@
     position: static;
     padding: 16px 0 0;
     margin-top: 0;
+  }
+}
+
+/* Cockpit hero — same gradient recipe as .recon-hero-exec, auto height
+   (the marketing hero above is fixed-height for the landing page; the
+   Situation Room needs to grow with its content). */
+.cockpit-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  padding: 32px 34px;
+  background:
+    radial-gradient(circle at top right, rgba(95, 196, 182, 0.1), transparent 45%),
+    radial-gradient(circle at top left, rgba(125, 211, 199, 0.08), transparent 50%),
+    linear-gradient(180deg, #ffffff 0%, #f8fcfc 100%);
+  border: 1px solid var(--border-color, #D9ECE9);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.06);
+}
+
+@media (max-width: 900px) {
+  .cockpit-hero {
+    padding: 22px 18px;
   }
 }
 
