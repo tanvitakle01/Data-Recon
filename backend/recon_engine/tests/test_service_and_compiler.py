@@ -227,7 +227,7 @@ def test_run_reconciliation_excludes_unmapped_material_and_plant():
     across repeated runs of the same approved contract + snapshots."""
     source_df = pd.DataFrame({
         "Material": ["MAT-A", "MAT-B", "MAT-A"],
-        "Plant": ["PL01", "PL01", "PL99"],
+        "ProductionPlant": ["PL01", "PL01", "PL99"],
         "Qty": [10, 20, 30],
     })
     target_df = pd.DataFrame({"PRDID": ["MAT-A"], "LOCID": ["PL01"], "QTY": [10]})
@@ -250,7 +250,7 @@ def test_run_reconciliation_excludes_unmapped_material_and_plant():
         ],
     )
     location_vm = ValueMapping(
-        source_field="Plant",
+        source_field="ProductionPlant",
         target_field="LOCID",
         matches=[
             ValueMatch(
@@ -267,24 +267,24 @@ def test_run_reconciliation_excludes_unmapped_material_and_plant():
     draft, _ = service.compile_draft(
         mapping_sheet=[
             {"source_col": "Material", "target_col": "PRDID", "role": "key"},
-            {"source_col": "Plant", "target_col": "LOCID", "role": "key"},
+            {"source_col": "ProductionPlant", "target_col": "LOCID", "role": "key"},
             {"source_col": "Qty", "target_col": "QTY", "role": "compare"},
         ],
         rules="",
         business_key=[
             {"source_field": "Material", "target_field": "PRDID"},
-            {"source_field": "Plant", "target_field": "LOCID"},
+            {"source_field": "ProductionPlant", "target_field": "LOCID"},
         ],
         compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
         value_mappings=[product_vm.model_dump(), location_vm.model_dump()],
-        source_schema=["Material", "Plant", "Qty"],
+        source_schema=["Material", "ProductionPlant", "Qty"],
         target_schema=["PRDID", "LOCID", "QTY"],
         comparison_type="custom", source_type="s4", target_type="ibp",
         compiler=StubContractCompiler(),
     )
 
     report = service.validate_draft(
-        draft, source_columns=["Material", "Plant", "Qty"], target_columns=["PRDID", "LOCID", "QTY"],
+        draft, source_columns=["Material", "ProductionPlant", "Qty"], target_columns=["PRDID", "LOCID", "QTY"],
         source_sample=source_df, target_sample=target_df,
     )
     assert report["ok"], report

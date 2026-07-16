@@ -3,7 +3,16 @@ import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import { getVisibleSteps } from "../steps/stepConfig";
 
-function StepShell({ stepKey, children, canContinue = true, continueLabel = "Continue" }) {
+function StepShell({
+  stepKey,
+  children,
+  canContinue = true,
+  continueLabel = "Continue",
+  // When true, the footer shows only Back. Used by steps that advance via
+  // their own primary action (e.g. the Mapping step's "Run Reconciliation")
+  // rather than a generic Continue, so there's no second, run-skipping path.
+  hideContinue = false,
+}) {
   const { state, dispatch } = useWizard();
   const navigate = useNavigate();
 
@@ -46,14 +55,16 @@ function StepShell({ stepKey, children, canContinue = true, continueLabel = "Con
         <button type="button" className="wizard-btn wizard-btn--ghost" onClick={handleBack} disabled={!prevStep}>
           Back
         </button>
-        <button
-          type="button"
-          className="wizard-btn wizard-btn--primary"
-          onClick={handleContinue}
-          disabled={!canContinue}
-        >
-          {nextStep ? continueLabel : "Finish"}
-        </button>
+        {!hideContinue && (
+          <button
+            type="button"
+            className="wizard-btn wizard-btn--primary"
+            onClick={handleContinue}
+            disabled={!canContinue}
+          >
+            {nextStep ? continueLabel : "Finish"}
+          </button>
+        )}
       </footer>
     </section>
   );

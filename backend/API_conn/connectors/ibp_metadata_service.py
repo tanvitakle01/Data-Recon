@@ -247,6 +247,7 @@ class IBPMetadataService(SAPConnector):
         parsed = self._parse_metadata()
 
         if entity_name not in parsed.entity_sets:
+            
             raise ValueError(f"Unknown entity set: {entity_name!r}")
 
         type_name = parsed.entity_sets[entity_name]

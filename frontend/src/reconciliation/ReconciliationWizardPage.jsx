@@ -8,7 +8,6 @@ import ConnectorSelectionStep from "./steps/ConnectorSelectionStep";
 import ComparisonTypeStep from "./steps/ComparisonTypeStep";
 import TransformationSpecStep from "./steps/TransformationSpecStep";
 import MappingReviewPage from "./steps/MappingReviewPage";
-import ReviewChangesStep from "./steps/ReviewChangesStep";
 import ReconciliationRunStep from "./steps/ReconciliationRunStep";
 import "./reconciliationWizard.css";
 
@@ -80,14 +79,6 @@ function ReconciliationWizardContent() {
             element={
               <StepRoute stepKey="transformationSpec">
                 <MappingReviewPage />
-              </StepRoute>
-            }
-          />
-          <Route
-            path="review-changes"
-            element={
-              <StepRoute stepKey="reviewChanges">
-                <ReviewChangesStep />
               </StepRoute>
             }
           />

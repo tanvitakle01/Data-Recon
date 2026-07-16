@@ -8,16 +8,17 @@ export const WizardActions = {
   SET_DATASET: "SET_DATASET",
   RESET_ROLE: "RESET_ROLE",
   SET_COMPARISON_TYPE: "SET_COMPARISON_TYPE",
+  SET_MAPPING_MODE: "SET_MAPPING_MODE",
   SET_MAPPING_SHEET: "SET_MAPPING_SHEET",
   SET_PARSED_MAPPING_SHEET: "SET_PARSED_MAPPING_SHEET",
   SET_BUSINESS_RULES: "SET_BUSINESS_RULES",
   SET_AGGREGATION_RULES: "SET_AGGREGATION_RULES",
   SET_TRANSFORMATION_MAPPING: "SET_TRANSFORMATION_MAPPING",
   SET_VALUE_MAPPINGS: "SET_VALUE_MAPPINGS",
-  SET_VALUE_MAPPINGS_APPROVAL: "SET_VALUE_MAPPINGS_APPROVAL",
   SET_DRAFT_CONTRACT: "SET_DRAFT_CONTRACT",
   SET_CONTRACT_VALIDATION: "SET_CONTRACT_VALIDATION",
   SET_APPROVED_CONTRACT: "SET_APPROVED_CONTRACT",
+  SET_DETERMINISTIC_CONTRACT: "SET_DETERMINISTIC_CONTRACT",
   SET_SHADOW_SNAPSHOTS: "SET_SHADOW_SNAPSHOTS",
   SET_SHADOW_PREVIEW: "SET_SHADOW_PREVIEW",
   SET_SHADOW_APPROVAL: "SET_SHADOW_APPROVAL",
@@ -43,6 +44,12 @@ function createInitialRoleState() {
 
 function createInitialTransformationSpec() {
   return {
+    // Which mapping flow the user chose on the Mapping step: "manual" |
+    // "deterministic" | null (not yet chosen). Each flow keeps its own
+    // derived state (Manual → contract/shadow; Deterministic →
+    // valueMappings/deterministicContract), so switching between them never
+    // discards the other flow's progress.
+    mappingMode: null,
     mappingSheet: null, // { name, size, file } — optional uploaded mapping sheet
     parsedMappingSheet: null, // /api/recon/mapping-sheet/parse response (structured rows)
     // Structured Business Rules Builder output — replaces the old free-text
@@ -57,10 +64,14 @@ function createInitialTransformationSpec() {
     // Deterministic value-level mapping (Material->PRDID, ProductionPlant->LOCID)
     // from /api/recon/value-mapping/run, reviewed on the Mapping Review page.
     valueMappings: null, // { product: ValueMapping, location: ValueMapping } | null
-    valueMappingsApproved: false, // gates whether generateContract() sends value_mappings
     draftContract: null, // DraftContract JSON from /api/recon/contracts/compile
     validation: null, // { ok, gate1, gate2 } from /api/recon/contracts/validate
-    contract: null, // approved TransformationContract from /api/recon/contracts/approve
+    contract: null, // approved TransformationContract (Manual flow) from /api/recon/contracts/approve
+    // Deterministic flow's auto-assembled, zero-operation contract (business
+    // key + compare fields + VERY_HIGH/HIGH value mappings), approved at Run
+    // time. Kept separate from `contract` so the two flows never overwrite
+    // each other's approved contract.
+    deterministicContract: null,
     // Review-Changes checkpoint (contract engine). Snapshots are created once
     // here and reused by the run so the reviewed shadow == the reconciled one.
     sourceSnapshotId: null,
@@ -120,9 +131,8 @@ function invalidateDerivedState(state) {
   const prevKey = STEP_KEYS[transformIndex - 1];
   stepStatus.transformationSpec =
     stepStatus[prevKey] === "complete" ? "available" : "locked";
-  // The Review-Changes checkpoint and the run both depend on the (now stale)
-  // contract and snapshots — re-lock them so the user re-reviews fresh data.
-  stepStatus.reviewChanges = "locked";
+  // The run depends on the (now stale) contract and snapshots — re-lock it so
+  // the user re-prepares the mapping against fresh data.
   stepStatus.reconciliation = "locked";
 
   return {
@@ -133,12 +143,14 @@ function invalidateDerivedState(state) {
     // dataset change invalidates the whole compile→validate→approve chain.
     transformationSpec: {
       ...state.transformationSpec,
+      // mappingMode is a UI choice, not derived data — preserved across a
+      // dataset change so the user isn't bounced back to the method chooser.
       mapping: null,
       valueMappings: null,
-      valueMappingsApproved: false,
       draftContract: null,
       validation: null,
       contract: null,
+      deterministicContract: null,
       sourceSnapshotId: null,
       targetSnapshotId: null,
       shadowPreview: null,
@@ -186,6 +198,14 @@ export function wizardReducer(state, action) {
     case WizardActions.SET_COMPARISON_TYPE:
       return { ...state, comparisonType: action.comparisonType };
 
+    case WizardActions.SET_MAPPING_MODE:
+      // Purely records which flow the user is working in. Never clears the
+      // other flow's derived state, so switching back and forth is lossless.
+      return {
+        ...state,
+        transformationSpec: { ...state.transformationSpec, mappingMode: action.mappingMode },
+      };
+
     case WizardActions.SET_MAPPING_SHEET:
       // A new (or removed) mapping sheet invalidates anything derived from the
       // previous one: parsed rows and the compiled/validated/approved contract
@@ -231,34 +251,27 @@ export function wizardReducer(state, action) {
 
     case WizardActions.SET_TRANSFORMATION_MAPPING:
       // A changed field mapping invalidates any deterministic value mapping
-      // run against the previous roles/targets — re-run is required.
+      // run against the previous roles/targets (and the deterministic contract
+      // assembled from it) — re-run is required.
       return {
         ...state,
         transformationSpec: {
           ...state.transformationSpec,
           mapping: action.mapping,
           valueMappings: null,
-          valueMappingsApproved: false,
+          deterministicContract: null,
         },
       };
 
     case WizardActions.SET_VALUE_MAPPINGS:
-      // A fresh run supersedes any previous approval — it must be re-approved.
+      // A fresh deterministic run supersedes any contract assembled from a
+      // prior run — clear it so the next reconciliation rebuilds from these.
       return {
         ...state,
         transformationSpec: {
           ...state.transformationSpec,
           valueMappings: action.valueMappings,
-          valueMappingsApproved: false,
-        },
-      };
-
-    case WizardActions.SET_VALUE_MAPPINGS_APPROVAL:
-      return {
-        ...state,
-        transformationSpec: {
-          ...state.transformationSpec,
-          valueMappingsApproved: action.approved,
+          deterministicContract: null,
         },
       };
 
@@ -267,7 +280,7 @@ export function wizardReducer(state, action) {
       // shadow review derived from it.
       return {
         ...state,
-        stepStatus: { ...state.stepStatus, reviewChanges: "locked", reconciliation: "locked" },
+        stepStatus: { ...state.stepStatus, reconciliation: "locked" },
         transformationSpec: {
           ...state.transformationSpec,
           draftContract: action.draftContract,
@@ -295,6 +308,18 @@ export function wizardReducer(state, action) {
           contract: action.contract,
           shadowPreview: null,
           shadowApproved: null,
+        },
+      };
+
+    case WizardActions.SET_DETERMINISTIC_CONTRACT:
+      // The Deterministic flow's auto-assembled contract. Stored separately
+      // from the Manual `contract` and unlocks the run once it's approved.
+      return {
+        ...state,
+        stepStatus: { ...state.stepStatus, reconciliation: "available" },
+        transformationSpec: {
+          ...state.transformationSpec,
+          deterministicContract: action.contract,
         },
       };
 

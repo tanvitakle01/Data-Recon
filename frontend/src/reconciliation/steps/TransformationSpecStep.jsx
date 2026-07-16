@@ -14,20 +14,43 @@ import {
   missingValueMappingRequirements,
   sampleRows,
 } from "../lib/payload";
+import {
+  createBothSnapshots,
+  generateInsightsForRun,
+  identicalDatasetReason,
+  runContractReconciliation,
+} from "../lib/reconRun";
 import StepShell from "../components/StepShell";
 import MappingEditor from "../components/MappingEditor";
 import BusinessRulesBuilder from "../components/BusinessRulesBuilder";
 import AggregationRulesBuilder from "../components/AggregationRulesBuilder";
 import StatusBadge from "../components/StatusBadge";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
+import ShadowPreviewPanel from "../components/ShadowPreviewPanel";
 
 const DOC_ACCEPT = ".xlsx,.xls,.csv";
+
+// Applied vs excluded distinct-value counts for one field's value mapping.
+// Applied = VERY_HIGH/HIGH (what the executor writes to the shadow); excluded
+// = MEDIUM/NONE/OUT_OF_SCOPE (held out, never reconciled). Powers the
+// Deterministic path's Run Reconciliation confirmation dialog.
+function appliedExcludedCounts(valueMapping) {
+  const matches = valueMapping?.matches ?? [];
+  let applied = 0;
+  let excluded = 0;
+  for (const m of matches) {
+    if (m.confidence === "very_high" || m.confidence === "high") applied += 1;
+    else excluded += 1;
+  }
+  return { applied, excluded };
+}
 
 function TransformationSpecStep() {
   const { state, dispatch } = useWizard();
   const navigate = useNavigate();
   const { source, target, comparisonType, transformationSpec } = state;
   const {
+    mappingMode,
     mappingSheet,
     parsedMappingSheet,
     transformationRules,
@@ -36,12 +59,14 @@ function TransformationSpecStep() {
     aggregationRules,
     mapping,
     valueMappings,
-    valueMappingsApproved,
     draftContract,
     validation,
     contract,
     useScriptTransformations,
   } = transformationSpec;
+
+  const setMappingMode = (mode) =>
+    dispatch({ type: WizardActions.SET_MAPPING_MODE, mappingMode: mode });
 
   const fieldOptions = useMemo(
     () => buildRuleFieldOptions(source, target, parsedMappingSheet),
@@ -70,6 +95,11 @@ function TransformationSpecStep() {
   // when every AI provider was unavailable (spec points 5 & 6).
   const [providerNotice, setProviderNotice] = useState(null);
   const [approveLoading, setApproveLoading] = useState(false);
+  // Deterministic-path Run Reconciliation (compile → approve → run, no shadow
+  // preview). Its own loading/error so it never collides with the Manual-path
+  // contract compile/approve state above.
+  const [detRunning, setDetRunning] = useState(false);
+  const [detRunError, setDetRunError] = useState(null);
   // Contract JSON is hidden by default (progressive disclosure for business users).
   const [showContract, setShowContract] = useState(false);
   const mappingSheetInputRef = useRef(null);
@@ -223,6 +253,108 @@ function TransformationSpecStep() {
     }
   };
 
+  // ── deterministic reconciliation (Flow 1) ─────────────────────────────────
+  // Auto-assembles a zero-operation contract from the confirmed field mapping
+  // (business_key/compare_fields) + the value mappings (the executor applies
+  // only VERY_HIGH/HIGH and holds out the rest), approves it, and runs — with
+  // NO shadow preview. The confirmation dialog is this flow's only human gate.
+  const canRunDeterministicRecon = Boolean(valueMappings) && missingValueMappingReqs.length === 0;
+
+  const runDeterministicReconciliation = async () => {
+    if (!canRunDeterministicRecon) return;
+
+    const p = appliedExcludedCounts(valueMappings?.product);
+    const l = appliedExcludedCounts(valueMappings?.location);
+    const proceed = window.confirm(
+      `${p.applied} materials + ${l.applied} plants will be applied to the shadow source.\n` +
+        `${p.excluded} materials + ${l.excluded} plants are excluded ` +
+        `(MEDIUM / NONE / out-of-scope) and will not be reconciled.\n\n` +
+        `Proceed with reconciliation?`,
+    );
+    if (!proceed) return;
+
+    setDetRunning(true);
+    setDetRunError(null);
+    try {
+      const identical = identicalDatasetReason(source, target);
+      if (identical) {
+        throw new Error(
+          `Source and target must be different datasets — ${identical}. ` +
+            "Re-upload the correct file for one side before reconciling.",
+        );
+      }
+
+      // Same compile payload as the Manual flow, but with no rules/aggregation
+      // (zero Groq operations) and the value mappings always attached — the
+      // confirmation dialog above is the approval.
+      const payload = {
+        mapping_sheet: buildMappingSheetPayload(null, mapping),
+        rules: "",
+        transformation_rules: [],
+        matching_rules: [],
+        filter_rules: [],
+        aggregation_rules: [],
+        business_key: (mapping?.mapping?.key_fields ?? []).map((f) => ({
+          source_field: f.source_col,
+          target_field: f.target_col,
+        })),
+        compare_fields: (mapping?.mapping?.compare_fields ?? []).map((f) => ({
+          source_field: f.source_col,
+          target_field: f.target_col,
+        })),
+        value_mappings: [valueMappings?.product, valueMappings?.location].filter(Boolean),
+        source_schema: source.dataset?.columns ?? [],
+        target_schema: target.dataset?.columns ?? [],
+        comparison_type: comparisonType?.id ?? "custom",
+        source_type: source.kind ?? "excel",
+        target_type: target.kind ?? "excel",
+        actor: "wizard-user",
+      };
+
+      const compileRes = await api.post("/api/recon/contracts/compile", payload);
+      const draft = compileRes.data?.draft;
+      const approveRes = await api.post("/api/recon/contracts/approve", {
+        draft,
+        approved_by: "wizard-user",
+      });
+      const detContract = approveRes.data?.contract;
+      dispatch({ type: WizardActions.SET_DETERMINISTIC_CONTRACT, contract: detContract });
+
+      const { sourceSnapshot, targetSnapshot } = await createBothSnapshots(
+        source,
+        target,
+        comparisonType,
+      );
+      // No expected_shadow_fingerprint — the Deterministic path has no
+      // shadow-approval gate (resolved design).
+      const result = await runContractReconciliation({
+        contract: detContract,
+        sourceSnapshotId: sourceSnapshot.snapshot_id,
+        targetSnapshotId: targetSnapshot.snapshot_id,
+      });
+      dispatch({
+        type: WizardActions.SET_RECONCILIATION_RESULT,
+        result: {
+          ...result,
+          source_snapshot: result.source_snapshot ?? sourceSnapshot,
+          target_snapshot: result.target_snapshot ?? targetSnapshot,
+        },
+      });
+      dispatch({ type: WizardActions.COMPLETE_STEP, step: "transformationSpec" });
+      dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
+      dispatch({ type: WizardActions.GO_TO_STEP, step: "reconciliation" });
+      generateInsightsForRun(result.run_id);
+      navigate("/reconciliation/reconciliation");
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setDetRunError(
+        typeof detail === "string" ? detail : err?.message || "Reconciliation failed.",
+      );
+    } finally {
+      setDetRunning(false);
+    }
+  };
+
   // ── contract lifecycle: compile → validate → approve ──────────────────────
   const validateDraft = useCallback(
     async (draft) => {
@@ -296,11 +428,10 @@ function TransformationSpecStep() {
         source_field: f.source_col,
         target_field: f.target_col,
       })),
-      // Only attached once a human has approved them on the Mapping Review
-      // page — an unapproved run is never silently applied.
-      value_mappings: valueMappingsApproved
-        ? [valueMappings?.product, valueMappings?.location].filter(Boolean)
-        : [],
+      // Manual flow never applies deterministic value mappings — those belong
+      // to the Deterministic flow (runDeterministicReconciliation), which
+      // attaches them on its own separate contract.
+      value_mappings: [],
       source_schema: source.dataset?.columns ?? [],
       target_schema: target.dataset?.columns ?? [],
       comparison_type: comparisonType?.id ?? "custom",
@@ -357,277 +488,396 @@ function TransformationSpecStep() {
     Boolean(source.dataset && target.dataset) &&
     (Boolean(parsedMappingSheet?.rows?.length) || Boolean(mapping?.display?.length));
 
+  // The run happens inline on this page for the Deterministic flow and for the
+  // Manual contract flow (via ShadowPreviewPanel), so the generic Continue is
+  // hidden there — advancement is via "Run Reconciliation". The Manual script
+  // flow still advances to Results via Continue (its inline preview/approval is
+  // TransformationPreviewPanel; the run happens on the Results step).
+  const runsInline =
+    mappingMode === "deterministic" || (mappingMode === "manual" && !useScriptTransformations);
+  const hideContinue = mappingMode === null || runsInline;
+
   return (
-    <StepShell stepKey="transformationSpec" canContinue>
-      {/* Section A — Mapping Sheet */}
-      <section className="wizard-section">
-        <h3 className="wizard-section__title">Mapping Sheet</h3>
-        <p className="wizard-field__help">Optional. .xlsx, .xls, or .csv.</p>
-
-        {/* Hidden input; driven by the buttons below so Replace can re-open it. */}
-        <input
-          ref={mappingSheetInputRef}
-          type="file"
-          accept={DOC_ACCEPT}
-          style={{ display: "none" }}
-          onChange={(e) => handleMappingSheetFile(e.target.files?.[0] ?? null)}
-        />
-
-        <div className="doc-upload">
-          {mappingSheet?.name ? (
-            <div className="doc-upload__file">
-              <span className="doc-upload__badge">✓ {mappingSheet.name}</span>
-              <button
-                type="button"
-                className="wizard-btn wizard-btn--ghost wizard-btn--sm"
-                onClick={() => mappingSheetInputRef.current?.click()}
-              >
-                Replace
-              </button>
-              <button
-                type="button"
-                className="wizard-btn wizard-btn--ghost wizard-btn--sm"
-                onClick={removeMappingSheet}
-              >
-                Remove
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="wizard-btn wizard-btn--ghost"
-              onClick={() => mappingSheetInputRef.current?.click()}
-            >
-              Upload Mapping Sheet
-            </button>
-          )}
-          {parseLoading && <span className="wizard-step__hint">Parsing…</span>}
-          {parsedMappingSheet && (
-            <span className="doc-upload__badge">
-              ✓ {parsedMappingSheet.row_count} rows
-            </span>
-          )}
-          {parseError && <p className="wizard-step__error">⚠️ {parseError}</p>}
-        </div>
-      </section>
-
-      {/* Section B — Rules */}
-      <section className="wizard-section">
-        <h3 className="wizard-section__title">Rules</h3>
-        <p className="wizard-field__help">Configure transformations, matching, filters, and aggregation.</p>
-        <BusinessRulesBuilder
-          fieldOptions={fieldOptions}
-          transformationRules={transformationRules}
-          matchingRules={matchingRules}
-          filterRules={filterRules}
-          onChangeCategory={setRuleCategory}
-        />
-      </section>
-
-      {/* Section B2 — Aggregation */}
-      <section className="wizard-section">
-        <h3 className="wizard-section__title">Aggregation</h3>
-        <p className="wizard-field__help">Group and summarize source data.</p>
-        <AggregationRulesBuilder
-          fieldOptions={sourceFieldOptions}
-          rules={aggregationRules ?? []}
-          onChange={(rules) =>
-            dispatch({ type: WizardActions.SET_AGGREGATION_RULES, rules })
-          }
-        />
-      </section>
-
-      {/* Section C — Mapping */}
-      <section className="wizard-section">
-        <h3 className="wizard-section__title">Mapping</h3>
-        <p className="wizard-field__help">Review source-to-target mappings.</p>
-        <MappingEditor
-          mapping={mapping}
-          targetColumns={targetColumns}
-          loading={mapLoading}
-          error={mapError}
-          onChange={(next) =>
-            dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
-          }
-          onRegenerate={() => {
-            mappedSignatureRef.current = datasetSignature(source, target);
-            runAutomap();
-          }}
-        />
-
-        <div className="contract-actions" style={{ marginTop: 10 }}>
-          <button
-            type="button"
-            className="wizard-btn wizard-btn--ghost"
-            onClick={runValueMapping}
-            disabled={!canRunValueMapping || valueMappingLoading}
-            title={
-              missingValueMappingReqs.length
-                ? "Confirm these field mappings first: " +
-                  missingValueMappingReqs
-                    .map((r) => `${r.source} → ${r.target} (${r.role === "key" ? "Key" : "Compare"})`)
-                    .join("; ")
-                : undefined
-            }
-          >
-            {valueMappingLoading ? "Matching…" : "Run Deterministic Mapping"}
-          </button>
-          {valueMappings && (
-            <button
-              type="button"
-              className="wizard-btn wizard-btn--ghost wizard-btn--sm"
-              onClick={() => navigate("/reconciliation/transformation-spec/mapping-review")}
-            >
-              {valueMappingsApproved ? "✓ View Mapping Review" : "View Mapping Review"}
-            </button>
-          )}
-        </div>
-        {valueMappingError && <p className="wizard-step__error">⚠️ {valueMappingError}</p>}
-        {valueMappingSuccess && !valueMappingError && (
-          <p className="wizard-step__success">
-            ✓ Deterministic mapping complete. Click "View Mapping Review" to review the results.
+    <StepShell stepKey="transformationSpec" canContinue hideContinue={hideContinue}>
+      {/* Mapping-method chooser (no method picked yet) */}
+      {mappingMode === null && (
+        <section className="wizard-section">
+          <h3 className="wizard-section__title">Choose a mapping method</h3>
+          <p className="wizard-field__help">
+            Pick how the source is aligned to the target. You can switch methods later without losing
+            either one's progress.
           </p>
-        )}
-      </section>
-
-      {/* Section D — Transformation Preview (USE_SCRIPT_TRANSFORMATIONS) or the
-          legacy Transformation Contract flow, decided by the backend feature flag. */}
-      {useScriptTransformations && <TransformationPreviewPanel />}
-      {!useScriptTransformations && (
-      <section className="wizard-section">
-        <h3 className="wizard-section__title">Transformation Rules</h3>
-        <p className="wizard-field__help">Rules used to align source and target data.</p>
-
-        <div className="contract-checklist">
-          <StatusBadge
-            ok={hasMappingSheet ? Boolean(parsedMappingSheet) : null}
-            label={
-              hasMappingSheet
-                ? `Mapping Sheet ${parsedMappingSheet ? "Parsed" : "Uploaded"}`
-                : "Mapping Sheet (optional — field mapping used instead)"
-            }
-          />
-          <StatusBadge ok={draftContract ? true : null} label="Transformation Rules Generated" />
-          <StatusBadge ok={gate1 ? gate1.ok : null} label="Structure Check" />
-          <StatusBadge ok={gate2 ? gate2.ok : null} label="Sample Validation" />
-          <StatusBadge
-            ok={contract ? true : null}
-            label={contract ? `Approved — Rules v${contract.contract_version}` : "Approved"}
-          />
-        </div>
-
-        <div className="contract-actions">
-          <button
-            type="button"
-            className="wizard-btn wizard-btn--primary"
-            onClick={generateContract}
-            disabled={!canGenerate || compileLoading}
-          >
-            {compileLoading
-              ? "Generating…"
-              : draftContract
-                ? "Regenerate Transformation Rules"
-                : "Generate Transformation Rules"}
-          </button>
-          <button
-            type="button"
-            className="wizard-btn wizard-btn--primary"
-            onClick={approveContract}
-            disabled={!draftContract || !validation?.ok || Boolean(contract) || approveLoading}
-          >
-            {approveLoading
-              ? "Approving…"
-              : contract
-                ? "Transformation Rules Approved"
-                : "Approve Transformation Rules"}
-          </button>
-        </div>
-
-        {contractError && <p className="wizard-step__error">⚠️ {contractError}</p>}
-
-        {providerNotice && (
-          <p className="wizard-step__hint">ℹ️ {providerNotice}</p>
-        )}
-
-        {validation && !validation.ok && (
-          <div className="contract-gate-errors">
-            {(gate1?.errors ?? []).map((msg, i) => (
-              <p key={`g1-${i}`} className="wizard-step__error">
-                Structure Check: {msg}
-              </p>
-            ))}
-            {(gate2?.errors ?? []).map((msg, i) => (
-              <p key={`g2-${i}`} className="wizard-step__error">
-                Sample Validation: {msg}
-              </p>
-            ))}
+          <div className="wizard-option-grid">
+            <button
+              type="button"
+              className="wizard-option-card"
+              onClick={() => setMappingMode("manual")}
+            >
+              <span className="wizard-option-card__label">Manual Mapping</span>
+              <span className="wizard-option-card__meta">
+                Mapping sheet · rules · transformations · reviewed shadow preview
+              </span>
+            </button>
+            <button
+              type="button"
+              className="wizard-option-card"
+              onClick={() => setMappingMode("deterministic")}
+            >
+              <span className="wizard-option-card__label">Deterministic Mapping</span>
+              <span className="wizard-option-card__meta">
+                Tiered value matching · VERY_HIGH/HIGH applied · no transformation rules
+              </span>
+            </button>
           </div>
-        )}
-        {(gate1?.info ?? []).length > 0 && (
-          <div className="contract-gate-info">
-            {gate1.info.map((msg, i) => (
-              <p key={`g1i-${i}`} className="wizard-step__hint">
-                ✓ {msg}
-              </p>
-            ))}
-          </div>
-        )}
-        {validation?.ok && (gate2?.warnings ?? []).length > 0 && (
-          <div className="contract-gate-errors">
-            {gate2.warnings.map((msg, i) => (
-              <p key={`g2w-${i}`} className="wizard-step__hint">
-                Sample Validation warning: {msg}
-              </p>
-            ))}
-          </div>
-        )}
+        </section>
+      )}
 
-        {draftContract && (
-          <>
-            <div className="contract-summary">
-              <span className="contract-summary__chip">
-                Business Keys: {draftContract.business_key?.length ?? 0}
-              </span>
-              <span className="contract-summary__chip">
-                Compare Fields: {draftContract.compare_fields?.length ?? 0}
-              </span>
-              <span className="contract-summary__chip">
-                Operations: {draftContract.operations?.length ?? 0}
-              </span>
-              <span className="contract-summary__chip">
-                Generation Method: {draftContract.compiler ?? "unknown"}
-              </span>
-              <span className="contract-summary__chip">
-                Rules Version: {contract ? `v${contract.contract_version}` : "draft"}
-              </span>
-            </div>
+      {mappingMode !== null && (
+        <button type="button" className="wizard-link" onClick={() => setMappingMode(null)}>
+          ← Change mapping method
+        </button>
+      )}
 
-            {/* Progressive disclosure: technical JSON hidden until requested. */}
-            <div className="contract-json-wrap">
+      {/* ── Flow 1: Deterministic Mapping ──────────────────────────────────
+          Field mapping + Run Deterministic Mapping + View Mapping Review +
+          Run Reconciliation only. No mapping sheet, rules, transformations,
+          aggregation, or transformation-rules approval block. */}
+      {mappingMode === "deterministic" && (
+        <>
+          <section className="wizard-section">
+            <h3 className="wizard-section__title">Field Mapping</h3>
+            <p className="wizard-field__help">
+              Confirm the source-to-target field mapping used for deterministic matching (Location →
+              LOCID, Product → PRDID, Period → PERIODID0_TSTAMP as Key; Quantity → SALESORDERREQUEST
+              as Compare).
+            </p>
+            <MappingEditor
+              mapping={mapping}
+              targetColumns={targetColumns}
+              loading={mapLoading}
+              error={mapError}
+              onChange={(next) =>
+                dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
+              }
+              onRegenerate={() => {
+                mappedSignatureRef.current = datasetSignature(source, target);
+                runAutomap();
+              }}
+            />
+
+            <div className="contract-actions" style={{ marginTop: 10 }}>
               <button
                 type="button"
-                className="wizard-btn wizard-btn--ghost wizard-btn--sm"
-                onClick={() => setShowContract((v) => !v)}
-                aria-expanded={showContract}
+                className="wizard-btn wizard-btn--ghost"
+                onClick={runValueMapping}
+                disabled={!canRunValueMapping || valueMappingLoading}
+                title={
+                  missingValueMappingReqs.length
+                    ? "Confirm these field mappings first: " +
+                      missingValueMappingReqs
+                        .map((r) => `${r.source} → ${r.target} (${r.role === "key" ? "Key" : "Compare"})`)
+                        .join("; ")
+                    : undefined
+                }
               >
-                {showContract ? "Hide Transformation Rules" : "View Transformation Rules"}
+                {valueMappingLoading ? "Matching…" : "Run Deterministic Mapping"}
               </button>
-              {showContract && (
-                <pre className="contract-json">
-                  {JSON.stringify(contract ?? draftContract, null, 2)}
-                </pre>
+              {valueMappings && (
+                <button
+                  type="button"
+                  className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                  onClick={() => navigate("/reconciliation/transformation-spec/mapping-review")}
+                >
+                  View Mapping Review
+                </button>
               )}
             </div>
-          </>
-        )}
+            {valueMappingError && <p className="wizard-step__error">⚠️ {valueMappingError}</p>}
+            {valueMappingSuccess && !valueMappingError && (
+              <p className="wizard-step__success">
+                ✓ Deterministic mapping complete. Open "View Mapping Review" to inspect the tiers, or
+                run reconciliation below.
+              </p>
+            )}
+          </section>
 
-        {!draftContract && (
-          <p className="wizard-field__help">
-            Generate transformation rules to review the keys, compare fields, and steps used to
-            align your data.
-          </p>
-        )}
-      </section>
+          <section className="wizard-section">
+            <h3 className="wizard-section__title">Reconciliation</h3>
+            <p className="wizard-field__help">
+              Applies the VERY_HIGH/HIGH value mappings and reconciles immediately.
+              MEDIUM/NONE/out-of-scope values are excluded. There is no separate preview — Run
+              Reconciliation shows the counts to confirm, then runs.
+            </p>
+            <div className="contract-actions">
+              <button
+                type="button"
+                className="wizard-btn wizard-btn--primary wizard-btn--lg"
+                onClick={runDeterministicReconciliation}
+                disabled={!canRunDeterministicRecon || detRunning}
+                title={
+                  !valueMappings
+                    ? "Run Deterministic Mapping first."
+                    : missingValueMappingReqs.length
+                      ? "Confirm the required field mappings first."
+                      : undefined
+                }
+              >
+                {detRunning ? "Reconciling…" : "Run Reconciliation"}
+              </button>
+            </div>
+            {!valueMappings && (
+              <p className="wizard-field__help">
+                Run Deterministic Mapping first to enable reconciliation.
+              </p>
+            )}
+            {detRunError && <p className="wizard-step__error">⚠️ {detRunError}</p>}
+          </section>
+        </>
+      )}
+
+      {/* ── Flow 2: Manual Mapping ─────────────────────────────────────────
+          The existing Rules-page content, unchanged, plus the relocated inline
+          Transformation Preview (shadow diff + Approve Shadow + inline Run) for
+          the contract engine. */}
+      {mappingMode === "manual" && (
+        <>
+          {/* Section A — Mapping Sheet */}
+          <section className="wizard-section">
+            <h3 className="wizard-section__title">Mapping Sheet</h3>
+            <p className="wizard-field__help">Optional. .xlsx, .xls, or .csv.</p>
+
+            {/* Hidden input; driven by the buttons below so Replace can re-open it. */}
+            <input
+              ref={mappingSheetInputRef}
+              type="file"
+              accept={DOC_ACCEPT}
+              style={{ display: "none" }}
+              onChange={(e) => handleMappingSheetFile(e.target.files?.[0] ?? null)}
+            />
+
+            <div className="doc-upload">
+              {mappingSheet?.name ? (
+                <div className="doc-upload__file">
+                  <span className="doc-upload__badge">✓ {mappingSheet.name}</span>
+                  <button
+                    type="button"
+                    className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                    onClick={() => mappingSheetInputRef.current?.click()}
+                  >
+                    Replace
+                  </button>
+                  <button
+                    type="button"
+                    className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                    onClick={removeMappingSheet}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="wizard-btn wizard-btn--ghost"
+                  onClick={() => mappingSheetInputRef.current?.click()}
+                >
+                  Upload Mapping Sheet
+                </button>
+              )}
+              {parseLoading && <span className="wizard-step__hint">Parsing…</span>}
+              {parsedMappingSheet && (
+                <span className="doc-upload__badge">✓ {parsedMappingSheet.row_count} rows</span>
+              )}
+              {parseError && <p className="wizard-step__error">⚠️ {parseError}</p>}
+            </div>
+          </section>
+
+          {/* Section B — Rules */}
+          <section className="wizard-section">
+            <h3 className="wizard-section__title">Rules</h3>
+            <p className="wizard-field__help">
+              Configure transformations, matching, filters, and aggregation.
+            </p>
+            <BusinessRulesBuilder
+              fieldOptions={fieldOptions}
+              transformationRules={transformationRules}
+              matchingRules={matchingRules}
+              filterRules={filterRules}
+              onChangeCategory={setRuleCategory}
+            />
+          </section>
+
+          {/* Section B2 — Aggregation */}
+          <section className="wizard-section">
+            <h3 className="wizard-section__title">Aggregation</h3>
+            <p className="wizard-field__help">Group and summarize source data.</p>
+            <AggregationRulesBuilder
+              fieldOptions={sourceFieldOptions}
+              rules={aggregationRules ?? []}
+              onChange={(rules) => dispatch({ type: WizardActions.SET_AGGREGATION_RULES, rules })}
+            />
+          </section>
+
+          {/* Section C — Mapping */}
+          <section className="wizard-section">
+            <h3 className="wizard-section__title">Mapping</h3>
+            <p className="wizard-field__help">Review source-to-target mappings.</p>
+            <MappingEditor
+              mapping={mapping}
+              targetColumns={targetColumns}
+              loading={mapLoading}
+              error={mapError}
+              onChange={(next) =>
+                dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
+              }
+              onRegenerate={() => {
+                mappedSignatureRef.current = datasetSignature(source, target);
+                runAutomap();
+              }}
+            />
+          </section>
+
+          {/* Section D — Transformation Preview (USE_SCRIPT_TRANSFORMATIONS) or the
+              contract flow, decided by the backend feature flag. */}
+          {useScriptTransformations && <TransformationPreviewPanel />}
+          {!useScriptTransformations && (
+            <section className="wizard-section">
+              <h3 className="wizard-section__title">Transformation Rules</h3>
+              <p className="wizard-field__help">Rules used to align source and target data.</p>
+
+              <div className="contract-checklist">
+                <StatusBadge
+                  ok={hasMappingSheet ? Boolean(parsedMappingSheet) : null}
+                  label={
+                    hasMappingSheet
+                      ? `Mapping Sheet ${parsedMappingSheet ? "Parsed" : "Uploaded"}`
+                      : "Mapping Sheet (optional — field mapping used instead)"
+                  }
+                />
+                <StatusBadge ok={draftContract ? true : null} label="Transformation Rules Generated" />
+                <StatusBadge ok={gate1 ? gate1.ok : null} label="Structure Check" />
+                <StatusBadge ok={gate2 ? gate2.ok : null} label="Sample Validation" />
+                <StatusBadge
+                  ok={contract ? true : null}
+                  label={contract ? `Approved — Rules v${contract.contract_version}` : "Approved"}
+                />
+              </div>
+
+              <div className="contract-actions">
+                <button
+                  type="button"
+                  className="wizard-btn wizard-btn--primary"
+                  onClick={generateContract}
+                  disabled={!canGenerate || compileLoading}
+                >
+                  {compileLoading
+                    ? "Generating…"
+                    : draftContract
+                      ? "Regenerate Transformation Rules"
+                      : "Generate Transformation Rules"}
+                </button>
+                <button
+                  type="button"
+                  className="wizard-btn wizard-btn--primary"
+                  onClick={approveContract}
+                  disabled={!draftContract || !validation?.ok || Boolean(contract) || approveLoading}
+                >
+                  {approveLoading
+                    ? "Approving…"
+                    : contract
+                      ? "Transformation Rules Approved"
+                      : "Approve Transformation Rules"}
+                </button>
+              </div>
+
+              {contractError && <p className="wizard-step__error">⚠️ {contractError}</p>}
+
+              {providerNotice && <p className="wizard-step__hint">ℹ️ {providerNotice}</p>}
+
+              {validation && !validation.ok && (
+                <div className="contract-gate-errors">
+                  {(gate1?.errors ?? []).map((msg, i) => (
+                    <p key={`g1-${i}`} className="wizard-step__error">
+                      Structure Check: {msg}
+                    </p>
+                  ))}
+                  {(gate2?.errors ?? []).map((msg, i) => (
+                    <p key={`g2-${i}`} className="wizard-step__error">
+                      Sample Validation: {msg}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {(gate1?.info ?? []).length > 0 && (
+                <div className="contract-gate-info">
+                  {gate1.info.map((msg, i) => (
+                    <p key={`g1i-${i}`} className="wizard-step__hint">
+                      ✓ {msg}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {validation?.ok && (gate2?.warnings ?? []).length > 0 && (
+                <div className="contract-gate-errors">
+                  {gate2.warnings.map((msg, i) => (
+                    <p key={`g2w-${i}`} className="wizard-step__hint">
+                      Sample Validation warning: {msg}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {draftContract && (
+                <>
+                  <div className="contract-summary">
+                    <span className="contract-summary__chip">
+                      Business Keys: {draftContract.business_key?.length ?? 0}
+                    </span>
+                    <span className="contract-summary__chip">
+                      Compare Fields: {draftContract.compare_fields?.length ?? 0}
+                    </span>
+                    <span className="contract-summary__chip">
+                      Operations: {draftContract.operations?.length ?? 0}
+                    </span>
+                    <span className="contract-summary__chip">
+                      Generation Method: {draftContract.compiler ?? "unknown"}
+                    </span>
+                    <span className="contract-summary__chip">
+                      Rules Version: {contract ? `v${contract.contract_version}` : "draft"}
+                    </span>
+                  </div>
+
+                  {/* Progressive disclosure: technical JSON hidden until requested. */}
+                  <div className="contract-json-wrap">
+                    <button
+                      type="button"
+                      className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                      onClick={() => setShowContract((v) => !v)}
+                      aria-expanded={showContract}
+                    >
+                      {showContract ? "Hide Transformation Rules" : "View Transformation Rules"}
+                    </button>
+                    {showContract && (
+                      <pre className="contract-json">
+                        {JSON.stringify(contract ?? draftContract, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {!draftContract && (
+                <p className="wizard-field__help">
+                  Generate transformation rules to review the keys, compare fields, and steps used to
+                  align your data.
+                </p>
+              )}
+            </section>
+          )}
+
+          {/* Relocated inline shadow preview + approval + Run (contract engine
+              only). Renders nothing until the contract is approved. */}
+          {!useScriptTransformations && <ShadowPreviewPanel />}
+        </>
       )}
     </StepShell>
   );

@@ -36,7 +36,13 @@ function keysFromMapping(mapping) {
 function ReconciliationRunStep() {
   const { state, dispatch } = useWizard();
   const { source, target, comparisonType, transformationSpec, reconciliation } = state;
-  const approvedContract = transformationSpec.contract;
+  // The active contract depends on the mapping flow: Manual uses the approved
+  // `contract` (with a shadow fingerprint to verify); Deterministic uses its
+  // own auto-assembled `deterministicContract` and has no shadow-approval gate.
+  const isDeterministic = transformationSpec.mappingMode === "deterministic";
+  const approvedContract = isDeterministic
+    ? transformationSpec.deterministicContract
+    : transformationSpec.contract;
   const scriptApproval = transformationSpec.scriptApproval;
 
   const [loading, setLoading] = useState(false);
@@ -92,7 +98,11 @@ function ReconciliationRunStep() {
       contract: approvedContract,
       sourceSnapshotId: srcId,
       targetSnapshotId: tgtId,
-      expectedShadowFingerprint: transformationSpec.shadowApproved ?? null,
+      // Deterministic runs have no reviewed shadow to pin; Manual runs verify
+      // the fingerprint the user approved in the inline Transformation Preview.
+      expectedShadowFingerprint: isDeterministic
+        ? null
+        : transformationSpec.shadowApproved ?? null,
     });
 
     dispatch({

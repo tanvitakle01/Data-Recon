@@ -1,11 +1,12 @@
-// Mapping Review — reached from Step 4's "Run Deterministic Mapping" button.
-// NOT one of the wizard's 6 numbered steps: it never touches state.step, so
-// the stepper keeps showing Step 4 "Rules" as current throughout. Read/review
-// only — no inline editing or manual override (future scope).
+// Mapping Review — reached from the Mapping step's "View Mapping Review"
+// button on the Deterministic flow. NOT one of the 5 numbered wizard steps: it
+// never touches state.step, so the stepper keeps showing Step 4 "Mapping" as
+// current throughout. Read/review only — view-only, with no approval or
+// override action (the Deterministic path's Run Reconciliation confirmation is
+// the human gate, not this page).
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWizard } from "../context/useWizard";
-import { WizardActions } from "../context/wizardReducer";
 
 const TIER_LABEL = {
   very_high: "VERY_HIGH",
@@ -151,46 +152,44 @@ function FieldMappingSection({ title, mapping }) {
 }
 
 function MappingReviewPage() {
-  const { state, dispatch } = useWizard();
+  const { state } = useWizard();
   const navigate = useNavigate();
-  const { valueMappings, valueMappingsApproved } = state.transformationSpec;
+  const { valueMappings } = state.transformationSpec;
 
-  const backToRules = () => navigate("/reconciliation/transformation-spec");
+  const backToMapping = () => navigate("/reconciliation/transformation-spec");
 
   if (!valueMappings) {
     return (
       <section className="wizard-step">
         <header className="wizard-step__header">
-          <p className="wizard-step__eyebrow">Rules — Mapping Review</p>
+          <p className="wizard-step__eyebrow">Mapping — Mapping Review</p>
           <h2 className="wizard-step__title">Mapping Review</h2>
-          <p className="wizard-step__desc">Run Deterministic Mapping on the Rules step first.</p>
+          <p className="wizard-step__desc">Run Deterministic Mapping on the Mapping step first.</p>
         </header>
         <div className="wizard-step__body">
           <p className="wizard-field__help">
-            No deterministic value mapping has been run yet. Go back to the Rules step and click
+            No deterministic value mapping has been run yet. Go back to the Mapping step and click
             "Run Deterministic Mapping" once the required field mappings are confirmed.
           </p>
         </div>
         <footer className="wizard-step__footer">
-          <button type="button" className="wizard-btn wizard-btn--ghost" onClick={backToRules}>
-            Back to Rules
+          <button type="button" className="wizard-btn wizard-btn--ghost" onClick={backToMapping}>
+            Back to Mapping
           </button>
         </footer>
       </section>
     );
   }
 
-  const approveAndContinue = () => {
-    dispatch({ type: WizardActions.SET_VALUE_MAPPINGS_APPROVAL, approved: true });
-    navigate("/reconciliation/transformation-spec");
-  };
-
   return (
     <section className="wizard-step">
       <header className="wizard-step__header">
-        <p className="wizard-step__eyebrow">Rules — Mapping Review</p>
+        <p className="wizard-step__eyebrow">Mapping — Mapping Review</p>
         <h2 className="wizard-step__title">Mapping Review</h2>
-        
+        <p className="wizard-step__desc">
+          Review the deterministic value-mapping results by confidence tier. This view is read-only;
+          run reconciliation from the Mapping step when you're ready.
+        </p>
       </header>
 
       <div className="wizard-step__body">
@@ -199,11 +198,8 @@ function MappingReviewPage() {
       </div>
 
       <footer className="wizard-step__footer">
-        <button type="button" className="wizard-btn wizard-btn--ghost" onClick={backToRules}>
-          Back to Rules
-        </button>
-        <button type="button" className="wizard-btn wizard-btn--primary" onClick={approveAndContinue}>
-          {valueMappingsApproved ? "✓ Approved — Continue" : "Approve & Continue"}
+        <button type="button" className="wizard-btn wizard-btn--ghost" onClick={backToMapping}>
+          Back to Mapping
         </button>
       </footer>
     </section>
