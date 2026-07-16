@@ -1,25 +1,32 @@
 """Deterministic placeholder contract compiler.
 
-This is NOT the LLM. It builds a minimal, valid draft contract straight from
-the mapping sheet using fixed rules, so the full lifecycle
-(compile -> validate -> approve -> reconcile) is runnable and testable while the
-Groq compile phase remains scaffolding. It emits only contract JSON — the same
-data shape the LLM will eventually produce — so nothing downstream cares which
-compiler was used.
+This is NOT the LLM. It compiles the mapping sheet's per-row transformation
+text and the structured ``transformation_rules`` into ``operations`` using
+fixed, unambiguous pattern rules, so the full lifecycle
+(compile -> validate -> approve -> reconcile) is runnable and testable when
+Groq is unconfigured or degrades. It emits only contract JSON — the same data
+shape Groq produces — so nothing downstream cares which compiler was used.
+
+Like ``GroqContractCompiler``, this compiler NEVER decides ``business_key``,
+``compare_fields``, or ``value_mappings`` — those always come back empty here.
+Field mapping is human-owned (the Rules step's confirmed dropdown selection)
+and identifier value mapping is the deterministic matching engine's job (see
+``recon_engine.matching``); ``service.compile_draft`` sets all three fields
+onto the draft afterward. ``matching_rules`` and ``filter_rules`` are likewise
+left for Groq's semantic reading — this offline stub preserves them verbatim
+in ``notes`` rather than guessing at compare/filter semantics.
 
 Mapping-sheet row contract (flexible keys accepted):
-    {"source_col": <str>, "target_col": <str>, "role": "key"|"compare"|...}
-Roles containing "compare"/"quantity"/"measure" become compare fields; all
-other mapped rows become business-key components. Real parsed mapping sheets
-(``mapping_sheet_parser.parse_mapping_sheet``) never populate "role" — for
-those, the same hints are matched against the row's technical field,
-description and target label instead (see ``_is_compare_row``).
+    {"source_col": <str>, "target_col": <str>, "transformation": <str>, ...}
+Only a row's "transformation" text (if any) is used here, compiled via
+``_compile_directives`` — "role" is no longer read (field mapping is not this
+compiler's job).
 
 The mapping sheet may also arrive as the full parsed-worksheet payload from
 ``mapping_sheet_parser.parse_mapping_sheet``; in that case the inferred
 ``mapping_candidates`` (falling back to raw ``rows``) are used as the rows,
 and each row's "technical_field" is preferred when resolving against the real
-schemas — see ``_resolve_field``.
+source schema — see ``_resolve_field``.
 """
 
 from __future__ import annotations
@@ -28,16 +35,8 @@ import re
 from typing import Any
 
 from backend.recon_engine.compiler.base import ContractCompiler, ContractCompilerError
-from backend.recon_engine.models.contract import (
-    BusinessKeyField,
-    CompareField,
-    ContractOperation,
-    DraftContract,
-    MatchType,
-)
+from backend.recon_engine.models.contract import ContractOperation, DraftContract
 from backend.recon_engine.models.rules import BusinessRules, normalize_business_rules
-
-_COMPARE_ROLE_HINTS = ("compare", "quantity", "qty", "measure", "value", "amount")
 
 # Normalised condition labels for the conditional_* operations.
 _COND_MAP = {
@@ -162,29 +161,6 @@ def _sheet_rows(mapping_sheet: list[dict[str, Any]] | dict[str, Any]) -> list[di
     return mapping_sheet
 
 
-def _is_compare_row(row: dict[str, Any]) -> bool:
-    """Best-effort key-vs-compare classification.
-
-    The legacy simple template sets an explicit "role"/"logical"/"type" — used
-    first if present. Real enterprise sheets parsed by
-    ``mapping_sheet_parser`` never set that key, so we also scan the row's
-    technical field, description and target label for the same hint words
-    (e.g. a technical field named "ReqDlvQty" or a description mentioning
-    "quantity"). This is a heuristic fallback only — Groq's semantic reading
-    of the full mapping context is the reliable path; this just keeps the
-    offline stub from dumping every field into the business key.
-    """
-    explicit_role = (_get(row, "role", "logical", "type") or "").lower()
-    if explicit_role:
-        return any(hint in explicit_role for hint in _COMPARE_ROLE_HINTS)
-    haystack = " ".join(
-        str(row[k]).lower()
-        for k in ("technical_field", "description", "target_field", "source_field")
-        if row.get(k)
-    )
-    return any(hint in haystack for hint in _COMPARE_ROLE_HINTS)
-
-
 def _resolve_field(primary: str | None, technical: str | None, schema: list[str]) -> str | None:
     """Match a mapping-sheet field reference to an actual schema column.
 
@@ -229,53 +205,30 @@ class StubContractCompiler(ContractCompiler):
             raise ContractCompilerError("Mapping sheet is empty; nothing to compile.")
 
         operations: list[ContractOperation] = []
-        business_key: list[BusinessKeyField] = []
-        compare_fields: list[CompareField] = []
         unresolved: list[str] = []
         note_parts: list[str] = []
 
+        # ── mapping-sheet transformation text -> operations. business_key /
+        # compare_fields are never built here (see module docstring) — only a
+        # row's own "transformation" text is compiled, on its resolved source
+        # field. Unrecognised text is preserved in notes, never guessed.
         for row in rows:
             raw_src = _get(row, "source_col", "source_field", "source")
-            raw_tgt = _get(row, "target_col", "target_field", "target")
             technical = _get(row, "technical_field")
-            if not raw_src and not raw_tgt:
+            if not raw_src:
                 continue
 
-            # Schema-valid names only — never the sheet's raw label/reference.
             src = _resolve_field(raw_src, technical, source_schema)
-            tgt = _resolve_field(raw_tgt, technical, target_schema)
-            if not src or not tgt:
-                unresolved.append(f"{raw_src or '?'} -> {raw_tgt or '?'}")
+            if not src:
+                unresolved.append(raw_src)
                 continue
 
-            if _is_compare_row(row):
-                # Normalise numeric measures on the source side before comparison.
-                operations.append(ContractOperation(op="numeric_cast", field=src))
-                compare_fields.append(
-                    CompareField(source_field=src, target_field=tgt, match_type=MatchType.EXACT)
-                )
-            else:
-                # Normalise key fields deterministically (string + trim).
-                operations.append(ContractOperation(op="identity_cast_string", field=src))
-                operations.append(ContractOperation(op="trim_string", field=src))
-                business_key.append(BusinessKeyField(source_field=src, target_field=tgt))
-
-            # Compile the mapping sheet's own transformation text into executable
-            # operations on this field — the whole point of the redesign is that
-            # such rules never live only in notes. Unrecognised text is preserved.
             transform_text = _get(row, "transformation", "transformation_rule")
             if transform_text:
                 row_ops, leftover = _compile_directives(src, transform_text)
                 operations.extend(row_ops)
                 for seg in leftover:
                     note_parts.append(f"[mapping/{src}] {seg}")
-
-        if not business_key:
-            detail = f" Unresolved rows: {unresolved}." if unresolved else ""
-            raise ContractCompilerError(
-                "Mapping sheet produced no business-key fields resolvable against the "
-                "supplied source/target schemas; at least one key is required." + detail
-            )
 
         # ── user transformation rules -> operations (never notes if compilable) ──
         # Each rule names a field the user recognises; resolve it to a real source
@@ -308,7 +261,8 @@ class StubContractCompiler(ContractCompiler):
         notes_parts.extend(note_parts)
         if unresolved:
             notes_parts.append(
-                "Skipped rows with no schema-matching field: " + "; ".join(unresolved)
+                "Skipped mapping-sheet rows with no schema-matching source field: "
+                + "; ".join(unresolved)
             )
 
         return DraftContract(
@@ -316,8 +270,6 @@ class StubContractCompiler(ContractCompiler):
             source_type=source_type,
             target_type=target_type,
             operations=operations,
-            business_key=business_key,
-            compare_fields=compare_fields,
             source_schema=list(source_schema),
             target_schema=list(target_schema),
             compiler=self.name,

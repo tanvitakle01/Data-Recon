@@ -13,6 +13,8 @@ export const WizardActions = {
   SET_BUSINESS_RULES: "SET_BUSINESS_RULES",
   SET_AGGREGATION_RULES: "SET_AGGREGATION_RULES",
   SET_TRANSFORMATION_MAPPING: "SET_TRANSFORMATION_MAPPING",
+  SET_VALUE_MAPPINGS: "SET_VALUE_MAPPINGS",
+  SET_VALUE_MAPPINGS_APPROVAL: "SET_VALUE_MAPPINGS_APPROVAL",
   SET_DRAFT_CONTRACT: "SET_DRAFT_CONTRACT",
   SET_CONTRACT_VALIDATION: "SET_CONTRACT_VALIDATION",
   SET_APPROVED_CONTRACT: "SET_APPROVED_CONTRACT",
@@ -52,6 +54,10 @@ function createInitialTransformationSpec() {
     // reconciliation.
     aggregationRules: [],
     mapping: null, // { display: [...], mapping: {...} } from /automap, possibly hand-edited
+    // Deterministic value-level mapping (Material->PRDID, ProductionPlant->LOCID)
+    // from /api/recon/value-mapping/run, reviewed on the Mapping Review page.
+    valueMappings: null, // { product: ValueMapping, location: ValueMapping } | null
+    valueMappingsApproved: false, // gates whether generateContract() sends value_mappings
     draftContract: null, // DraftContract JSON from /api/recon/contracts/compile
     validation: null, // { ok, gate1, gate2 } from /api/recon/contracts/validate
     contract: null, // approved TransformationContract from /api/recon/contracts/approve
@@ -128,6 +134,8 @@ function invalidateDerivedState(state) {
     transformationSpec: {
       ...state.transformationSpec,
       mapping: null,
+      valueMappings: null,
+      valueMappingsApproved: false,
       draftContract: null,
       validation: null,
       contract: null,
@@ -222,9 +230,36 @@ export function wizardReducer(state, action) {
       };
 
     case WizardActions.SET_TRANSFORMATION_MAPPING:
+      // A changed field mapping invalidates any deterministic value mapping
+      // run against the previous roles/targets — re-run is required.
       return {
         ...state,
-        transformationSpec: { ...state.transformationSpec, mapping: action.mapping },
+        transformationSpec: {
+          ...state.transformationSpec,
+          mapping: action.mapping,
+          valueMappings: null,
+          valueMappingsApproved: false,
+        },
+      };
+
+    case WizardActions.SET_VALUE_MAPPINGS:
+      // A fresh run supersedes any previous approval — it must be re-approved.
+      return {
+        ...state,
+        transformationSpec: {
+          ...state.transformationSpec,
+          valueMappings: action.valueMappings,
+          valueMappingsApproved: false,
+        },
+      };
+
+    case WizardActions.SET_VALUE_MAPPINGS_APPROVAL:
+      return {
+        ...state,
+        transformationSpec: {
+          ...state.transformationSpec,
+          valueMappingsApproved: action.approved,
+        },
       };
 
     case WizardActions.SET_DRAFT_CONTRACT:

@@ -13,7 +13,8 @@ implementation. No code from the contract is ever executed.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
+from typing import Any
 
 import pandas as pd
 
@@ -22,6 +23,7 @@ from backend.recon_engine.models.contract import (
     AggregationType,
     TransformationContract,
 )
+from backend.recon_engine.models.value_mapping import AUTO_APPLY_CONFIDENCE
 from backend.recon_engine.operations import get_operation
 from backend.recon_engine.operations.registry import OperationKind
 from backend.recon_engine.storage import frames
@@ -66,6 +68,140 @@ def shadow_fingerprint(shadow_df: pd.DataFrame) -> str:
 class ShadowBuildResult:
     shadow_df: pd.DataFrame  # includes LINEAGE_COL
     lineage: list[list[int]]  # per shadow row -> raw source row ids
+    # Rows dropped by the Value Mapping stage (MEDIUM/NONE/OUT_OF_SCOPE value
+    # matches, missing key-field values, or values with no deterministic match
+    # record), aggregated per distinct (field, source_value) — never a silent
+    # drop. Only VERY_HIGH/HIGH matches ever reach the shadow / join.
+    held_out: list[dict[str, Any]] = dc_field(default_factory=list)
+
+
+def _is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and pd.isna(value):
+        return True
+    return str(value).strip() in ("", "None", "nan", "NaT")
+
+
+def _apply_value_mappings(
+    df: pd.DataFrame, contract: TransformationContract
+) -> tuple[pd.DataFrame, pd.Series, list[dict[str, Any]]]:
+    """Apply ``contract.value_mappings`` + business-key completeness to ``df``.
+
+    For every ``business_key`` field:
+      * If it has a matching :class:`~backend.recon_engine.models.value_mapping.ValueMapping`:
+        VERY_HIGH/HIGH matches replace the value in place (the executable
+        transform) and proceed to the join. Every other tier — MEDIUM, NONE,
+        OUT_OF_SCOPE, no match record at all — is held out: the row never
+        reaches the join/compare stage, and is never rejoined on its original,
+        unresolved value (which would silently reintroduce false
+        "Missing in Target" noise). There is no review workflow; a MEDIUM
+        match is simply not confident enough to apply.
+      * Otherwise (no deterministic value mapping for this field — e.g. a date
+        key like ``RequestedDeliveryDate``): only a completeness check runs —
+        null/blank values can't form a business key, so those rows are held
+        out the same way, for the same "never silently drop, never silently
+        keep" reason.
+
+    Returns ``(df, keep_mask, held_out)`` — the caller applies ``keep_mask`` so
+    this function never changes row count itself.
+    """
+    df = df.copy()
+    keep_mask = pd.Series(True, index=df.index)
+    held_out: list[dict[str, Any]] = []
+    value_mapping_by_field = {vm.source_field: vm for vm in contract.value_mappings}
+
+    for bk in contract.business_key:
+        source_field = bk.source_field
+        if source_field not in df.columns:
+            continue
+        col = df[source_field]
+
+        vm = value_mapping_by_field.get(source_field)
+        if vm is None:
+            blank_mask = col.map(_is_blank)
+            if blank_mask.any():
+                held_out.append(
+                    {
+                        "field": source_field,
+                        "target_field": bk.target_field,
+                        "source_value": None,
+                        "confidence": None,
+                        "rule": "key_completeness",
+                        "reason": f"Missing required key field '{source_field}'.",
+                        "row_count": int(blank_mask.sum()),
+                    }
+                )
+            keep_mask &= ~blank_mask
+            continue
+
+        match_by_value = {m.source_value: m for m in vm.matches}
+        hold_reasons: dict[str, dict[str, Any]] = {}
+        hold_mask = pd.Series(False, index=df.index)
+
+        for idx, raw_val in col.items():
+            if _is_blank(raw_val):
+                bucket = hold_reasons.setdefault(
+                    "__null__",
+                    {
+                        "field": source_field,
+                        "target_field": vm.target_field,
+                        "source_value": None,
+                        "confidence": None,
+                        "rule": "key_completeness",
+                        "reason": f"Missing required key field '{source_field}'.",
+                        "row_count": 0,
+                    },
+                )
+                bucket["row_count"] += 1
+                hold_mask.at[idx] = True
+                continue
+
+            key = str(raw_val)
+            m = match_by_value.get(key)
+            if m is None:
+                bucket = hold_reasons.setdefault(
+                    key,
+                    {
+                        "field": source_field,
+                        "target_field": vm.target_field,
+                        "source_value": key,
+                        "confidence": None,
+                        "rule": "unclassified",
+                        "reason": (
+                            f"No deterministic value mapping recorded for {key!r} — "
+                            "run Deterministic Mapping again to classify it."
+                        ),
+                        "row_count": 0,
+                    },
+                )
+                bucket["row_count"] += 1
+                hold_mask.at[idx] = True
+                continue
+
+            if m.confidence in AUTO_APPLY_CONFIDENCE:
+                df.at[idx, source_field] = m.target_value
+            else:  # MEDIUM / NONE / OUT_OF_SCOPE — held out, never rejoined unresolved.
+                bucket = hold_reasons.setdefault(
+                    key,
+                    {
+                        "field": source_field,
+                        "target_field": vm.target_field,
+                        "source_value": key,
+                        "target_value": m.target_value,
+                        "confidence": m.confidence.value,
+                        "rule": m.rule,
+                        "reason": m.evidence,
+                        "row_count": 0,
+                    },
+                )
+                bucket["row_count"] += 1
+                hold_mask.at[idx] = True
+
+        held_out.extend(hold_reasons.values())
+        keep_mask &= ~hold_mask
+
+    return df, keep_mask, held_out
 
 
 def build_shadow_source(
@@ -73,19 +209,29 @@ def build_shadow_source(
 ) -> ShadowBuildResult:
     """Execute the contract to produce the Shadow_Source, in a fixed pipeline:
 
+        0. Value Mapping   (contract.value_mappings + key completeness) —
+           auto-apply confident (VERY_HIGH/HIGH) identifier value maps; hold
+           out everything else (MEDIUM/NONE/OUT_OF_SCOPE, no match record, or
+           a missing key field) so it never reaches the join.
         1. Filters        (FILTER ops)          — drop rows on RAW source values
         2. Transformations (TRANSFORM ops)      — reshape values, in order
         3. Aggregations   (AGGREGATE ops, then ``aggregation_rules``)
 
     Ordering is enforced here rather than trusting the order the compiler emitted
-    operations, so "filter before transform before aggregate" always holds.
-    Relative order within a stage is preserved. Compare ops are ignored here —
-    the reconciler uses them. Raw_Source is never mutated.
+    operations, so "value-map before filter before transform before aggregate"
+    always holds. Relative order within a stage is preserved. Compare ops are
+    ignored here — the reconciler uses them. Raw_Source is never mutated.
     """
     df = raw_source_df.reset_index(drop=True).copy()
     df[POS_COL] = range(len(df))
     # pos value -> list of originating raw row ids
     lineage: dict[int, list[int]] = {i: [i] for i in range(len(df))}
+
+    # ── 0. Value Mapping + key completeness ──
+    held_out: list[dict[str, Any]] = []
+    if contract.business_key:
+        df, keep_mask, held_out = _apply_value_mappings(df, contract)
+        df = df.loc[keep_mask].reset_index(drop=True)
 
     # Bucket ops by stage, preserving relative order within each stage.
     filters, transforms, aggregates = [], [], []
@@ -118,7 +264,7 @@ def build_shadow_source(
 
     final = final.drop(columns=[POS_COL], errors="ignore")
     final[LINEAGE_COL] = [json.dumps(ids) for ids in lineage_rows]
-    return ShadowBuildResult(shadow_df=final, lineage=lineage_rows)
+    return ShadowBuildResult(shadow_df=final, lineage=lineage_rows, held_out=held_out)
 
 
 def _bucket_period(series: pd.Series, agg: AggregationType) -> pd.Series:

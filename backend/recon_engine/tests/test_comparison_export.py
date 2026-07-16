@@ -25,7 +25,10 @@ def _completed_run() -> str:
             {"source_col": "Plant", "target_col": "Plant", "role": "key"},
             {"source_col": "Qty", "target_col": "Qty", "role": "compare"},
         ],
-        rules="", source_schema=["Plant", "Qty"], target_schema=["Plant", "Qty"],
+        rules="",
+        business_key=[{"source_field": "Plant", "target_field": "Plant"}],
+        compare_fields=[{"source_field": "Qty", "target_field": "Qty"}],
+        source_schema=["Plant", "Qty"], target_schema=["Plant", "Qty"],
         comparison_type="c", source_type="excel", target_type="excel",
         compiler=StubContractCompiler(),
     )

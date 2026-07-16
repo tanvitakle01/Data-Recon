@@ -120,7 +120,13 @@ def test_compile_still_accepts_legacy_free_text_rules_only(client):
 
 
 def test_compile_accepts_legacy_row_list(client):
-    res = client.post("/api/recon/contracts/compile", json=_compile_body(LEGACY_ROWS))
+    # business_key is never inferred from mapping_sheet content (that row's
+    # "role": "key" is context only) — it must be supplied explicitly, as the
+    # Rules step's confirmed field mapping does. See
+    # test_compile_field_mapping_wiring.py for that wiring's dedicated coverage.
+    body = _compile_body(LEGACY_ROWS)
+    body["business_key"] = [{"source_field": "MATNR", "target_field": "Product ID"}]
+    res = client.post("/api/recon/contracts/compile", json=body)
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["degraded"] is False
@@ -129,14 +135,16 @@ def test_compile_accepts_legacy_row_list(client):
 
 
 def test_compile_accepts_full_parsed_mapping_sheet_object(client):
-    res = client.post("/api/recon/contracts/compile", json=_compile_body(FULL_PARSED_PAYLOAD))
+    body = _compile_body(FULL_PARSED_PAYLOAD)
+    body["business_key"] = [{"source_field": "MATNR", "target_field": "Product ID"}]
+    res = client.post("/api/recon/contracts/compile", json=body)
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["degraded"] is False
     draft = body["draft"]
-    # Derived from mapping_candidates (not the raw `rows`), proving the whole
-    # parsed object reached the compiler intact rather than being rejected or
-    # flattened into something else beforehand.
+    # The full parsed-sheet object still reaches the compiler intact (as
+    # context) rather than being rejected or flattened; business_key itself
+    # comes from the explicit field above, not from mapping_candidates.
     assert draft["business_key"] == [{"source_field": "MATNR", "target_field": "Product ID"}]
 
 
@@ -256,6 +264,7 @@ def test_compile_accepts_correctly_wrapped_payload_matching_frontend_shape(clien
     payload = {
         "mapping_sheet": FULL_PARSED_PAYLOAD,
         "rules": "",
+        "business_key": [{"source_field": "MATNR", "target_field": "Product ID"}],
         "source_schema": ["MATNR"],
         "target_schema": ["Product ID"],
         "comparison_type": "custom",

@@ -6,6 +6,7 @@ import pandas as pd
 
 from backend.recon_engine.engine import LINEAGE_COL, build_shadow_source, reconcile
 from backend.recon_engine.models.contract import DraftContract, TransformationContract
+from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
 
 
 def _contract(**over) -> TransformationContract:
@@ -59,6 +60,103 @@ def test_executor_aggregate_lineage():
         for k, ids in zip(built.shadow_df["k"], built.shadow_df[LINEAGE_COL])
     }
     assert lineage_map == {"x": [0, 1], "y": [2]}
+
+
+def test_apply_bucket_reaches_join_hold_out_bucket_is_excluded():
+    """VERY_HIGH/HIGH Material+Plant rows reach the join; MEDIUM/NONE ones are
+    held out entirely rather than silently rejoining on their unresolved raw
+    value — so they never get misclassified as missing_in_target."""
+    contract = _contract(
+        operations=[],
+        business_key=[
+            {"source_field": "Material", "target_field": "PRDID"},
+            {"source_field": "Plant", "target_field": "LOCID"},
+        ],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
+        source_schema=["Material", "Plant", "Qty"],
+        target_schema=["PRDID", "LOCID", "QTY"],
+        value_mappings=[
+            ValueMapping(
+                source_field="Material",
+                target_field="PRDID",
+                matches=[
+                    ValueMatch(
+                        source_value="MAT-A", target_value="MAT-A",
+                        confidence=Confidence.VERY_HIGH, rule="t", evidence="e",
+                    ),
+                    ValueMatch(
+                        source_value="MAT-B", target_value=None,
+                        confidence=Confidence.MEDIUM, rule="t", evidence="e",
+                    ),
+                ],
+            ),
+            ValueMapping(
+                source_field="Plant",
+                target_field="LOCID",
+                matches=[
+                    ValueMatch(
+                        source_value="PL01", target_value="PL01",
+                        confidence=Confidence.VERY_HIGH, rule="t", evidence="e",
+                    ),
+                    ValueMatch(
+                        source_value="PL99", target_value=None,
+                        confidence=Confidence.NONE, rule="t", evidence="e",
+                    ),
+                ],
+            ),
+        ],
+    )
+    raw = pd.DataFrame({
+        "Material": ["MAT-A", "MAT-B", "MAT-A"],
+        "Plant": ["PL01", "PL01", "PL99"],
+        "Qty": [10, 20, 30],
+    })
+    built = build_shadow_source(contract, raw)
+
+    # Only the fully APPLY-eligible row (MAT-A/PL01) reaches the shadow.
+    assert built.shadow_df["Material"].tolist() == ["MAT-A"]
+    assert built.shadow_df["Plant"].tolist() == ["PL01"]
+
+    held_out_by_field = {(h["field"], h["source_value"]): h["row_count"] for h in built.held_out}
+    assert held_out_by_field[("Material", "MAT-B")] == 1
+    assert held_out_by_field[("Plant", "PL99")] == 1
+
+    target = pd.DataFrame({"PRDID": ["MAT-A"], "LOCID": ["PL01"], "QTY": [10]})
+    recon = reconcile(contract, built.shadow_df, target)
+    assert recon.summary.match == 1
+    assert recon.summary.missing_in_target == 0  # held-out rows never misclassified
+    assert recon.summary.missing_in_source == 0
+
+
+def test_build_shadow_source_is_deterministic_with_value_mappings():
+    contract = _contract(
+        operations=[],
+        business_key=[{"source_field": "Material", "target_field": "PRDID"}],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
+        source_schema=["Material", "Qty"],
+        target_schema=["PRDID", "QTY"],
+        value_mappings=[
+            ValueMapping(
+                source_field="Material",
+                target_field="PRDID",
+                matches=[
+                    ValueMatch(
+                        source_value="MAT-A", target_value="MAT-A",
+                        confidence=Confidence.VERY_HIGH, rule="t", evidence="e",
+                    ),
+                    ValueMatch(
+                        source_value="MAT-B", target_value=None,
+                        confidence=Confidence.MEDIUM, rule="t", evidence="e",
+                    ),
+                ],
+            ),
+        ],
+    )
+    raw = pd.DataFrame({"Material": ["MAT-A", "MAT-B"], "Qty": [1, 2]})
+    run1 = build_shadow_source(contract, raw)
+    run2 = build_shadow_source(contract, raw)
+    assert run1.shadow_df.drop(columns=[LINEAGE_COL]).equals(run2.shadow_df.drop(columns=[LINEAGE_COL]))
+    assert run1.held_out == run2.held_out
 
 
 def test_reconciler_classifies_all_buckets():

@@ -23,6 +23,7 @@ from backend.recon_engine.models.results import (
 )
 from backend.recon_engine.models.run import ReconciliationRun, RunStatus, ShadowSource
 from backend.recon_engine.models.snapshot import RawLayer, RawSnapshot
+from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
 
 __all__ = [
     "ApprovalStatus",
@@ -30,6 +31,7 @@ __all__ = [
     "AuditEvent",
     "BusinessKeyField",
     "CompareField",
+    "Confidence",
     "ContractOperation",
     "DraftContract",
     "MatchType",
@@ -42,4 +44,6 @@ __all__ = [
     "RunStatus",
     "ShadowSource",
     "TransformationContract",
+    "ValueMapping",
+    "ValueMatch",
 ]

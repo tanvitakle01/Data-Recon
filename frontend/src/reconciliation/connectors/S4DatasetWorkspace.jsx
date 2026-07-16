@@ -7,6 +7,11 @@ import {
   SapConnectedBar,
   SapConnectedSummary,
 } from "./SapConnectionGate";
+import { exportDatasetToCsv } from "../../utils/csvExport";
+import {
+  S4_TRANSFORMATION_DISCOVERY_FIELDS,
+  recommendedFieldsFor,
+} from "../lib/transformationDiscoveryFields";
 import "./ibpWorkspace.css";
 import "./s4Workspace.css";
 
@@ -69,6 +74,11 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   const [entityMeta, setEntityMeta] = useState({}); // entity -> {properties:[{name,type,is_key}], keys:[]}
   const [joins, setJoins] = useState([]); // [{entity, type, keys:[{left,right}]}]
   const [selectedByEntity, setSelectedByEntity] = useState({}); // entity -> [propName]
+  // entity -> Set(propName) auto-checked by a Transformation Discovery rule
+  // (e.g. selecting Material also checks MaterialGroup, ...), tracked
+  // separately so the "Recommended" badge only marks the supporting fields,
+  // not the trigger field itself, and clears once a field is deselected.
+  const [autoSelectedByEntity, setAutoSelectedByEntity] = useState({});
   const [propFilter, setPropFilter] = useState("");
 
   // ---- preview ----
@@ -93,6 +103,11 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
       : null
   );
   const [error, setError] = useState(null);
+
+  // ---- export (full dataset, exactly as received — not the 10-row preview) ----
+  const [importedRows, setImportedRows] = useState(dataset?.rows ?? null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState(null);
 
   const invalidate = () => setImported(false);
 
@@ -186,6 +201,7 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
     setPrimaryEntity(entity);
     setJoins([]);
     setSelectedByEntity({});
+    setAutoSelectedByEntity({});
     setRelationships([]);
     setPreviewRows([]);
     setPreviewCols([]);
@@ -246,6 +262,11 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
       delete next[entity];
       return next;
     });
+    setAutoSelectedByEntity((prev) => {
+      const next = { ...prev };
+      delete next[entity];
+      return next;
+    });
   };
 
   const patchJoin = (entity, patch) => {
@@ -271,14 +292,37 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   };
 
   // ---- column selection ----
+  // Checking a Transformation Discovery trigger field (e.g. Material,
+  // ProductionPlant) also checks its supporting attributes within the same
+  // entity, filtered to whatever actually exists there — missing ones are
+  // skipped silently. The user can still deselect any of them individually.
   const toggleProp = (entity, name) => {
     invalidate();
     setSelectedByEntity((prev) => {
       const cur = prev[entity] || [];
-      return {
-        ...prev,
-        [entity]: cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name],
-      };
+      if (cur.includes(name)) {
+        setAutoSelectedByEntity((autoPrev) => {
+          const curAuto = autoPrev[entity];
+          if (!curAuto?.has(name)) return autoPrev;
+          const nextAuto = new Set(curAuto);
+          nextAuto.delete(name);
+          return { ...autoPrev, [entity]: nextAuto };
+        });
+        return { ...prev, [entity]: cur.filter((n) => n !== name) };
+      }
+
+      const availableNames = (entityMeta[entity]?.properties || []).map((p) => p.name);
+      const recommended = recommendedFieldsFor(S4_TRANSFORMATION_DISCOVERY_FIELDS, name, availableNames);
+      if (recommended.length === 0) return { ...prev, [entity]: [...cur, name] };
+
+      const newlyAdded = recommended.filter((f) => f !== name && !cur.includes(f));
+      if (newlyAdded.length > 0) {
+        setAutoSelectedByEntity((autoPrev) => {
+          const curAuto = autoPrev[entity] || new Set();
+          return { ...autoPrev, [entity]: new Set([...curAuto, ...newlyAdded]) };
+        });
+      }
+      return { ...prev, [entity]: Array.from(new Set([...cur, ...recommended])) };
     });
   };
   const selectGroup = (entity, all) => {
@@ -287,6 +331,7 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
       ...prev,
       [entity]: all ? (entityMeta[entity]?.properties || []).map((p) => p.name) : [],
     }));
+    setAutoSelectedByEntity((prev) => ({ ...prev, [entity]: new Set() }));
   };
 
   const entitiesInPlay = useMemo(
@@ -411,12 +456,39 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
       setImported(true);
       setImportedCount(rows.length);
       setImportedPreview({ columns, rows: rows.slice(0, 10), rowCount: rows.length });
+      setImportedRows(rows);
       setStage("preview");
-      onLoaded?.({ columns, preview: rows.slice(0, 10), rows, rowCount: rows.length });
+      // Fields auto-checked by a Transformation Discovery rule (MDT/recommended
+      // fields), flattened across every entity in play — carried along so
+      // downstream mapping generation can exclude them while they remain
+      // selectable here for tracking/validation.
+      const mdtFields = Array.from(
+        new Set(entitiesInPlay.flatMap((e) => Array.from(autoSelectedByEntity[e] || [])))
+      );
+      onLoaded?.({ columns, preview: rows.slice(0, 10), rows, rowCount: rows.length, mdtFields });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
     } finally {
       setFetching(false);
+    }
+  };
+
+  // ---- download imported dataset as CSV (client-side, no re-fetch) ----
+  const downloadDataset = async () => {
+    if (!importedPreview || !importedRows?.length) return;
+    setDownloadError(null);
+    setDownloading(true);
+    try {
+      await exportDatasetToCsv({
+        sourceSystem: "S4",
+        datasetName: shortName(primaryEntity),
+        columns: importedPreview.columns,
+        rows: importedRows,
+      });
+    } catch (err) {
+      setDownloadError(`Failed to export dataset: ${err?.message || err}`);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -493,7 +565,17 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
               {primaryEntity && <span className="ibpw-badge ibpw-badge--count">{primaryEntity}</span>}
               <span className="ibpw-badge ibpw-badge--accent">{importedPreview.rowCount.toLocaleString()} rows</span>
               <span className="ibpw-badge ibpw-badge--count">{importedPreview.columns.length} cols</span>
+              <button
+                type="button"
+                className="ibpw-btn ibpw-btn--ghost ibpw-btn--header"
+                onClick={downloadDataset}
+                disabled={downloading || fetching || !importedRows?.length}
+              >
+                {downloading && <span className="ibpw-btn__spin" />}
+                {downloading ? "Preparing…" : "Download Data"}
+              </button>
             </header>
+            {downloadError && <p className="ibpw-summary__error">⚠️ {downloadError}</p>}
             <div className="ibpw-grid-wrap">
               <table className="ibpw-grid">
                 <colgroup>
@@ -799,6 +881,14 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
                                 <span className="ibpw-field__name">{p.name}</span>
                                 <span className="ibpw-field__meta">
                                   {p.is_key && <span className="ibpw-badge ibpw-badge--kf">KEY</span>}
+                                  {autoSelectedByEntity[entity]?.has(p.name) && (
+                                    <span
+                                      className="ibpw-badge ibpw-badge--accent"
+                                      title="Recommended for Transformation Discovery"
+                                    >
+                                      Recommended
+                                    </span>
+                                  )}
                                   <span className="ibpw-type">{String(p.type || "").replace(/^Edm\./, "")}</span>
                                 </span>
                               </span>

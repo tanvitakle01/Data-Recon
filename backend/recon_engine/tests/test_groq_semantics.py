@@ -24,7 +24,6 @@ from backend.recon_engine import service
 from backend.recon_engine.compiler.base import ContractCompilerError
 from backend.recon_engine.compiler.groq_compiler import GroqContractCompiler
 from backend.recon_engine.models.contract import ContractBody, DraftContract
-from backend.recon_engine.validation import validate_structural
 
 MAPPING_SHEET = [
     {"source_col": "id", "target_col": "id", "role": "key"},
@@ -169,7 +168,7 @@ def test_groq_compile_forces_provenance_regardless_of_model_output():
         "business_key": [{"source_field": "id", "target_field": "id"}],
         "source_schema": ["id"], "target_schema": ["id"],
     }
-    compiler._groq.complete_json = lambda messages: monkeypatch_payload  # type: ignore[assignment]
+    compiler._llm.complete_json = lambda messages: monkeypatch_payload  # type: ignore[assignment]
     draft = compiler.compile(
         mapping_sheet=MAPPING_SHEET, rules="", source_schema=["id"],
         target_schema=["id"], comparison_type="sales_history", source_type="s4", target_type="ibp",
@@ -198,7 +197,16 @@ _REPORTED_TARGET_SCHEMA = ["I_LOCID", "I_PRDID", "I_SALESORDERREQUEST", "KEYFIGU
 
 
 @requires_live_groq
-def test_live_groq_produces_schema_valid_business_key_and_passes_gate1():
+def test_live_groq_never_sets_business_key_or_compare_fields():
+    """Regression for the NON-NEGOTIABLE SCOPE LIMIT in the system prompt: even
+    given a mapping sheet whose rows look like key/compare candidates, the
+    real model must obey the prompt and always emit business_key/
+    compare_fields empty — those are attached afterward by
+    service.compile_draft from the human's confirmed field mapping (the Rules
+    step), never inferred by the model. (Previously this test expected the
+    model to derive business_key itself and checked it against Gate 1; that
+    responsibility moved to service.compile_draft — see
+    test_compile_field_mapping_wiring.py for that wiring's coverage.)"""
     compiler = GroqContractCompiler(api_key=_LIVE_GROQ_KEY)
     draft = compiler.compile(
         mapping_sheet=_REPORTED_MAPPING_SHEET, rules="",
@@ -206,15 +214,8 @@ def test_live_groq_produces_schema_valid_business_key_and_passes_gate1():
         comparison_type="sales_history", source_type="s4", target_type="ibp",
     )
     assert draft.compiler == "groq"
-    for key in draft.business_key:
-        assert key.source_field in _REPORTED_SOURCE_SCHEMA, key
-        assert key.target_field in _REPORTED_TARGET_SCHEMA, key
-    for cmp in draft.compare_fields:
-        assert cmp.source_field in _REPORTED_SOURCE_SCHEMA, cmp
-        assert cmp.target_field in _REPORTED_TARGET_SCHEMA, cmp
-
-    gate1 = validate_structural(draft, _REPORTED_SOURCE_SCHEMA, _REPORTED_TARGET_SCHEMA)
-    assert gate1.ok, gate1.errors
+    assert draft.business_key == []
+    assert draft.compare_fields == []
 
 
 @requires_live_groq

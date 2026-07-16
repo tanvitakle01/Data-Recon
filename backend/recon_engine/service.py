@@ -41,12 +41,16 @@ from backend.recon_engine.models.audit import AuditAction
 from backend.recon_engine.models.contract import (
     AggregationRule,
     ApprovalStatus,
+    BusinessKeyField,
+    CompareField,
     DraftContract,
     TransformationContract,
 )
+from backend.recon_engine.models.results import excluded_unmapped_counts
 from backend.recon_engine.models.rules import BusinessRules, normalize_business_rules
 from backend.recon_engine.models.run import ReconciliationRun, RunStatus
 from backend.recon_engine.models.snapshot import RawLayer, RawSnapshot
+from backend.recon_engine.models.value_mapping import ValueMapping
 from backend.recon_engine.scripting import (
     ScriptApproval,
     ScriptPreview,
@@ -120,6 +124,9 @@ def compile_draft(
     rules: str,
     business_rules: BusinessRules | dict[str, Any] | None = None,
     aggregation_rules: list[dict[str, Any]] | None = None,
+    business_key: list[dict[str, Any]] | None = None,
+    compare_fields: list[dict[str, Any]] | None = None,
+    value_mappings: list[dict[str, Any]] | None = None,
     source_schema: list[str],
     target_schema: list[str],
     comparison_type: str,
@@ -137,6 +144,13 @@ def compile_draft(
     stop sending both, but if they do, structured rules win. When it's empty,
     ``rules`` is used as-is, preserving the old free-text behaviour for
     callers that have not adopted the Business Rules Builder yet.
+
+    ``business_key`` / ``compare_fields`` (the Rules step's confirmed field
+    mapping) and ``value_mappings`` (the deterministic matching engine's
+    output, once a human has approved it on the Mapping Review page) are never
+    decided by a compiler (Groq or the stub always emit them empty — see
+    ``ContractBody``'s docstring) — they are attached onto the draft here,
+    deterministically, exactly like ``aggregation_rules`` below.
 
     When no ``compiler`` is supplied, Groq is attempted first if configured
     (``GROQ_API_KEY`` set). By default, any Groq failure — connection error,
@@ -227,8 +241,54 @@ def compile_draft(
             )
         except Exception:  # noqa: BLE001 - skip an unrecognised aggregation type
             logger.warning("Dropping aggregation rule with invalid type: field=%r agg=%r", sf, ag)
+
+    # Attach the confirmed field mapping (business_key / compare_fields) and
+    # any approved deterministic value mappings — human-owned inputs a
+    # compiler is never allowed to decide (see ContractBody's docstring).
+    # Resolved against the real source schema the same way aggregation rules
+    # are, so a UI label that doesn't match the schema is dropped rather than
+    # silently producing a contract Gate 1 will reject anyway.
+    resolved_business_key: list[BusinessKeyField] = []
+    for k in business_key or []:
+        sf, tf = k.get("source_field"), k.get("target_field")
+        if not sf or not tf:
+            continue
+        resolved_business_key.append(
+            BusinessKeyField(source_field=_resolve_source_name(str(sf), source_schema), target_field=str(tf))
+        )
+
+    resolved_compare_fields: list[CompareField] = []
+    for c in compare_fields or []:
+        sf, tf = c.get("source_field"), c.get("target_field")
+        if not sf or not tf:
+            continue
+        resolved_compare_fields.append(
+            CompareField(
+                source_field=_resolve_source_name(str(sf), source_schema),
+                target_field=str(tf),
+                match_type=c.get("match_type", "exact"),
+                tolerance=c.get("tolerance"),
+            )
+        )
+
+    resolved_value_mappings: list[ValueMapping] = []
+    for vm in value_mappings or []:
+        try:
+            resolved_value_mappings.append(ValueMapping.model_validate(vm))
+        except Exception:  # noqa: BLE001 - skip a malformed value mapping entry
+            logger.warning("Dropping invalid value_mapping entry: %r", vm)
+
+    updates: dict[str, Any] = {}
     if resolved_aggs:
-        draft = draft.model_copy(update={"aggregation_rules": resolved_aggs})
+        updates["aggregation_rules"] = resolved_aggs
+    if resolved_business_key:
+        updates["business_key"] = resolved_business_key
+    if resolved_compare_fields:
+        updates["compare_fields"] = resolved_compare_fields
+    if resolved_value_mappings:
+        updates["value_mappings"] = resolved_value_mappings
+    if updates:
+        draft = draft.model_copy(update=updates)
 
     logger.info(
         "compile_draft: using compiler=%s degraded=%s operations=%d business_key=%d "
@@ -319,6 +379,7 @@ def approve_contract(
         aggregation_rules=draft.aggregation_rules,
         business_key=draft.business_key,
         compare_fields=draft.compare_fields,
+        value_mappings=draft.value_mappings,
         source_schema=draft.source_schema,
         target_schema=draft.target_schema,
         options=draft.options,
@@ -661,6 +722,9 @@ def run_reconciliation(
         )
 
         recon = reconcile(contract, built.shadow_df, raw_target)
+        recon.summary.excluded_material_unmapped, recon.summary.excluded_plant_unmapped = (
+            excluded_unmapped_counts(built.held_out)
+        )
         result = result_store.save_result(
             run_id=run.run_id,
             contract_id=contract.contract_id,

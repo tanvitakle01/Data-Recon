@@ -1,23 +1,7 @@
+import { isKeyRole, rebuildMapping } from "../lib/payload";
+
 const KEY_ROLE = "🔑 Key";
 const COMPARE_ROLE = "📊 Compare";
-
-function isKeyRole(role) {
-  return /key/i.test(String(role));
-}
-
-// Rebuilds the backend `mapping` object (key_fields / compare_fields) from the
-// current, possibly hand-edited, display rows so /reconcile stays in sync with
-// what the analyst sees.
-function rebuildMapping(display, options) {
-  const key_fields = [];
-  const compare_fields = [];
-  for (const row of display) {
-    const pair = { source_col: row.source_col, target_col: row.target_col };
-    if (isKeyRole(row.role)) key_fields.push(pair);
-    else compare_fields.push(pair);
-  }
-  return { key_fields, compare_fields, options: options ?? { case_insensitive: true, trim_whitespace: true } };
-}
 
 function MappingEditor({ mapping, targetColumns, loading, error, onChange, onRegenerate }) {
   const display = mapping?.display ?? [];

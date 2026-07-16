@@ -33,6 +33,11 @@ def _approved_contract_and_snapshots():
     tgt_cols = ["LOCID", "PRDID", "QTY"]
     draft, _ = service.compile_draft(
         mapping_sheet=mapping_sheet, rules="",
+        business_key=[
+            {"source_field": "Plant", "target_field": "LOCID"},
+            {"source_field": "Material", "target_field": "PRDID"},
+        ],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
         source_schema=src_cols, target_schema=tgt_cols,
         comparison_type="custom", source_type="excel", target_type="excel",
         compiler=StubContractCompiler(),

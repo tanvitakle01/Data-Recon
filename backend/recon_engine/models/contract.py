@@ -13,6 +13,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.recon_engine.models.value_mapping import ValueMapping
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -125,12 +127,19 @@ class CompareField(BaseModel):
 class ContractBody(BaseModel):
     """Fields shared by draft and approved contracts.
 
-    This is also the exact shape a :class:`~backend.recon_engine.compiler.base.ContractCompiler`
-    is responsible for producing. ``DraftContract`` and ``TransformationContract``
-    add server-owned provenance fields (``created_at``, ``created_by``,
-    ``compiler``, ``approval_status``, ...) on top of this — a compiler must
-    never set those itself, so its output schema/validation should be scoped
-    to ``ContractBody``, not the full subclass.
+    A :class:`~backend.recon_engine.compiler.base.ContractCompiler` (Groq or the
+    stub) is responsible for exactly two fields here: ``operations`` (compiled
+    from typed business rules) and ``notes``. It must always leave
+    ``business_key``, ``compare_fields``, and ``value_mappings`` empty —
+    field mapping is human-owned (the Rules step's confirmed dropdown
+    selections) and value mapping is the deterministic engine's job (see
+    ``recon_engine.matching``); neither is ever inferred or guessed by an LLM.
+    ``service.compile_draft`` sets those three fields onto the compiler's
+    draft afterward, from the caller's confirmed field mapping and the
+    deterministic matcher's results. ``DraftContract`` and
+    ``TransformationContract`` add server-owned provenance fields
+    (``created_at``, ``created_by``, ``compiler``, ``approval_status``, ...)
+    on top of this — a compiler must never set those itself either.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -140,8 +149,8 @@ class ContractBody(BaseModel):
     target_type: str = Field(..., description="e.g. 'excel', 'ibp'.")
 
     # Operations applied to Raw_Source to derive the Shadow_Source. The engine
-    # runs them in a fixed pipeline (Filters → Transformations → Aggregations),
-    # preserving each op's relative order within its stage.
+    # runs them in a fixed pipeline (Value Mappings → Filters → Transformations
+    # → Aggregations), preserving each op's relative order within its stage.
     operations: list[ContractOperation] = Field(default_factory=list)
 
     # Structured aggregations applied in the Aggregation stage (after filters and
@@ -150,6 +159,15 @@ class ContractBody(BaseModel):
 
     business_key: list[BusinessKeyField] = Field(default_factory=list)
     compare_fields: list[CompareField] = Field(default_factory=list)
+
+    # Deterministic value-level mappings (e.g. Material -> PRDID, Plant -> LOCID)
+    # discovered by recon_engine.matching — never Groq. Auditable and separate
+    # from `operations`: the executor derives the actual `value_mapping` op(s)
+    # from this at build time, applying the confidence policy (auto-apply
+    # VERY_HIGH/HIGH, hold NONE/OUT_OF_SCOPE out of the shadow with a reason,
+    # pass MEDIUM through unchanged flagged for review). See
+    # `models.value_mapping.ValueMapping` and `engine.executor`.
+    value_mappings: list[ValueMapping] = Field(default_factory=list)
 
     # Schemas captured at compile time from the real sources (S/4, IBP, upload)
     # so Gate 1 can validate field references without assuming any fields.

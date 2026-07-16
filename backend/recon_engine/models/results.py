@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,6 +32,13 @@ class ReconciliationSummary(BaseModel):
     missing_in_source: int = 0
     missing_in_target: int = 0
     exception: int = 0
+    # Rows the Value Mapping stage held out before the join ever ran (Material
+    # or Plant landed on a MEDIUM/NONE/OUT_OF_SCOPE match, or had no match
+    # record at all) — never reconciled, so kept isolated from the five
+    # classifications above and excluded from ``total``. Not a `RecordClass`:
+    # these rows never reached the join.
+    excluded_material_unmapped: int = 0
+    excluded_plant_unmapped: int = 0
 
     @classmethod
     def from_counts(cls, counts: dict[str, int]) -> "ReconciliationSummary":
@@ -42,6 +50,20 @@ class ReconciliationSummary(BaseModel):
             exception=counts.get(RecordClass.EXCEPTION.value, 0),
             total=sum(counts.values()),
         )
+
+
+def excluded_unmapped_counts(held_out: list[dict[str, Any]]) -> tuple[int, int]:
+    """Sum held-out row counts for the Material and Plant business-key fields.
+
+    ``held_out`` is :attr:`~engine.executor.ShadowBuildResult.held_out` — every
+    row whose Material or Plant landed on a MEDIUM/NONE/OUT_OF_SCOPE match (or
+    had no match record, or was blank) before the join ever ran. Keyed on the
+    literal SAP field names this app's two business-key fields always use
+    (``Material`` -> PRDID, ``ProductionPlant`` -> LOCID).
+    """
+    material = sum(int(h.get("row_count") or 0) for h in held_out if h.get("field") == "Material")
+    plant = sum(int(h.get("row_count") or 0) for h in held_out if h.get("field") == "ProductionPlant")
+    return material, plant
 
 
 class ReconciliationResult(BaseModel):

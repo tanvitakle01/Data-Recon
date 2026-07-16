@@ -7,6 +7,11 @@ import {
   SapConnectedBar,
   SapConnectedSummary,
 } from "./SapConnectionGate";
+import { exportDatasetToCsv } from "../../utils/csvExport";
+import {
+  IBP_TRANSFORMATION_DISCOVERY_FIELDS,
+  recommendedFieldsFor,
+} from "../lib/transformationDiscoveryFields";
 import "./ibpWorkspace.css";
 
 // SAP IBP dataset workspace — a three-pane data-exploration surface used in
@@ -69,6 +74,11 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   const [selected, setSelected] = useState([]);
   const [propFilter, setPropFilter] = useState("");
   const [entityLoading, setEntityLoading] = useState(false);
+  // Fields auto-checked by a Transformation Discovery rule (e.g. selecting
+  // PRDID also checks PRODDESC, PRODTYPE, ...) — tracked separately so the
+  // "Recommended" badge only marks the supporting fields, not the trigger
+  // field itself, and clears once a field is deselected.
+  const [autoSelected, setAutoSelected] = useState(new Set());
 
   // ---- preview ----
   const [previewRows, setPreviewRows] = useState([]);
@@ -97,6 +107,11 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
         }
       : null
   );
+
+  // ---- export (full dataset, exactly as received — not the 10-row preview) ----
+  const [importedRows, setImportedRows] = useState(dataset?.rows ?? null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState(null);
 
   // ---- Connect & load metadata (Step 1: discover entities) ----
   // Triggered explicitly by the connect prompt / Refresh Metadata, not on
@@ -176,6 +191,7 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
     setSelectedEntity(entityName);
     setProperties([]);
     setSelected([]);
+    setAutoSelected(new Set());
     setPropFilter("");
     setPreviewRows([]);
     setPreviewCols([]);
@@ -222,19 +238,48 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
 
   // Any change to the selection invalidates a prior import, so the readiness
   // and summary reflect that the wizard's stored dataset is now stale.
+  //
+  // Checking a Transformation Discovery trigger field (e.g. PRDID, LOCID)
+  // also checks its supporting attributes, filtered to whatever actually
+  // exists on this entity — missing ones are skipped silently. The user can
+  // still deselect any of them individually afterward.
   const toggleProp = (name) => {
     setImported(false);
-    setSelected((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
-    );
+    setSelected((prev) => {
+      if (prev.includes(name)) {
+        setAutoSelected((autoPrev) => {
+          if (!autoPrev.has(name)) return autoPrev;
+          const next = new Set(autoPrev);
+          next.delete(name);
+          return next;
+        });
+        return prev.filter((n) => n !== name);
+      }
+
+      const availableNames = selectableProps.map((p) => p.name);
+      const recommended = recommendedFieldsFor(
+        IBP_TRANSFORMATION_DISCOVERY_FIELDS,
+        name,
+        availableNames
+      );
+      if (recommended.length === 0) return [...prev, name];
+
+      const newlyAdded = recommended.filter((f) => f !== name && !prev.includes(f));
+      if (newlyAdded.length > 0) {
+        setAutoSelected((autoPrev) => new Set([...autoPrev, ...newlyAdded]));
+      }
+      return Array.from(new Set([...prev, ...recommended]));
+    });
   };
   const selectAll = () => {
     setImported(false);
     setSelected(selectableProps.map((p) => p.name));
+    setAutoSelected(new Set());
   };
   const deselectAll = () => {
     setImported(false);
     setSelected([]);
+    setAutoSelected(new Set());
   };
 
   const orderedSelected = useMemo(
@@ -357,17 +402,41 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
         rows: rows.slice(0, 10),
         rowCount: rows.length,
       });
+      setImportedRows(rows);
       setStage("preview");
+      // Fields auto-checked by a Transformation Discovery rule (MDT/recommended
+      // fields) — carried along so downstream mapping generation can exclude
+      // them while they remain selectable here for tracking/validation.
       onLoaded?.({
         columns,
         preview: rows.slice(0, 10),
         rows,
         rowCount: rows.length,
+        mdtFields: Array.from(autoSelected),
       });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
     } finally {
       setFetching(false);
+    }
+  };
+
+  // ---- download imported dataset as CSV (client-side, no re-fetch) ----
+  const downloadDataset = async () => {
+    if (!importedPreview || !importedRows?.length) return;
+    setDownloadError(null);
+    setDownloading(true);
+    try {
+      await exportDatasetToCsv({
+        sourceSystem: "IBP",
+        datasetName: importedPreview.entity || selectedEntity,
+        columns: importedPreview.columns,
+        rows: importedRows,
+      });
+    } catch (err) {
+      setDownloadError(`Failed to export dataset: ${err?.message || err}`);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -442,7 +511,17 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
               <span className="ibpw-badge ibpw-badge--count">
                 {importedPreview.columns.length} cols
               </span>
+              <button
+                type="button"
+                className="ibpw-btn ibpw-btn--ghost ibpw-btn--header"
+                onClick={downloadDataset}
+                disabled={downloading || fetching || !importedRows?.length}
+              >
+                {downloading && <span className="ibpw-btn__spin" />}
+                {downloading ? "Preparing…" : "Download Data"}
+              </button>
             </header>
+            {downloadError && <p className="ibpw-summary__error">⚠️ {downloadError}</p>}
 
             <div className="ibpw-grid-wrap">
               <table className="ibpw-grid">
@@ -672,6 +751,14 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
                         <span className="ibpw-field__meta">
                           {p.role === "measure" && (
                             <span className="ibpw-badge ibpw-badge--kf">KF</span>
+                          )}
+                          {autoSelected.has(p.name) && (
+                            <span
+                              className="ibpw-badge ibpw-badge--accent"
+                              title="Recommended for Transformation Discovery"
+                            >
+                              Recommended
+                            </span>
                           )}
                           <span className="ibpw-type">
                             {String(p.type || "").replace(/^Edm\./, "")}

@@ -990,6 +990,23 @@
   animation: ibpw-spin 0.7s linear infinite;
 }
 
+/* ---- Compact button variant for card headers (e.g. Download Data) ---- */
+.ibpw-btn--header {
+  width: auto;
+  margin-top: 0;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  border-radius: 999px;
+}
+
+.ibpw-btn--header .ibpw-btn__spin {
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+  border-color: rgba(148, 163, 184, 0.5);
+  border-top-color: var(--ibpw-muted);
+}
+
 @keyframes ibpw-spin {
   to {
     transform: rotate(360deg);

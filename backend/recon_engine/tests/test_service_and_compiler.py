@@ -10,6 +10,7 @@ from backend.recon_engine.compiler import (
     StubContractCompiler,
 )
 from backend.recon_engine.models.snapshot import RawLayer
+from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
 
 MAPPING_SHEET = [
     {"source_col": "id", "target_col": "id", "role": "key"},
@@ -21,6 +22,13 @@ def _draft():
     draft, _degraded_reason = service.compile_draft(
         mapping_sheet=MAPPING_SHEET,
         rules="quantities must match exactly",
+        # business_key/compare_fields are the Rules step's confirmed field
+        # mapping — never inferred by a compiler from mapping_sheet (see
+        # ContractBody's docstring) — so tests exercising the full lifecycle
+        # supply them explicitly, exactly as the wizard's generateContract()
+        # now does.
+        business_key=[{"source_field": "id", "target_field": "id"}],
+        compare_fields=[{"source_field": "qty", "target_field": "qty"}],
         source_schema=["id", "qty"],
         target_schema=["id", "qty"],
         comparison_type="sales_history",
@@ -49,24 +57,26 @@ def test_stub_compiler_builds_valid_draft():
         source_type="s4", target_type="ibp",
     )
     assert draft.compiler == "stub"
-    assert [k.source_field for k in draft.business_key] == ["id"]
-    assert [c.source_field for c in draft.compare_fields] == ["qty"]
+    # business_key/compare_fields are never inferred by the compiler from
+    # mapping_sheet's "role" hints (that responsibility moved to
+    # service.compile_draft's explicit business_key/compare_fields params —
+    # see the _draft() helper above and test_compile_field_mapping_wiring.py).
+    assert draft.business_key == []
+    assert draft.compare_fields == []
 
 
-def test_stub_compiler_resolves_technical_field_against_real_schema():
-    """Regression: real mapping_sheet_parser output never sets "role", and
-    carries a human-readable target_field ("Product ID") plus a
-    technical_field ("I_PRDID") that's what actually appears in the schema.
-    The stub must resolve to the schema-valid technical name, never the label,
-    must classify the quantity row as a compare field despite there being no
-    "role" key at all, and must skip (not fabricate) an unresolvable row."""
+def test_stub_compiler_resolves_technical_field_for_transformation_ops():
+    """Regression: real mapping_sheet_parser output never sets "role" (field
+    mapping is not this compiler's job), and carries a human-readable
+    target_field ("Product ID") plus a technical_field ("I_PRDID") that isn't
+    in the source schema at all — only "source_field" is. The stub must still
+    resolve a row to its schema-valid SOURCE field to compile transformation
+    text into operations, and must skip (not fabricate) an unresolvable row."""
     mapping_sheet = {
         "mapping_candidates": [
-            {"source_field": "Material", "target_field": "Product ID", "technical_field": "I_PRDID"},
             {
-                "source_field": "ReqDlvQty",
-                "target_field": "Requested Qty",
-                "technical_field": "I_SALESORDERREQUEST",
+                "source_field": "Material", "target_field": "Product ID",
+                "technical_field": "I_PRDID", "transformation": "Remove leading zeros",
             },
             {"source_field": "Nonexistent", "target_field": "Also Nonexistent", "technical_field": None},
         ]
@@ -80,14 +90,11 @@ def test_stub_compiler_resolves_technical_field_against_real_schema():
         source_type="s4", target_type="ibp",
     )
 
-    assert len(draft.business_key) == 1
-    assert draft.business_key[0].source_field == "Material"
-    assert draft.business_key[0].target_field == "I_PRDID"  # technical_field, not the "Product ID" label
-
-    assert len(draft.compare_fields) == 1
-    assert draft.compare_fields[0].source_field == "ReqDlvQty"
-    assert draft.compare_fields[0].target_field == "I_SALESORDERREQUEST"
-
+    assert draft.business_key == []
+    assert draft.compare_fields == []
+    assert any(
+        op.op == "remove_leading_zeros" and op.field == "Material" for op in draft.operations
+    ), draft.operations
     assert "Nonexistent" in (draft.notes or "")  # skipped row is surfaced, not silently dropped
 
 
@@ -185,6 +192,11 @@ def test_full_pipeline_with_value_transformations_reconciles():
     # Force the deterministic stub so the test never depends on a live LLM.
     draft, _ = service.compile_draft(
         mapping_sheet=mapping_sheet, rules="",
+        business_key=[
+            {"source_field": "Plant", "target_field": "LOCID"},
+            {"source_field": "Material", "target_field": "PRDID"},
+        ],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
         source_schema=src_cols, target_schema=tgt_cols,
         comparison_type="custom", source_type="excel", target_type="excel",
         compiler=StubContractCompiler(),
@@ -206,6 +218,92 @@ def test_full_pipeline_with_value_transformations_reconciles():
     assert out["summary"]["match"] == 1, out["summary"]
     assert out["summary"].get("missing_in_target", 0) == 0
     assert out["summary"].get("missing_in_source", 0) == 0
+
+
+def test_run_reconciliation_excludes_unmapped_material_and_plant():
+    """End-to-end: only VERY_HIGH/HIGH Material+Plant rows reach the join;
+    MEDIUM/NONE rows are excluded entirely and counted separately, never as
+    missing_in_target. Also proves the excluded counts are deterministic
+    across repeated runs of the same approved contract + snapshots."""
+    source_df = pd.DataFrame({
+        "Material": ["MAT-A", "MAT-B", "MAT-A"],
+        "Plant": ["PL01", "PL01", "PL99"],
+        "Qty": [10, 20, 30],
+    })
+    target_df = pd.DataFrame({"PRDID": ["MAT-A"], "LOCID": ["PL01"], "QTY": [10]})
+
+    src_snap = service.ingest_snapshot(source_df, layer=RawLayer.SOURCE, source_type="s4")
+    tgt_snap = service.ingest_snapshot(target_df, layer=RawLayer.TARGET, source_type="ibp")
+
+    product_vm = ValueMapping(
+        source_field="Material",
+        target_field="PRDID",
+        matches=[
+            ValueMatch(
+                source_value="MAT-A", target_value="MAT-A",
+                confidence=Confidence.VERY_HIGH, rule="t", evidence="e",
+            ),
+            ValueMatch(
+                source_value="MAT-B", target_value=None,
+                confidence=Confidence.MEDIUM, rule="t", evidence="e",
+            ),
+        ],
+    )
+    location_vm = ValueMapping(
+        source_field="Plant",
+        target_field="LOCID",
+        matches=[
+            ValueMatch(
+                source_value="PL01", target_value="PL01",
+                confidence=Confidence.VERY_HIGH, rule="t", evidence="e",
+            ),
+            ValueMatch(
+                source_value="PL99", target_value=None,
+                confidence=Confidence.NONE, rule="t", evidence="e",
+            ),
+        ],
+    )
+
+    draft, _ = service.compile_draft(
+        mapping_sheet=[
+            {"source_col": "Material", "target_col": "PRDID", "role": "key"},
+            {"source_col": "Plant", "target_col": "LOCID", "role": "key"},
+            {"source_col": "Qty", "target_col": "QTY", "role": "compare"},
+        ],
+        rules="",
+        business_key=[
+            {"source_field": "Material", "target_field": "PRDID"},
+            {"source_field": "Plant", "target_field": "LOCID"},
+        ],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
+        value_mappings=[product_vm.model_dump(), location_vm.model_dump()],
+        source_schema=["Material", "Plant", "Qty"],
+        target_schema=["PRDID", "LOCID", "QTY"],
+        comparison_type="custom", source_type="s4", target_type="ibp",
+        compiler=StubContractCompiler(),
+    )
+
+    report = service.validate_draft(
+        draft, source_columns=["Material", "Plant", "Qty"], target_columns=["PRDID", "LOCID", "QTY"],
+        source_sample=source_df, target_sample=target_df,
+    )
+    assert report["ok"], report
+
+    contract = service.approve_contract(draft, approved_by="alice")
+
+    for _ in range(2):  # determinism: same result on repeated runs
+        out = service.run_reconciliation(
+            contract_id=contract.contract_id,
+            source_snapshot_id=src_snap.snapshot_id,
+            target_snapshot_id=tgt_snap.snapshot_id,
+        )
+        summary = out["summary"]
+        assert summary["match"] == 1
+        assert summary["mismatch"] == 0
+        assert summary["missing_in_target"] == 0  # held-out rows never counted here
+        assert summary["missing_in_source"] == 0
+        assert summary["excluded_material_unmapped"] == 1  # MAT-B, MEDIUM
+        assert summary["excluded_plant_unmapped"] == 1  # PL99, NONE
 
 
 # ── full lifecycle ─────────────────────────────────────────────────────────

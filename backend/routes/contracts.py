@@ -44,6 +44,13 @@ class CompileRequest(BaseModel):
     # Structured aggregation rules ({source_field, aggregation}). Applied
     # deterministically.
     aggregation_rules: list[dict[str, Any]] = Field(default_factory=list)
+    # The Rules step's confirmed field mapping ({source_field, target_field}),
+    # and (once approved on the Mapping Review page) the deterministic
+    # matching engine's output — attached onto the draft server-side, never
+    # decided by the compiler. See service.compile_draft.
+    business_key: list[dict[str, Any]] = Field(default_factory=list)
+    compare_fields: list[dict[str, Any]] = Field(default_factory=list)
+    value_mappings: list[dict[str, Any]] = Field(default_factory=list)
     source_schema: list[str]
     target_schema: list[str]
     comparison_type: str
@@ -136,6 +143,9 @@ def compile_contract(req: CompileRequest) -> dict[str, Any]:
             rules=req.rules,
             business_rules=req.business_rules(),
             aggregation_rules=req.aggregation_rules,
+            business_key=req.business_key,
+            compare_fields=req.compare_fields,
+            value_mappings=req.value_mappings,
             source_schema=req.source_schema,
             target_schema=req.target_schema,
             comparison_type=req.comparison_type,

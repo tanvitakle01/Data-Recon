@@ -4,7 +4,12 @@
 // JSON `<role>_rows` array for SAP-fetched datasets. Returns true if data
 // was appended, false if the side has no usable payload (e.g. after a
 // refresh dropped the in-memory file/rows).
-export function appendDatasetSide(formData, role, roleState) {
+//
+// `excludeFields` (optional) drops those columns from the JSON rows before
+// sending — used by /automap to keep MDT/recommended columns out of the
+// auto-mapping heuristic entirely (see runAutomap in TransformationSpecStep)
+// without touching the dataset actually used for reconciliation.
+export function appendDatasetSide(formData, role, roleState, excludeFields) {
   const dataset = roleState?.dataset;
   if (!dataset) return false;
 
@@ -15,11 +20,60 @@ export function appendDatasetSide(formData, role, roleState) {
   }
 
   if (Array.isArray(dataset.rows) && dataset.rows.length > 0) {
-    formData.append(`${role}_rows`, JSON.stringify(dataset.rows));
+    const rows = excludeFields?.length ? omitFields(dataset.rows, excludeFields) : dataset.rows;
+    formData.append(`${role}_rows`, JSON.stringify(rows));
     return true;
   }
 
   return false;
+}
+
+// FormData for POST /api/recon/value-mapping/run: the full current source +
+// target datasets (no field exclusions — the matchers read columns, e.g.
+// MaterialGroup/PRODGROUP, that aren't part of the confirmed field mapping at
+// all), in the same file-or-rows shape /automap and /reconcile use. Returns
+// null if either side has no usable payload (e.g. after a refresh dropped the
+// in-memory file/rows).
+export function buildValueMappingFormData(source, target) {
+  const formData = new FormData();
+  const okSource = appendDatasetSide(formData, "source", source);
+  const okTarget = appendDatasetSide(formData, "target", target);
+  return okSource && okTarget ? formData : null;
+}
+
+// The field-mapping rows required before "Run Deterministic Mapping" can
+// fire: each names the source field, the required target field, and whether
+// it must be confirmed as a Key or Compare mapping.
+export const REQUIRED_VALUE_MAPPING_FIELDS = [
+  { source: "Material", target: "PRDID", role: "key" },
+  { source: "ProductionPlant", target: "LOCID", role: "key" },
+  { source: "RequestedDeliveryDate", target: "PERIODID0_TSTAMP", role: "key" },
+  { source: "RequestedQuantity", target: "SALESORDERREQUEST", role: "compare" },
+];
+
+// Which of the rows above are still missing/unconfirmed in the current field
+// mapping — surfaced on the button's disabled tooltip so the user knows
+// exactly what to fix, rather than letting it fire against an incomplete map.
+export function missingValueMappingRequirements(display) {
+  const rows = display ?? [];
+  return REQUIRED_VALUE_MAPPING_FIELDS.filter(
+    (req) =>
+      !rows.some((row) => {
+        if (row.source_col !== req.source || row.target_col !== req.target) return false;
+        return req.role === "key" ? isKeyRole(row.role) : !isKeyRole(row.role);
+      }),
+  );
+}
+
+function omitFields(rows, fields) {
+  const drop = new Set(fields);
+  return rows.map((row) => {
+    const next = {};
+    for (const key of Object.keys(row)) {
+      if (!drop.has(key)) next[key] = row[key];
+    }
+    return next;
+  });
 }
 
 // Sample rows for a wizard side, used both for Gate 2 replay (contract flow)
@@ -52,6 +106,24 @@ export function buildMappingSheetPayload(parsedMappingSheet, mapping) {
 
 export function hasMappingPayload(payload) {
   return Array.isArray(payload) ? payload.length > 0 : Boolean(payload?.rows?.length);
+}
+
+export function isKeyRole(role) {
+  return /key/i.test(String(role));
+}
+
+// Rebuilds the backend `mapping` object (key_fields / compare_fields) from the
+// current, possibly hand-edited or filtered, display rows so /reconcile stays
+// in sync with what the analyst sees.
+export function rebuildMapping(display, options) {
+  const key_fields = [];
+  const compare_fields = [];
+  for (const row of display) {
+    const pair = { source_col: row.source_col, target_col: row.target_col };
+    if (isKeyRole(row.role)) key_fields.push(pair);
+    else compare_fields.push(pair);
+  }
+  return { key_fields, compare_fields, options: options ?? { case_insensitive: true, trim_whitespace: true } };
 }
 
 // Field options for the Business Rules Builder's dropdowns: distinct field

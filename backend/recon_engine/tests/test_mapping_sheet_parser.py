@@ -198,6 +198,9 @@ def test_stub_compiler_accepts_parsed_payload():
         source_type="s4",
         target_type="ibp",
     )
-    pairs = {(k.source_field, k.target_field) for k in draft.business_key}
-    assert ("MARA-MATNR", "Product ID") in pairs
     assert draft.compiler == "stub"
+    # business_key/compare_fields are never inferred from the mapping sheet by
+    # the compiler (see StubContractCompiler's docstring) — the full parsed
+    # payload is accepted purely as context for compiling transformation text.
+    assert draft.business_key == []
+    assert draft.compare_fields == []

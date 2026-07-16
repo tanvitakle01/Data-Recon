@@ -102,11 +102,12 @@ function ConnectorSelectionStep({ role }) {
         sheet: meta?.sheet_name ?? null,
         sheets: meta?.sheets ?? [],
         fetchedAt: new Date().toISOString(),
+        mdtFields: [],
       },
     });
   };
 
-  const handleSapLoaded = ({ columns, preview, rows, rowCount }) => {
+  const handleSapLoaded = ({ columns, preview, rows, rowCount, mdtFields }) => {
     const filename = `${roleState.connectorId === "sap_s4hana" ? "SAP S/4HANA" : "SAP IBP"} live fetch`;
     logAssignment(roleState.kind, filename, rowCount);
     dispatch({
@@ -124,6 +125,10 @@ function ConnectorSelectionStep({ role }) {
         sheet: null,
         sheets: [],
         fetchedAt: new Date().toISOString(),
+        // Fields auto-selected by a Transformation Discovery/MDT rule rather
+        // than chosen directly — excluded from auto-generated mappings
+        // downstream, but still present in `columns` for tracking/validation.
+        mdtFields: mdtFields ?? [],
       },
     });
   };

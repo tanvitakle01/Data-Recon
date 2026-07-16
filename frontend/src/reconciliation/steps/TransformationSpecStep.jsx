@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
@@ -6,9 +7,11 @@ import {
   appendDatasetSide,
   buildMappingSheetPayload,
   buildRuleFieldOptions,
+  buildValueMappingFormData,
   cleanAggregationRules,
   cleanBusinessRules,
   hasMappingPayload,
+  missingValueMappingRequirements,
   sampleRows,
 } from "../lib/payload";
 import StepShell from "../components/StepShell";
@@ -22,6 +25,7 @@ const DOC_ACCEPT = ".xlsx,.xls,.csv";
 
 function TransformationSpecStep() {
   const { state, dispatch } = useWizard();
+  const navigate = useNavigate();
   const { source, target, comparisonType, transformationSpec } = state;
   const {
     mappingSheet,
@@ -31,6 +35,8 @@ function TransformationSpecStep() {
     filterRules,
     aggregationRules,
     mapping,
+    valueMappings,
+    valueMappingsApproved,
     draftContract,
     validation,
     contract,
@@ -53,6 +59,9 @@ function TransformationSpecStep() {
   );
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState(null);
+  const [valueMappingLoading, setValueMappingLoading] = useState(false);
+  const [valueMappingError, setValueMappingError] = useState(null);
+  const [valueMappingSuccess, setValueMappingSuccess] = useState(false);
   const [parseLoading, setParseLoading] = useState(false);
   const [parseError, setParseError] = useState(null);
   const [compileLoading, setCompileLoading] = useState(false);
@@ -137,8 +146,14 @@ function TransformationSpecStep() {
     if (!source.dataset || !target.dataset) return;
 
     const formData = new FormData();
-    const okSource = appendDatasetSide(formData, "source", source);
-    const okTarget = appendDatasetSide(formData, "target", target);
+    // Auto-selected MDT/recommended fields (tracked per dataset by the
+    // connector workspaces) are excluded here — before the auto-mapping
+    // heuristic ever sees them — so they can't be classified alongside (and
+    // positionally zipped against) the fields the user actually picked. They
+    // stay in the dataset itself for tracking/validation/approval; only the
+    // /automap request omits them.
+    const okSource = appendDatasetSide(formData, "source", source, source.dataset?.mdtFields);
+    const okTarget = appendDatasetSide(formData, "target", target, target.dataset?.mdtFields);
     if (!okSource || !okTarget) {
       setMapError("Source or target data is no longer available. Go back and re-fetch or re-upload it.");
       return;
@@ -173,6 +188,40 @@ function TransformationSpecStep() {
     const id = setTimeout(runAutomap, 0);
     return () => clearTimeout(id);
   }, [mapping, source, target, runAutomap]);
+
+  // ── deterministic value mapping (Material->PRDID, ProductionPlant->LOCID) ──
+  const missingValueMappingReqs = useMemo(
+    () => missingValueMappingRequirements(mapping?.display),
+    [mapping],
+  );
+  const canRunValueMapping =
+    Boolean(source.dataset && target.dataset) && missingValueMappingReqs.length === 0;
+
+  const runValueMapping = async () => {
+    const formData = buildValueMappingFormData(source, target);
+    if (!formData) {
+      setValueMappingError(
+        "Source or target data is no longer available. Go back and re-fetch or re-upload it.",
+      );
+      return;
+    }
+    setValueMappingLoading(true);
+    setValueMappingError(null);
+    setValueMappingSuccess(false);
+    try {
+      const res = await api.post("/api/recon/value-mapping/run", formData);
+      dispatch({
+        type: WizardActions.SET_VALUE_MAPPINGS,
+        valueMappings: { product: res.data?.product ?? null, location: res.data?.location ?? null },
+      });
+      setValueMappingSuccess(true);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setValueMappingError(typeof detail === "string" ? detail : "Deterministic mapping failed.");
+    } finally {
+      setValueMappingLoading(false);
+    }
+  };
 
   // ── contract lifecycle: compile → validate → approve ──────────────────────
   const validateDraft = useCallback(
@@ -237,6 +286,21 @@ function TransformationSpecStep() {
       matching_rules: cleanBusinessRules(matchingRules),
       filter_rules: cleanBusinessRules(filterRules),
       aggregation_rules: cleanAggregationRules(aggregationRules),
+      // The Rules step's confirmed field mapping — human-owned, never
+      // inferred by the compiler (see ContractBody's docstring).
+      business_key: (mapping?.mapping?.key_fields ?? []).map((f) => ({
+        source_field: f.source_col,
+        target_field: f.target_col,
+      })),
+      compare_fields: (mapping?.mapping?.compare_fields ?? []).map((f) => ({
+        source_field: f.source_col,
+        target_field: f.target_col,
+      })),
+      // Only attached once a human has approved them on the Mapping Review
+      // page — an unapproved run is never silently applied.
+      value_mappings: valueMappingsApproved
+        ? [valueMappings?.product, valueMappings?.location].filter(Boolean)
+        : [],
       source_schema: source.dataset?.columns ?? [],
       target_schema: target.dataset?.columns ?? [],
       comparison_type: comparisonType?.id ?? "custom",
@@ -390,6 +454,40 @@ function TransformationSpecStep() {
             runAutomap();
           }}
         />
+
+        <div className="contract-actions" style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            className="wizard-btn wizard-btn--ghost"
+            onClick={runValueMapping}
+            disabled={!canRunValueMapping || valueMappingLoading}
+            title={
+              missingValueMappingReqs.length
+                ? "Confirm these field mappings first: " +
+                  missingValueMappingReqs
+                    .map((r) => `${r.source} → ${r.target} (${r.role === "key" ? "Key" : "Compare"})`)
+                    .join("; ")
+                : undefined
+            }
+          >
+            {valueMappingLoading ? "Matching…" : "Run Deterministic Mapping"}
+          </button>
+          {valueMappings && (
+            <button
+              type="button"
+              className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+              onClick={() => navigate("/reconciliation/transformation-spec/mapping-review")}
+            >
+              {valueMappingsApproved ? "✓ View Mapping Review" : "View Mapping Review"}
+            </button>
+          )}
+        </div>
+        {valueMappingError && <p className="wizard-step__error">⚠️ {valueMappingError}</p>}
+        {valueMappingSuccess && !valueMappingError && (
+          <p className="wizard-step__success">
+            ✓ Deterministic mapping complete. Click "View Mapping Review" to review the results.
+          </p>
+        )}
       </section>
 
       {/* Section D — Transformation Preview (USE_SCRIPT_TRANSFORMATIONS) or the
