@@ -14,23 +14,29 @@ _diag_log = logging.getLogger("recon.diagnostics")
 
 
 def _load_env_file() -> None:
-    """Load backend/.env into the environment (existing vars win).
+    """Load a backend .env into the environment (existing vars win).
 
     GROQ_API_KEY lives there; without it the contract compile phase silently
     falls back to the stub compiler. Minimal stdlib parser — avoids adding a
     python-dotenv dependency.
+
+    We accept the file at either ``backend/.env`` (canonical) or
+    ``backend/recon_engine/.env`` (where the recon engine's own config lives),
+    loading whichever exist so a key placed in either spot is honoured.
     """
-    env_path = Path(__file__).resolve().parent / ".env"
-    if not env_path.is_file():
-        return
-    for line in env_path.read_text(encoding="utf-8-sig").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    backend_dir = Path(__file__).resolve().parent
+    candidates = (backend_dir / ".env", backend_dir / "recon_engine" / ".env")
+    for env_path in candidates:
+        if not env_path.is_file():
             continue
-        key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip().strip("'\"")
-        if key and key not in os.environ:
-            os.environ[key] = value
+        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 _load_env_file()

@@ -3,11 +3,11 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
-const canopyRoot = '../design docs/canopy-design-system/src'
+const canopyRoot = '../canopyDesign/src'
 const resolveApp = (p) => fileURLToPath(new URL(p, import.meta.url))
 
 // Canopy (@bristlecone/canopy) is consumed straight from its TypeScript source
-// in the sibling "design docs/canopy-design-system" folder — Vite/esbuild
+// in the in-repo "canopyDesign" folder — Vite/esbuild
 // transpiles the .ts/.tsx on the fly. Because that source lives outside this
 // app's root and has no node_modules of its own, its bare imports (react, radix,
 // cva, clsx, …) can't be resolved by Node's importer-relative algorithm. We
