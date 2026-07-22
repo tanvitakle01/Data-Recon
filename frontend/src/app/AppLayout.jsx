@@ -6,17 +6,21 @@ import {
   FiBarChart2,
   FiDatabase,
   FiSettings,
-  FiChevronLeft,
-  FiChevronRight,
+  FiSidebar,
   FiMenu,
   FiX,
   FiClipboard,
+  FiBookOpen,
 } from "react-icons/fi";
+import WizardSidebarNav from "../reconciliation/components/WizardSidebarNav";
 import styles from "./appLayout.module.css";
 
 const SIDEBAR_STORAGE_KEY = "sidebar-expanded";
+// Below this width the sidebar auto-collapses to the icon rail so data tables
+// keep their room; above it, the user's saved preference wins.
+const AUTO_COLLAPSE_WIDTH = 1024;
 
-function SidebarItem({ to, icon: Icon, label, active }) {
+function NavItem({ to, icon: Icon, label, active }) {
   return (
     <Link
       to={to}
@@ -35,32 +39,46 @@ function SidebarItem({ to, icon: Icon, label, active }) {
 
 function AppLayout({ children }) {
   const location = useLocation();
-  const [expanded, setExpanded] = useState(() => {
+
+  const [prefExpanded, setPrefExpanded] = useState(() => {
     if (typeof window === "undefined") return true;
     const saved = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
     return saved === null ? true : saved === "true";
   });
+  // Viewport-driven forced collapse (independent of the saved preference).
+  const [autoCollapsed, setAutoCollapsed] = useState(
+    () => typeof window !== "undefined" && window.innerWidth < AUTO_COLLAPSE_WIDTH
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const expanded = prefExpanded && !autoCollapsed;
 
   const activeKey = useMemo(() => {
     const p = location.pathname;
     if (p.startsWith("/reconciliation")) return "reconciliation";
-    if (p.startsWith("/insights/history")) return "insights";
     if (p.startsWith("/insights")) return "insights";
+    if (p.startsWith("/library")) return "library";
     if (p.startsWith("/ticketing")) return "ticketing";
     if (p.startsWith("/data-sources")) return "data-sources";
     if (p.startsWith("/settings")) return "settings";
     return "home";
   }, [location.pathname]);
 
+  const isWizard = activeKey === "reconciliation";
+
   useEffect(() => {
-    // close mobile drawer on navigation
     setMobileOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
-    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(expanded));
-  }, [expanded]);
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(prefExpanded));
+  }, [prefExpanded]);
+
+  useEffect(() => {
+    const onResize = () => setAutoCollapsed(window.innerWidth < AUTO_COLLAPSE_WIDTH);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
     if (!mobileOpen) return undefined;
@@ -71,84 +89,15 @@ function AppLayout({ children }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileOpen]);
 
-  // Inside the Reconciliation Engine the wizard becomes a dedicated full-width
-  // workspace: the vertical sidebar is replaced by a slim top bar so the
-  // source/target/mapping/rules/review/results content gets the whole page.
-  const isWizard = activeKey === "reconciliation";
-
   const navItems = [
-    {
-      key: "home",
-      to: "/home",
-      icon: FiHome,
-      label: "Home",
-    },
-    {
-      key: "reconciliation",
-      to: "/reconciliation",
-      icon: FiLayers,
-      label: "Reconciliation Engine",
-    },
-    {
-      key: "insights",
-      to: "/insights",
-      icon: FiBarChart2,
-      label: "Insights",
-    },
-    {
-      key: "ticketing",
-      to: "/ticketing",
-      icon: FiClipboard,
-      label: "Ticketing",
-    },
-    {
-      key: "data-sources",
-      to: "/data-sources",
-      icon: FiDatabase,
-      label: "Data Sources",
-    },
-    {
-      key: "settings",
-      to: "/settings",
-      icon: FiSettings,
-      label: "Settings",
-    },
+    { key: "home", to: "/home", icon: FiHome, label: "Home" },
+    { key: "reconciliation", to: "/reconciliation", icon: FiLayers, label: "Reconciliation Engine" },
+    { key: "insights", to: "/insights", icon: FiBarChart2, label: "Insights" },
+    { key: "library", to: "/library", icon: FiBookOpen, label: "Mapping Library" },
+    { key: "ticketing", to: "/ticketing", icon: FiClipboard, label: "Ticketing" },
+    { key: "data-sources", to: "/data-sources", icon: FiDatabase, label: "Data Sources" },
+    { key: "settings", to: "/settings", icon: FiSettings, label: "Settings" },
   ];
-
-  if (isWizard) {
-    return (
-      <div className={styles.wizardShell}>
-        <header className={styles.wizardTopbar}>
-          <div className={styles.wizardCrumbs}>
-            <Link to="/home" className={styles.wizardBrand} aria-label="Home">
-              <span className={styles.brandLogo}>⚡</span>
-            </Link>
-            <span className={styles.wizardCrumbSep}>›</span>
-            <span className={styles.wizardCrumbActive}>Reconciliation Engine</span>
-          </div>
-          <nav className={styles.wizardNav} aria-label="Primary navigation">
-            {navItems
-              .filter((it) => it.key !== "reconciliation")
-              .map((it) => (
-                <Link
-                  key={it.key}
-                  to={it.to}
-                  className={styles.wizardNavItem}
-                  aria-label={it.label}
-                  data-tooltip={it.label}
-                >
-                  <it.icon className={styles.itemIcon} />
-                  <span className={styles.wizardNavLabel}>{it.label}</span>
-                </Link>
-              ))}
-          </nav>
-        </header>
-        <main className={styles.main}>
-          <div className={`${styles.mainInner} ${styles.mainInnerWizard}`}>{children}</div>
-        </main>
-      </div>
-    );
-  }
 
   return (
     <div className={styles.shell}>
@@ -170,26 +119,25 @@ function AppLayout({ children }) {
 
       <aside
         className={`${styles.sidebar} ${expanded ? styles.sidebarExpanded : styles.sidebarCollapsed} ${
-          mobileOpen ? styles.sidebarMobileOpen : styles.sidebarMobileCollapsed
+          mobileOpen ? styles.sidebarMobileOpen : ""
         }`}
         aria-label="Primary navigation"
       >
-        <button
-          type="button"
-          className={styles.collapseBtn}
-          onClick={() => setExpanded((v) => !v)}
-          aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
-          aria-expanded={expanded}
-        >
-          {expanded ? <FiChevronLeft /> : <FiChevronRight />}
-        </button>
-
         <div className={styles.sidebarTop}>
-          <div className={styles.brandRow}>
-            <div className={styles.brandLogo}>⚡</div>
-            <div className={styles.brandText}>Reconciliation Platform</div>
-          </div>
-
+          <Link to="/home" className={styles.brandRow} aria-label="Reconciliation Platform home">
+            <span className={styles.brandLogo}>R</span>
+            <span className={styles.brandText}>Reconciliation</span>
+          </Link>
+          <button
+            type="button"
+            className={styles.collapseBtn}
+            onClick={() => setPrefExpanded((v) => !v)}
+            aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+            aria-expanded={expanded}
+            title={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          >
+            <FiSidebar />
+          </button>
           <button
             type="button"
             className={styles.mobileCloseBtn}
@@ -200,24 +148,28 @@ function AppLayout({ children }) {
           </button>
         </div>
 
-        <nav className={styles.nav} aria-label="Main">
+        <nav className={styles.navMain} aria-label="Sections">
           {navItems.map((it) => (
-            <SidebarItem
-              key={it.key}
-              to={it.to}
-              icon={it.icon}
-              label={it.label}
-              active={activeKey === it.key}
-            />
+            <div key={it.key} className={styles.navGroup}>
+              <NavItem
+                to={it.to}
+                icon={it.icon}
+                label={it.label}
+                active={activeKey === it.key}
+              />
+              {/*
+                Wizard step navigator is contextual to the Reconciliation
+                Engine: it renders indented directly beneath that nav item
+                while on a wizard route, rather than as a page-level rail.
+              */}
+              {it.key === "reconciliation" && isWizard && (
+                <div className={styles.contextNav}>
+                  <WizardSidebarNav collapsed={!expanded} />
+                </div>
+              )}
+            </div>
           ))}
         </nav>
-
-        <div className={styles.sidebarBottom}>
-          <div className={styles.sidebarHint}>
-            <span className={styles.hintDot} />
-            <span className={styles.hintText}>Enterprise UI</span>
-          </div>
-        </div>
       </aside>
 
       <main className={styles.main}>
@@ -228,4 +180,3 @@ function AppLayout({ children }) {
 }
 
 export default AppLayout;
-

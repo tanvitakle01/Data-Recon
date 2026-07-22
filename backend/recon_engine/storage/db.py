@@ -131,6 +131,31 @@ CREATE TABLE IF NOT EXISTS script_approvals (
     approved_by         TEXT NOT NULL,
     approved_at         TEXT NOT NULL
 );
+
+-- Attribute-mapping library: a reconciled FIELD (column→column) mapping stored
+-- so the identical source+target column set reappearing is answered from here
+-- instead of the LLM. The UNIQUE constraint is the canonical dedup key — the
+-- two *_columns_key values are order-independent SHA-256 hashes (see
+-- recon_engine.canonical). Field mapping only; never value mapping.
+CREATE TABLE IF NOT EXISTS attribute_mappings (
+    id                  TEXT PRIMARY KEY,
+    source_connector    TEXT NOT NULL,
+    target_connector    TEXT NOT NULL,
+    comparison_type     TEXT NOT NULL,
+    source_columns_key  TEXT NOT NULL,
+    target_columns_key  TEXT NOT NULL,
+    mappings_json       TEXT NOT NULL,
+    provenance          TEXT NOT NULL,
+    confidence          REAL,
+    added_by            TEXT NOT NULL,
+    added_on            TEXT NOT NULL,
+    last_used_on        TEXT,
+    validated_by_run_id TEXT,
+    version             INTEGER NOT NULL,
+    details_json        TEXT NOT NULL,
+    UNIQUE (source_connector, target_connector, comparison_type,
+            source_columns_key, target_columns_key)
+);
 """
 
 _SHADOW_SCHEMA = """

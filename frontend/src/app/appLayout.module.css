@@ -1,452 +1,294 @@
-.shell{
-  width: 100vw;
-  min-height: 100vh;
-  display:flex;
-  background: linear-gradient(180deg, rgba(125,211,199,0.06), rgba(125,211,199,0) 40%);
-}
-
-.sidebar{
-  --sb-bg: linear-gradient(180deg, #F8FCFC, #EEF8F7);
-  --sb-border: #D9ECE9;
-  --sb-text: #1F2937;
-  --sb-text-dim: #6B7280;
-  --sb-accent-1: #7DD3C7;
-  --sb-accent-2: #5FC4B6;
-  --sb-ease: cubic-bezier(0.4, 0, 0.2, 1);
-
-  position:sticky;
-  top:0;
-  height:100vh;
-  display:flex;
-  flex-direction:column;
-  background: var(--sb-bg);
-  color: var(--sb-text);
-  border-right:1px solid var(--sb-border);
-  box-shadow: 4px 0 24px rgba(15,23,42,0.05);
-  transition: width 280ms var(--sb-ease);
-  width: 300px;
-  flex: 0 0 auto;
-  z-index: 50;
-}
-
-.sidebarCollapsed{ width: 84px; }
-.sidebarExpanded{ width: 300px; }
-
-@media (prefers-reduced-motion: reduce){
-  .sidebar, .item, .itemLabel, .brandText, .collapseBtn, .collapseBtn svg, .sidebarHint, .backdrop{
-    transition: none !important;
-  }
-}
-
-/* Collapse/expand handle — floating half-circle on the sidebar edge */
-.collapseBtn{
-  position:absolute;
-  top: 26px;
-  right: -14px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 1px solid var(--sb-border);
-  background: #FFFFFF;
-  color: var(--sb-text);
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  font-size: 14px;
-  cursor:pointer;
-  box-shadow: 0 4px 14px rgba(15,23,42,0.1);
-  transition: background 160ms ease, border-color 160ms ease, transform 200ms var(--sb-ease), box-shadow 160ms ease;
-  z-index: 6;
-}
-.collapseBtn:hover{
-  background: #EEF8F7;
-  border-color: var(--sb-accent-2);
-  transform: scale(1.08);
-}
-.collapseBtn:active{ transform: scale(0.96); }
-.collapseBtn svg{ width:14px; height:14px; transition: transform 220ms var(--sb-ease); }
-
-.mobileCloseBtn{ display:none; }
-
-.mobileMenuBtn{
-  display:none;
-  position:fixed;
-  top:16px;
-  left:16px;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  align-items:center;
-  justify-content:center;
-  background: #FFFFFF;
-  color:#1F2937;
-  border: 1px solid #D9ECE9;
-  box-shadow: 0 8px 20px rgba(15,23,42,0.1);
-  cursor:pointer;
-  z-index: 40;
-  transition: transform 160ms ease, background 160ms ease;
-}
-.mobileMenuBtn:hover{ background:#EEF8F7; }
-.mobileMenuBtn:active{ transform: scale(0.94); }
-
-.backdrop{
-  display:none;
-}
-
-/* Mobile behavior */
-@media (max-width: 860px){
-  .shell{ display:block; }
-
-  .mobileMenuBtn{ display:flex; }
-
-  .sidebar{
-    position:fixed;
-    left:0;
-    top:0;
-    width: 280px !important;
-    transform: translateX(-100%);
-    transition: transform 260ms var(--sb-ease);
-  }
-  .sidebarMobileCollapsed{ transform: translateX(-100%); }
-  .sidebarMobileOpen{ transform: translateX(0%); box-shadow: 16px 0 48px rgba(15,23,42,0.14); }
-
-  .collapseBtn{ display:none; }
-  .mobileCloseBtn{
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
-    border: 1px solid var(--sb-border);
-    background: rgba(31,41,55,0.05);
-    color: var(--sb-text);
-    cursor:pointer;
-    transition: background 160ms ease, border-color 160ms ease;
-  }
-  .mobileCloseBtn:hover{ background: rgba(31,41,55,0.1); border-color: var(--sb-accent-2); }
-
-  /* Ignore desktop collapsed state while the drawer is a full overlay */
-  .sidebarCollapsed .itemLabel,
-  .sidebarCollapsed .brandText{
-    width:auto; opacity:1; margin-left:12px; visibility:visible;
-  }
-  .sidebarCollapsed .item{ justify-content:flex-start; }
-  .sidebarCollapsed .item::after{ display:none; }
-  .sidebarCollapsed .brandRow{ justify-content:flex-start; }
-  .sidebarCollapsed .sidebarTop{ flex-direction:row; }
-
-  .backdrop{
-    display:block;
-    position:fixed;
-    inset:0;
-    background: rgba(31,41,55,0.32);
-    backdrop-filter: blur(2px);
-    opacity:0;
-    visibility:hidden;
-    transition: opacity 220ms ease, visibility 220ms ease;
-    z-index: 45;
-  }
-  .backdropVisible{ opacity:1; visibility:visible; }
-}
-
-.sidebarTop{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap: 10px;
-  padding: 20px 16px 14px;
-  border-bottom: 1px solid var(--sb-border);
-  transition: flex-direction 200ms var(--sb-ease);
-}
-
-.sidebarCollapsed .sidebarTop{
-  flex-direction:column;
-  gap: 12px;
-  padding: 20px 10px 14px;
-}
-
-.brandRow{
-  display:flex;
-  align-items:center;
-  gap:12px;
-  min-width:0;
-}
-.sidebarCollapsed .brandRow{ justify-content:center; }
-
-.brandLogo{
-  width:36px;
-  height:36px;
-  border-radius:12px;
-  flex: 0 0 auto;
-  background: linear-gradient(135deg, rgba(125,211,199,0.55), rgba(95,196,182,0.4));
-  box-shadow: 0 0 0 1px rgba(95,196,182,0.45), 0 6px 16px rgba(95,196,182,0.2);
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  font-size:18px;
-  transition: transform 200ms var(--sb-ease);
-}
-.brandRow:hover .brandLogo{ transform: scale(1.06) rotate(-4deg); }
-
-.brandText{
-  font-weight:800;
-  letter-spacing:0.2px;
-  font-size:14px;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  opacity:1;
-  max-width:200px;
-  transition: opacity 160ms ease, max-width 220ms var(--sb-ease);
-}
-.sidebarCollapsed .brandText{ opacity:0; max-width:0; }
-
-.nav{
-  display:flex;
-  flex-direction:column;
-  padding: 10px 8px 14px;
-  gap: 4px;
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-.nav::-webkit-scrollbar{ width:6px; }
-.nav::-webkit-scrollbar-thumb{ background: rgba(107,114,128,0.25); border-radius:999px; }
-.nav::-webkit-scrollbar-track{ background: transparent; }
-
-.item{
-  position:relative;
-  display:flex;
-  align-items:center;
-  padding: 10px 14px;
-  border-radius: 14px;
-  color: var(--sb-text-dim);
-  text-decoration:none;
-  border: 1px solid transparent;
-  font-weight:600;
-  outline: none;
-  transition: background 160ms ease, color 160ms ease, transform 160ms var(--sb-ease), border-color 160ms ease;
-}
-
-.item:hover{
-  background: rgba(125,211,199,0.16);
-  color: var(--sb-text);
-  transform: translateX(2px);
-}
-
-.item:focus-visible{
-  box-shadow: 0 0 0 2px #F8FCFC, 0 0 0 4px var(--sb-accent-1);
-}
-
-.itemActive{
-  background: linear-gradient(135deg, rgba(125,211,199,0.4), rgba(95,196,182,0.22));
-  border: 1px solid rgba(95,196,182,0.55);
-  color: #0F2E29;
-  font-weight:800;
-  box-shadow: 0 0 0 1px rgba(95,196,182,0.12), 0 4px 14px rgba(95,196,182,0.18);
-}
-.itemActive::before{
-  content:"";
-  position:absolute;
-  left:-8px;
-  top:50%;
-  transform: translateY(-50%);
-  width:4px;
-  height:20px;
-  border-radius:999px;
-  background: linear-gradient(180deg, var(--sb-accent-1), var(--sb-accent-2));
-}
-.itemActive:hover{ transform:none; }
-
-.itemIconWrap{
-  width: 24px;
-  flex: 0 0 auto;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-}
-.itemIcon{ width: 19px; height: 19px; }
-
-.itemLabel{
-  margin-left: 12px;
-  font-size:14px;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  opacity:1;
-  width:auto;
-  max-width:200px;
-  transition: opacity 160ms ease, max-width 220ms var(--sb-ease), margin-left 220ms var(--sb-ease);
-}
-
-.sidebarCollapsed .item{ justify-content:center; }
-.sidebarCollapsed .itemLabel{ opacity:0; max-width:0; margin-left:0; }
-
-/* Tooltip shown for icon-only nav items when the sidebar is collapsed (desktop only) */
-.sidebarCollapsed .item{ position:relative; }
-.sidebarCollapsed .item::after{
-  content: attr(data-tooltip);
-  position:absolute;
-  left: calc(100% + 14px);
-  top:50%;
-  transform: translateY(-50%) translateX(-4px);
-  background:#FFFFFF;
-  color:#1F2937;
-  padding:7px 11px;
-  border-radius:8px;
-  font-size:12px;
-  font-weight:700;
-  white-space:nowrap;
-  box-shadow: 0 8px 24px rgba(15,23,42,0.14);
-  border: 1px solid #D9ECE9;
-  opacity:0;
-  visibility:hidden;
-  pointer-events:none;
-  transition: opacity 160ms ease, transform 160ms ease, visibility 160ms;
-  z-index:60;
-}
-.sidebarCollapsed .item:hover::after,
-.sidebarCollapsed .item:focus-visible::after{
-  opacity:1;
-  visibility:visible;
-  transform: translateY(-50%) translateX(0);
-}
-
-.sidebarBottom{
-  margin-top:auto;
-  padding: 14px 16px 18px;
-  border-top: 1px solid var(--sb-border);
-}
-
-.sidebarHint{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  justify-content:center;
-  transition: opacity 160ms ease;
-}
-.sidebarCollapsed .sidebarHint{ opacity:0; pointer-events:none; }
-
-.hintDot{
-  width:6px;
-  height:6px;
-  border-radius:50%;
-  background: linear-gradient(135deg, var(--sb-accent-1), var(--sb-accent-2));
-  box-shadow: 0 0 0 3px rgba(95,196,182,0.18);
-  flex: 0 0 auto;
-}
-
-.hintText{
-  font-size:12px;
-  font-weight:600;
-  color: var(--sb-text-dim);
-  white-space:nowrap;
-}
-
-.main{ flex:1; min-width:0; overflow-x: hidden; }
-
-/* ---- Reconciliation wizard: dedicated full-width workspace ---- */
-.wizardShell{
-  width: 100vw;
+/* ============================================================================
+   App shell — one persistent, collapsible sidebar on every page.
+   Expanded (labels) ⇄ collapsed (icon rail). On the reconciliation wizard the
+   sidebar also carries the step navigator, context summary, and quick links
+   (see WizardSidebarNav). All color reads through the global tokens.
+   ============================================================================ */
+.shell {
+  width: 100%;
   min-height: 100vh;
   display: flex;
-  flex-direction: column;
-  background: linear-gradient(180deg, rgba(125,211,199,0.06), rgba(125,211,199,0) 40%);
+  background: var(--ground);
 }
 
-.wizardTopbar{
+.sidebar {
+  /* Sidebar theme (scoped — does NOT touch global app tokens). Defined here so
+     both the main nav (this file) and the nested wizard substeps (.wsb-* in
+     reconciliationWizard.css) inherit identical colors in collapsed + expanded
+     states.
+       --sb-bg    #143D4A  Teal (solid sidebar background)
+       --sb-main  #EDE7E1  main nav items, icons, logo
+       --sb-sub   #BBB9AB  Reconciliation Engine substeps + their icons
+       --sb-hover #1E1E1E  Basalt Black hover glow/highlight */
+  --sb-bg: #143d4a;
+  --sb-main: #ede7e1;
+  --sb-sub: #bbb9ab;
+  --sb-hover: #1e1e1e;
+  --sb-hairline: rgba(237, 231, 225, 0.14);
+  --sb-hover-bg: rgba(30, 30, 30, 0.32);
+  --sb-active-bg: rgba(30, 30, 30, 0.46);
+  --sb-glow: 0 0 0 1px rgba(30, 30, 30, 0.55), 0 2px 12px rgba(30, 30, 30, 0.42);
+
   position: sticky;
   top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--sb-bg);
+  color: var(--sb-main);
+  border-right: 1px solid var(--sb-hairline);
+  transition: width var(--dur) var(--ease);
+  width: 268px;
+  flex: 0 0 auto;
   z-index: 50;
+}
+.sidebarExpanded { width: 268px; }
+.sidebarCollapsed { width: 68px; }
+
+/* ---- Top: brand + collapse toggle ---- */
+.sidebarTop {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 24px;
-  background: rgba(248,252,252,0.92);
-  backdrop-filter: blur(6px);
-  border-bottom: 1px solid #D9ECE9;
-  box-shadow: 0 2px 12px rgba(15,23,42,0.04);
+  gap: 8px;
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--sb-hairline);
+  min-height: 60px;
 }
-
-.wizardCrumbs{
+.brandRow {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
-  font-size: 14px;
+  text-decoration: none;
+  color: var(--sb-main);
+  flex: 1 1 auto;
 }
-.wizardBrand{
+.brandLogo {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  flex: 0 0 auto;
+  background: var(--sb-main);
+  color: var(--sb-bg);
   display: flex;
   align-items: center;
-  text-decoration: none;
-}
-.wizardCrumbSep{ color: #9CA3AF; font-size: 16px; }
-.wizardCrumbActive{
+  justify-content: center;
   font-weight: 800;
-  color: #0F2E29;
-  white-space: nowrap;
+  font-size: 15px;
+  font-family: var(--mono);
 }
+.brandText {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.sidebarCollapsed .brandText { opacity: 0; width: 0; }
+.sidebarCollapsed .brandRow { justify-content: center; flex: 1 1 auto; }
+.sidebarCollapsed .sidebarTop { padding: 14px 0; flex-direction: column; gap: 10px; }
 
-.wizardNav{
+.collapseBtn {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--sb-hairline);
+  background: transparent;
+  color: var(--sb-main);
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
+  justify-content: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.wizardNavItem{
-  display: inline-flex;
+.collapseBtn:hover { background: var(--sb-hover-bg); border-color: rgba(237, 231, 225, 0.4); color: var(--sb-main); box-shadow: var(--sb-glow); }
+.collapseBtn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(237, 231, 225, 0.35); }
+.collapseBtn svg { width: 16px; height: 16px; }
+
+.mobileCloseBtn { display: none; }
+
+/* ---- Scroll region: app section nav + contextual wizard steps ---- */
+.navMain {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+}
+.navMain::-webkit-scrollbar { width: 6px; }
+.navMain::-webkit-scrollbar-thumb { background: rgba(237, 231, 225, 0.24); border-radius: 999px; }
+.navMain::-webkit-scrollbar-track { background: transparent; }
+
+.navGroup { display: flex; flex-direction: column; }
+
+/* Wizard step navigator nested under the "Reconciliation Engine" item — a
+   left rule + indent signal that the steps belong to that section rather than
+   being top-level navigation. Removed when collapsed so the icon rail stays
+   aligned. */
+.contextNav {
+  margin: 2px 4px 8px 22px;
+  padding-left: 6px;
+  border-left: 1px solid var(--sb-hairline);
+}
+.sidebarCollapsed .contextNav {
+  margin: 2px 0 6px;
+  padding-left: 0;
+  border-left: none;
+}
+
+.item {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  border-radius: 10px;
-  color: #6B7280;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  color: var(--sb-main);
   text-decoration: none;
-  font-weight: 600;
-  font-size: 13px;
   border: 1px solid transparent;
-  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+  font-weight: 550;
+  font-size: 13.5px;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.wizardNavItem:hover{
-  background: rgba(125,211,199,0.16);
-  color: #1F2937;
-  border-color: rgba(95,196,182,0.4);
+/* Basalt-black glow/highlight; icon + label stay cream for legibility. */
+.item:hover { background: var(--sb-hover-bg); color: var(--sb-main); box-shadow: var(--sb-glow); }
+.item:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(237, 231, 225, 0.35); }
+.itemActive {
+  background: var(--sb-active-bg);
+  color: var(--sb-main);
+  font-weight: 650;
 }
-.wizardNavLabel{ white-space: nowrap; }
+.itemActive::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--sb-main);
+}
+.itemIconWrap { width: 22px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
+.itemIcon { width: 18px; height: 18px; }
+.itemLabel {
+  margin-left: 11px;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.sidebarCollapsed .item { justify-content: center; padding: 9px 0; }
+.sidebarCollapsed .itemLabel { opacity: 0; width: 0; margin-left: 0; }
 
-/* Full-width content — remove the centered 1440px cap for the workspace. */
-.mainInnerWizard{ max-width: none; }
-
-@media (max-width: 860px){
-  .wizardTopbar{ padding: 10px 16px; }
-  .wizardNavLabel{ display: none; }  /* icon-only nav on narrow screens */
+/* Tooltip for icon-only items when collapsed (desktop) */
+.sidebarCollapsed .item::after,
+.sidebarCollapsed .brandRow::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  background: var(--sb-hover);
+  color: var(--sb-main);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  z-index: 60;
+}
+.sidebarCollapsed .item:hover::after,
+.sidebarCollapsed .item:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0);
 }
 
-/* Single shared responsive container — every page inherits this instead of
-   each page defining its own max-width/padding (previously: Home/Insights
-   had none, Reconciliation used 1200px + asymmetric padding, the stub pages
-   used a different 1200px, causing misaligned edges between pages). */
-.mainInner{
+/* ---- Mobile drawer ---- */
+.mobileMenuBtn { display: none; }
+.backdrop { display: none; }
+
+@media (max-width: 860px) {
+  .shell { display: block; }
+  .mobileMenuBtn {
+    display: flex;
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    align-items: center;
+    justify-content: center;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-2);
+    cursor: pointer;
+    z-index: 40;
+  }
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 268px !important;
+    transform: translateX(-100%);
+    transition: transform var(--dur) var(--ease);
+    box-shadow: var(--shadow-3);
+  }
+  .sidebarMobileOpen { transform: translateX(0); }
+  /* On mobile the drawer is always the full labelled sidebar */
+  .sidebar .brandText, .sidebar .itemLabel { opacity: 1 !important; width: auto !important; }
+  .sidebar .item { justify-content: flex-start !important; padding: 9px 12px !important; }
+  .sidebar .item::after { display: none; }
+  .collapseBtn { display: none; }
+  .mobileCloseBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--sb-hairline);
+    background: transparent;
+    color: var(--sb-main);
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(19, 20, 30, 0.4);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--dur) var(--ease), visibility var(--dur) var(--ease);
+    z-index: 45;
+  }
+  .backdropVisible { opacity: 1; visibility: visible; }
+}
+
+/* ---- Main content ---- */
+.main { flex: 1; min-width: 0; overflow-x: hidden; }
+.mainInner {
   width: 100%;
   max-width: 1440px;
   margin: 0 auto;
-  padding: 28px 32px 40px;
+  padding: 28px 32px 44px;
   box-sizing: border-box;
 }
-
-@media (max-width: 1280px){
-  .mainInner{ padding: 24px 28px 36px; }
-}
-
-@media (max-width: 1024px){
-  .mainInner{ padding: 20px 24px 32px; }
-}
-
-@media (max-width: 860px){
-  .mainInner{ padding-top: 76px; }
-}
-
-@media (max-width: 768px){
-  .mainInner{ padding: 76px 16px 28px; }
-}
+@media (max-width: 1280px) { .mainInner { padding: 24px 28px 36px; } }
+@media (max-width: 1024px) { .mainInner { padding: 20px 24px 32px; } }
+@media (max-width: 860px) { .mainInner { padding: 72px 16px 28px; } }

@@ -270,29 +270,6 @@ class IBPMetadataService(SAPConnector):
             for p in props
         ]
 
-    def default_properties(self, entity_name: str, limit: int = 10) -> list[str]:
-        """A small, *mutually-compatible* starter selection for previewing.
-
-        Picks master-data attributes (dimensions carrying a value-list) and
-        key figures (measures) only — deliberately excluding time
-        characteristics, since IBP rejects selecting several period levels at
-        once ("You cannot select period IDs which have different period level
-        numbers"). Every property here is individually selectable, so the
-        initial preview loads without the user having to guess a valid combo.
-        """
-        parsed = self._parse_metadata()
-        type_name = parsed.entity_sets.get(entity_name)
-        raw = parsed.entity_types.get(type_name, []) if type_name else []
-
-        attrs = [p["name"] for p in raw if p.get("role") == "dimension" and p.get("value_list")]
-        measures = [p["name"] for p in raw if p.get("role") == "measure"]
-
-        chosen = attrs[:6] + measures[: max(0, limit - min(6, len(attrs)))]
-        if not chosen:
-            # Fallback: any selectable property.
-            chosen = [p["name"] for p in raw if _is_selectable(p)][:limit]
-        return chosen[:limit]
-
     # ------------------------------------------------------------------
     # Data
     # ------------------------------------------------------------------
@@ -305,8 +282,8 @@ class IBPMetadataService(SAPConnector):
         """Validate a requested selection against the entity's selectable props.
 
         IBP requires at least one attribute/key figure in ``$select``, so a
-        selection is mandatory; falls back to ``default_properties`` when the
-        caller passes nothing.
+        selection is mandatory. There is NO default/fallback selection — the
+        caller must pass an explicit list; an empty selection raises below.
         """
         selectable = {
             p["name"]
@@ -314,7 +291,7 @@ class IBPMetadataService(SAPConnector):
             if p["selectable"]
         }
 
-        requested = selected_properties or self.default_properties(entity_name)
+        requested = selected_properties or []
         selected = [p for p in requested if p in selectable]
 
         if not selected:

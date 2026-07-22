@@ -14,7 +14,25 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Request
 from starlette.datastructures import UploadFile
 
-from backend.recon_engine.matching import match_locations, match_products
+from backend.recon_engine.matching import (
+    SOURCE_PLANT_SEEDS,
+    SOURCE_PRODUCT_SEEDS,
+    TARGET_LOCATION_SEEDS,
+    TARGET_PRODUCT_SEEDS,
+    confirmed_series,
+    first_confirmed_series,
+    match_locations,
+    match_products,
+    recommend_auxiliary_fields,
+)
+from backend.recon_engine.matching.auxiliary import (
+    ROLE_LOCATION_ALT_NAME,
+    ROLE_PRODUCT_ALT_ID,
+    ROLE_PRODUCT_DESCRIPTION,
+    ROLE_PRODUCT_GROUP,
+    ROLE_SOURCE_MATERIAL_GROUP,
+    ROLE_SOURCE_PRODUCT_DESCRIPTION,
+)
 
 # Reuse the manual-form helpers + loaders from the reconcile route so this
 # endpoint resolves source/target sides identically to /automap and /reconcile.
@@ -96,24 +114,51 @@ async def run_value_mapping(request: Request) -> dict[str, Any]:
         if target_locid is None:
             raise HTTPException(status_code=400, detail="Target data has no 'LOCID' column.")
 
+        # MDT Auxiliary Field Recommender: existence + population checks against
+        # the live fetched data, tier-ranked. The confirmed candidates are fed
+        # to the matchers as evidence — they never enter business_key/
+        # compare_fields/shadow/reconcile output (kept strictly as matcher args).
+        target_product_aux = recommend_auxiliary_fields(target_df, TARGET_PRODUCT_SEEDS)
+        target_location_aux = recommend_auxiliary_fields(target_df, TARGET_LOCATION_SEEDS)
+        source_product_aux = recommend_auxiliary_fields(source_df, SOURCE_PRODUCT_SEEDS)
+        source_plant_aux = recommend_auxiliary_fields(source_df, SOURCE_PLANT_SEEDS)
+
         product = match_products(
             source_material=source_material,
-            source_material_group=_col(source_df, "MaterialGroup"),
+            source_material_group=first_confirmed_series(
+                source_df, source_product_aux, ROLE_SOURCE_MATERIAL_GROUP
+            ),
             target_prdid=target_prdid,
-            target_prodgroup=_col(target_df, "PRODGROUP"),
-            target_proddesc=_col(target_df, "PRODDESC"),
-            target_prdiddem=_col(target_df, "PRDIDDEM"),
-            target_sprdid=_col(target_df, "SPRDID"),
-            source_order_item_text=_col(source_df, "SalesOrderItemText"),
+            target_prodgroup=first_confirmed_series(
+                target_df, target_product_aux, ROLE_PRODUCT_GROUP
+            ),
+            target_descriptions=confirmed_series(
+                target_df, target_product_aux, ROLE_PRODUCT_DESCRIPTION
+            ),
+            target_alt_ids=confirmed_series(target_df, target_product_aux, ROLE_PRODUCT_ALT_ID),
+            source_order_item_text=first_confirmed_series(
+                source_df, source_product_aux, ROLE_SOURCE_PRODUCT_DESCRIPTION
+            ),
         )
         location = match_locations(
             source_plant=source_plant,
             target_locid=target_locid,
-            target_locname=_col(target_df, "LOCNAME"),
+            target_alt_names=confirmed_series(
+                target_df, target_location_aux, ROLE_LOCATION_ALT_NAME
+            ),
         )
         return {
             "product": product.model_dump(mode="json"),
             "location": location.model_dump(mode="json"),
+            # Recommended-for-Deterministic-Mapping evidence fields, surfaced to
+            # the human on the Mapping Review page (tier + fill rate + whether a
+            # current rule consumes it). Evidence-only; never reconciliation data.
+            "auxiliary_fields": {
+                "target_product": [c.model_dump(mode="json") for c in target_product_aux],
+                "target_location": [c.model_dump(mode="json") for c in target_location_aux],
+                "source_product": [c.model_dump(mode="json") for c in source_product_aux],
+                "source_plant": [c.model_dump(mode="json") for c in source_plant_aux],
+            },
         }
     except HTTPException:
         raise

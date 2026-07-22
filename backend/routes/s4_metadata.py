@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from backend.API_conn.connectors.s4_metadata_service import (
     S4MetadataService,
 )
+from backend.recon_engine.matching import evaluate_side
 
 router = APIRouter(prefix="/api/connectors/s4")
 
@@ -114,6 +115,10 @@ async def s4_fetch(payload: S4JoinSpec):
             "count": len(df),
             "columns": list(df.columns),
             "rows": df.fillna("").to_dict(orient="records"),
+            # MDT auxiliary evidence recommendation for the SOURCE side, so the
+            # "Recommended for Deterministic Mapping" panel can render on the
+            # data preview. Evidence-only; never mapping/reconciliation data.
+            "auxiliary_fields": evaluate_side(df, "source"),
         }
     except Exception as exc:
         return _error(exc)

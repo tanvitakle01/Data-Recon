@@ -30,6 +30,7 @@ from backend.recon_engine.compiler import (
     GroqContractCompiler,
     StubContractCompiler,
 )
+from backend.recon_engine import attribute_library
 from backend.recon_engine.config import get_settings
 from backend.recon_engine.engine import (
     LINEAGE_COL,
@@ -638,6 +639,24 @@ def build_shadow_preview(
 
 # ── run reconciliation (runtime, deterministic) ─────────────────────────────
 
+def _store_back_attribute_library(contract, run_id: str, summary, actor: str) -> None:
+    """Upsert a completed run's field mapping into the library (never raises).
+
+    Confidence is the run's match rate — a cheap, honest signal the LLM output
+    doesn't carry — so the Library tab can rank/annotate stored mappings.
+    """
+    try:
+        total = getattr(summary, "total", 0) or 0
+        confidence = (summary.match / total) if total else None
+        attribute_library.store_back_from_contract(
+            contract, run_id, confidence=confidence, actor=actor
+        )
+    except Exception:  # noqa: BLE001 — store-back is best-effort, never fatal
+        logger.warning(
+            "Attribute-library store-back failed for run %s", run_id, exc_info=True
+        )
+
+
 def run_reconciliation(
     *,
     contract_id: str,
@@ -739,6 +758,11 @@ def run_reconciliation(
             AuditAction.RUN_COMPLETED, entity_type="run", entity_id=run.run_id, actor=actor,
             details={"result_id": result.result_id, "summary": recon.summary.model_dump()},
         )
+        # Store-back: this contract's FIELD mapping drove a COMPLETED run, so
+        # upsert it into the attribute-mapping library keyed by the canonical
+        # column-set key. Wrapped so a store failure can never break a run that
+        # already succeeded.
+        _store_back_attribute_library(contract, run.run_id, recon.summary, actor)
         return {
             "run_id": run.run_id,
             "shadow_id": shadow.shadow_id,
@@ -1046,6 +1070,11 @@ def run_reconciliation_with_script(
                 "summary": recon.summary.model_dump(),
             },
         )
+        # Store-back (script flow). NB: this synthetic contract's source_schema
+        # is the post-transform shadow columns, so its canonical key matches a
+        # lookup only when the shadow columns equal the raw dataset columns; the
+        # deterministic contract flow above is the reliable reuse path.
+        _store_back_attribute_library(contract, run.run_id, recon.summary, actor)
         return {
             "run_id": run.run_id,
             "shadow_id": shadow.shadow_id,

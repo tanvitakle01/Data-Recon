@@ -7,11 +7,12 @@ import {
   SapConnectedBar,
   SapConnectedSummary,
 } from "./SapConnectionGate";
-import { exportDatasetToCsv } from "../../utils/csvExport";
 import {
   IBP_TRANSFORMATION_DISCOVERY_FIELDS,
   recommendedFieldsFor,
+  withAuxiliaryFields,
 } from "../lib/transformationDiscoveryFields";
+import { matchProposedToSchema } from "../lib/fieldMatching";
 import "./ibpWorkspace.css";
 
 // SAP IBP dataset workspace — a three-pane data-exploration surface used in
@@ -37,7 +38,13 @@ function looksNumeric(v) {
   return s !== "" && !Number.isNaN(Number(s));
 }
 
-function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
+function IbpDatasetWorkspace({
+  onLoaded,
+  dataset,
+  onStageChange,
+  onOpenDetailedPreview,
+  preselectFields = [],
+}) {
   // ---- connection stage ----
   // Metadata is no longer fetched on mount; the user must explicitly connect.
   // "idle" → connect prompt, "connecting" → skeletons, "error" → retry card,
@@ -52,11 +59,12 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
 
   // ---- card stage (progressive disclosure within the workspace) ----
   // "connect" → connected-summary only (Card 2), "build" → the full
-  // entity/column workspace (Card 3), "preview" → imported dataset preview
-  // only (Card 4). Initialized from `dataset` (not an effect) so a returning
-  // user with an already-imported dataset lands straight on the preview card
-  // with no flash of the earlier cards.
-  const [stage, setStage] = useState(dataset ? "preview" : "connect");
+  // entity/column workspace (Card 3). The imported data grid is no longer a
+  // stage here — it lives on a dedicated preview page. Initialized from
+  // `dataset` (not an effect) so a returning user with an already-imported
+  // dataset lands straight on the Build card (with "Open Detailed Preview"
+  // available) rather than the connect prompt.
+  const [stage, setStage] = useState(dataset ? "build" : "connect");
   useEffect(() => {
     onStageChange?.(stage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -79,6 +87,9 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   // "Recommended" badge only marks the supporting fields, not the trigger
   // field itself, and clears once a field is deselected.
   const [autoSelected, setAutoSelected] = useState(new Set());
+  // Sheet-proposed fields that don't exist on the chosen entity's live schema —
+  // surfaced (never auto-selected) so the user can locate them manually.
+  const [preselectUnmatched, setPreselectUnmatched] = useState([]);
 
   // ---- preview ----
   const [previewRows, setPreviewRows] = useState([]);
@@ -93,25 +104,6 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   const [imported, setImported] = useState(Boolean(dataset));
   const [importedCount, setImportedCount] = useState(dataset?.rowCount ?? null);
   const [error, setError] = useState(null);
-
-  // Snapshot of the actual imported dataset (not the live-preview request),
-  // used to render the post-import "Imported Dataset Preview". Seeded from the
-  // wizard's stored dataset so it survives navigating back into the step.
-  const [importedPreview, setImportedPreview] = useState(
-    dataset
-      ? {
-          entity: null,
-          columns: dataset.columns ?? [],
-          rows: (dataset.preview ?? []).slice(0, 10),
-          rowCount: dataset.rowCount ?? 0,
-        }
-      : null
-  );
-
-  // ---- export (full dataset, exactly as received — not the 10-row preview) ----
-  const [importedRows, setImportedRows] = useState(dataset?.rows ?? null);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState(null);
 
   // ---- Connect & load metadata (Step 1: discover entities) ----
   // Triggered explicitly by the connect prompt / Refresh Metadata, not on
@@ -192,6 +184,7 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
     setProperties([]);
     setSelected([]);
     setAutoSelected(new Set());
+    setPreselectUnmatched([]);
     setPropFilter("");
     setPreviewRows([]);
     setPreviewCols([]);
@@ -216,14 +209,37 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
       }
       const props = payload.properties ?? [];
       setProperties(props);
-      const selectable = new Set(props.filter((p) => p.selectable).map((p) => p.name));
-      setSelected((payload.default_properties ?? []).filter((n) => selectable.has(n)));
+      const selectableNames = props.filter((p) => p.selectable).map((p) => p.name);
+      // Sheet-driven pre-selection ONLY: pre-check the proposed fields that
+      // actually exist on this entity (validated against the live schema). There
+      // is NO default/fallback selection — with no uploaded mapping sheet, or a
+      // sheet that proposed nothing matching this entity, nothing is
+      // auto-selected and the user picks columns explicitly. Unmatched proposals
+      // are surfaced, never invented.
+      let base = [];
+      if (preselectFields.length > 0) {
+        const { matched, unmatched } = matchProposedToSchema(preselectFields, selectableNames);
+        setPreselectUnmatched(unmatched);
+        base = matched;
+      }
+      // Widen with MDT auxiliary evidence fields (PRODDESC / PRODGROUP / LOCNAME
+      // / …) for each trigger field present, tracked in autoSelected so they
+      // flow through the mdtFields boundary — fetched + previewed + fed to the
+      // deterministic matcher, but excluded from the field mapping /
+      // reconciliation output.
+      const { selection, autoAdded } = withAuxiliaryFields(
+        IBP_TRANSFORMATION_DISCOVERY_FIELDS,
+        base,
+        selectableNames
+      );
+      setSelected(selection);
+      setAutoSelected(autoAdded);
     } catch (err) {
       setError(`Failed to load entity metadata: ${err?.message || err}`);
     } finally {
       setEntityLoading(false);
     }
-  }, []);
+  }, [preselectFields]);
 
   // ---- Step 3: column selection ----
   const filteredProps = useMemo(() => {
@@ -393,50 +409,28 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
       }
       const rows = payload.rows ?? [];
       const columns = payload.columns ?? orderedSelected;
+      const auxiliaryFields = payload.auxiliary_fields ?? null;
       setImported(true);
       setImportedCount(rows.length);
-      // Post-import preview built from the actual fetched dataset.
-      setImportedPreview({
-        entity: selectedEntity,
-        columns,
-        rows: rows.slice(0, 10),
-        rowCount: rows.length,
-      });
-      setImportedRows(rows);
-      setStage("preview");
+      // Stay on the Build card after import; the full data grid now lives on a
+      // dedicated preview page opened via "Open Detailed Preview".
       // Fields auto-checked by a Transformation Discovery rule (MDT/recommended
       // fields) — carried along so downstream mapping generation can exclude
-      // them while they remain selectable here for tracking/validation.
+      // them while they remain selectable here for tracking/validation. The
+      // dataset (rows, preview, columns, auxiliaryFields) is persisted to wizard
+      // state, which is what the detailed-preview page reads.
       onLoaded?.({
         columns,
         preview: rows.slice(0, 10),
         rows,
         rowCount: rows.length,
         mdtFields: Array.from(autoSelected),
+        auxiliaryFields,
       });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
     } finally {
       setFetching(false);
-    }
-  };
-
-  // ---- download imported dataset as CSV (client-side, no re-fetch) ----
-  const downloadDataset = async () => {
-    if (!importedPreview || !importedRows?.length) return;
-    setDownloadError(null);
-    setDownloading(true);
-    try {
-      await exportDatasetToCsv({
-        sourceSystem: "IBP",
-        datasetName: importedPreview.entity || selectedEntity,
-        columns: importedPreview.columns,
-        rows: importedRows,
-      });
-    } catch (err) {
-      setDownloadError(`Failed to export dataset: ${err?.message || err}`);
-    } finally {
-      setDownloading(false);
     }
   };
 
@@ -488,102 +482,6 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
         onContinue={() => setStage("build")}
         refreshing={refreshing}
       />
-    );
-  }
-
-  // ---- Card 4: imported dataset preview only — the sole screen that shows
-  // actual data rows. "Back"/"Re-import" both return to Card 3 without
-  // clearing any entity/column selections (the workspace never unmounts).
-  if (stage === "preview") {
-    return (
-      <div className="ibpw-root">
-        {imported && importedPreview && importedPreview.rows.length > 0 && (
-          <section className="ibpw-panel ibpw-imported">
-            <header className="ibpw-panel__head">
-              <h4 className="ibpw-panel__title">Imported Dataset Preview</h4>
-              <span className="ibpw-spacer" />
-              {importedPreview.entity && (
-                <span className="ibpw-badge ibpw-badge--count">{importedPreview.entity}</span>
-              )}
-              <span className="ibpw-badge ibpw-badge--accent">
-                {importedPreview.rowCount.toLocaleString()} rows
-              </span>
-              <span className="ibpw-badge ibpw-badge--count">
-                {importedPreview.columns.length} cols
-              </span>
-              <button
-                type="button"
-                className="ibpw-btn ibpw-btn--ghost ibpw-btn--header"
-                onClick={downloadDataset}
-                disabled={downloading || fetching || !importedRows?.length}
-              >
-                {downloading && <span className="ibpw-btn__spin" />}
-                {downloading ? "Preparing…" : "Download Data"}
-              </button>
-            </header>
-            {downloadError && <p className="ibpw-summary__error">⚠️ {downloadError}</p>}
-
-            <div className="ibpw-grid-wrap">
-              <table className="ibpw-grid">
-                <colgroup>
-                  {importedPreview.columns.map((c) => (
-                    <col key={c} style={{ width: DEFAULT_COL_WIDTH }} />
-                  ))}
-                </colgroup>
-                <thead>
-                  <tr>
-                    {importedPreview.columns.map((c) => (
-                      <th key={c} style={{ position: "sticky" }}>
-                        <div className="ibpw-grid__th-inner">
-                          <span className="ibpw-grid__th-label" title={c}>
-                            {c}
-                          </span>
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {importedPreview.rows.map((row, idx) => (
-                    <tr key={idx}>
-                      {importedPreview.columns.map((c) => (
-                        <td
-                          key={c}
-                          className={looksNumeric(row[c]) ? "ibpw-grid__num" : ""}
-                          title={row[c] != null ? String(row[c]) : ""}
-                        >
-                          {row[c] != null ? String(row[c]) : ""}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <p className="ibpw-imported__caption">
-              Showing {importedPreview.rows.length} of{" "}
-              {importedPreview.rowCount.toLocaleString()} rows
-            </p>
-          </section>
-        )}
-
-        <div className="ibpw-card-actions">
-          <button type="button" className="ibpw-btn ibpw-btn--ghost" onClick={() => setStage("build")}>
-            Back
-          </button>
-          <button
-            type="button"
-            className="ibpw-btn"
-            onClick={importDataset}
-            disabled={fetching || orderedSelected.length === 0}
-          >
-            {fetching && <span className="ibpw-btn__spin" />}
-            {fetching ? "Importing…" : "Re-import Dataset"}
-          </button>
-        </div>
-        {error && <p className="ibpw-summary__error">⚠️ {String(error)}</p>}
-      </div>
     );
   }
 
@@ -718,6 +616,12 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
             </div>
           ) : (
             <>
+              {preselectUnmatched.length > 0 && (
+                <p className="ibpw-preselect-note">
+                  From the mapping sheet, these fields weren't found on this entity — select them
+                  manually if needed: {preselectUnmatched.join(", ")}
+                </p>
+              )}
               <div className="ibpw-fields__toolbar">
                 <div className="ibpw-search">
                   <span className="ibpw-search__icon">⌕</span>
@@ -939,8 +843,19 @@ function IbpDatasetWorkspace({ onLoaded, dataset, onStageChange }) {
             </button>
 
             {imported && !fetching && (
+              <button
+                type="button"
+                className="ibpw-btn ibpw-btn--ghost"
+                onClick={() => onOpenDetailedPreview?.()}
+              >
+                Open Detailed Preview
+              </button>
+            )}
+
+            {imported && !fetching && (
               <p className="ibpw-summary__hint">
-                Dataset ready — use <strong>Continue</strong> below to proceed.
+                Dataset ready — open the detailed preview to inspect rows, or use{" "}
+                <strong>Continue</strong> below to proceed.
               </p>
             )}
 

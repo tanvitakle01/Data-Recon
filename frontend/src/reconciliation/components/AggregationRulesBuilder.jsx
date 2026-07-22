@@ -2,6 +2,8 @@
 // Each row is { field, aggregation } and compiles to the contract's
 // aggregation_rules, applied deterministically in the shadow Aggregation stage.
 
+import { Button, Select } from "@bristlecone/canopy";
+
 const AGGREGATION_OPTIONS = [
   { value: "sum", label: "Sum" },
   { value: "count", label: "Count" },
@@ -20,39 +22,27 @@ function AggregationRow({ rule, fieldOptions, onChange, onRemove }) {
   return (
     <tr>
       <td>
-        <select
-          className="wizard-select wizard-select--sm"
+        <Select
+          className="h-8 text-xs"
           value={rule.field}
           onChange={(e) => onChange({ ...rule, field: e.target.value })}
-        >
-          <option value="">— select source field —</option>
-          {fieldOptions.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+          options={[{ value: "", label: "— select source field —" }, ...fieldOptions]}
+        />
         {touched && !rule.field && <p className="wizard-step__error">Field is required.</p>}
       </td>
       <td>
-        <select
-          className="wizard-select wizard-select--sm"
+        <Select
+          className="h-8 text-xs"
           value={rule.aggregation}
           onChange={(e) => onChange({ ...rule, aggregation: e.target.value })}
-        >
-          <option value="">— select aggregation —</option>
-          {AGGREGATION_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+          options={[{ value: "", label: "— select aggregation —" }, ...AGGREGATION_OPTIONS]}
+        />
         {touched && !rule.aggregation && <p className="wizard-step__error">Aggregation is required.</p>}
       </td>
       <td>
-        <button type="button" className="wizard-btn wizard-btn--ghost wizard-btn--sm" onClick={onRemove}>
+        <Button type="button" variant="outline" size="sm" onClick={onRemove}>
           − Remove
-        </button>
+        </Button>
       </td>
     </tr>
   );
@@ -73,9 +63,9 @@ function AggregationRulesBuilder({ fieldOptions, rules, onChange }) {
             period so it becomes a grouping dimension.
           </p>
         </div>
-        <button type="button" className="wizard-btn wizard-btn--ghost" onClick={addRow}>
+        <Button type="button" variant="outline" onClick={addRow}>
           + Add Aggregation Rule
-        </button>
+        </Button>
       </div>
 
       {rules.length > 0 ? (

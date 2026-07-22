@@ -1,15 +1,27 @@
-import { Navigate, Route, Routes } from "react-router-dom";
-import { WizardProvider } from "./context/WizardContext";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { useWizard } from "./context/useWizard";
 import { WIZARD_STEPS, getStepByKey } from "./steps/stepConfig";
-import WizardStepper from "./components/WizardStepper";
 import StepRoute from "./components/StepRoute";
 import ConnectorSelectionStep from "./steps/ConnectorSelectionStep";
 import ComparisonTypeStep from "./steps/ComparisonTypeStep";
 import TransformationSpecStep from "./steps/TransformationSpecStep";
 import MappingReviewPage from "./steps/MappingReviewPage";
+import DatasetDetailPreviewPage from "./steps/DatasetDetailPreviewPage";
 import ReconciliationRunStep from "./steps/ReconciliationRunStep";
 import "./reconciliationWizard.css";
+
+// The detailed dataset preview is a sub-page of a connector step (source or
+// target). Gate it by that role's stepKey so it inherits the same lock rules
+// and keeps the stepper highlighting the right step.
+function DatasetPreviewRoute() {
+  const { role } = useParams();
+  const stepKey = role === "target" ? "target" : "source";
+  return (
+    <StepRoute stepKey={stepKey}>
+      <DatasetDetailPreviewPage />
+    </StepRoute>
+  );
+}
 
 // Bare "/reconciliation" (or an unknown sub-path) resumes wherever the
 // draft left off instead of always restarting at Step 1.
@@ -22,7 +34,6 @@ function WizardIndexRedirect() {
 function ReconciliationWizardContent() {
   return (
     <div className="wizard-shell">
-      <WizardStepper />
       <div className="wizard-content">
         <Routes>
           <Route index element={<WizardIndexRedirect />} />
@@ -82,6 +93,7 @@ function ReconciliationWizardContent() {
               </StepRoute>
             }
           />
+          <Route path="dataset-preview/:role" element={<DatasetPreviewRoute />} />
           <Route
             path="reconciliation"
             element={
@@ -98,11 +110,9 @@ function ReconciliationWizardContent() {
 }
 
 function ReconciliationWizardPage() {
-  return (
-    <WizardProvider>
-      <ReconciliationWizardContent />
-    </WizardProvider>
-  );
+  // WizardProvider now wraps the whole app (see App.jsx) so the persistent
+  // sidebar can read wizard state; this page just renders the routed step.
+  return <ReconciliationWizardContent />;
 }
 
 export default ReconciliationWizardPage;

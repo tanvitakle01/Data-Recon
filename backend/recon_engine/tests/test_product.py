@@ -65,7 +65,7 @@ def test_rule4_alternate_id_when_reachable():
         source_material=pd.Series(["ALT-1"]),
         source_material_group=None,
         target_prdid=pd.Series(["PRD-9"]),
-        target_prdiddem=pd.Series(["ALT-1"]),
+        target_alt_ids=[pd.Series(["ALT-1"], name="PRDIDDEM")],
     )
     m = _match(mapping, "ALT-1")
     assert m.confidence == Confidence.HIGH
@@ -80,8 +80,7 @@ def test_rule4_unreachable_when_alt_columns_empty_falls_to_rule6():
         source_material=pd.Series(["ALT-1"]),
         source_material_group=None,
         target_prdid=pd.Series(["PRD-9"]),
-        target_prdiddem=pd.Series([None]),
-        target_sprdid=pd.Series([""]),
+        target_alt_ids=[pd.Series([None], name="PRDIDDEM"), pd.Series([""], name="SPRDID")],
     )
     m = _match(mapping, "ALT-1")
     assert m.confidence == Confidence.NONE
@@ -96,7 +95,7 @@ def test_rule5_description_bridge_single_candidate():
         source_material=pd.Series(["MAT-X"]),
         source_material_group=None,
         target_prdid=pd.Series(["PRD-1"]),
-        target_proddesc=pd.Series(["Chocolate Bar"]),
+        target_descriptions=[pd.Series(["Chocolate Bar"], name="PRODDESC")],
         source_order_item_text=pd.Series(["chocolate bar"]),  # case/whitespace variance only
     )
     m = _match(mapping, "MAT-X")
@@ -114,7 +113,7 @@ def test_rule5_does_not_bridge_on_the_material_code_itself():
         source_material=pd.Series(["Chocolate Bar"]),
         source_material_group=None,
         target_prdid=pd.Series(["PRD-1"]),
-        target_proddesc=pd.Series(["Chocolate Bar"]),
+        target_descriptions=[pd.Series(["Chocolate Bar"], name="PRODDESC")],
         source_order_item_text=pd.Series(["totally unrelated text"]),
     )
     m = _match(mapping, "Chocolate Bar")
@@ -127,7 +126,7 @@ def test_rule5_ambiguous_description_records_all_candidates():
         source_material=pd.Series(["MAT-A"]),
         source_material_group=None,
         target_prdid=pd.Series(["PRD-1", "PRD-2"]),
-        target_proddesc=pd.Series(["Dough", "Dough"]),
+        target_descriptions=[pd.Series(["Dough", "Dough"], name="PRODDESC")],
         source_order_item_text=pd.Series(["dough"]),
     )
     m = _match(mapping, "MAT-A")
@@ -144,7 +143,7 @@ def test_rule5_checks_every_distinct_text_for_a_material():
         source_material=pd.Series(["MAT-B", "MAT-B"]),
         source_material_group=None,
         target_prdid=pd.Series(["PRD-7"]),
-        target_proddesc=pd.Series(["Meat"]),
+        target_descriptions=[pd.Series(["Meat"], name="PRODDESC")],
         source_order_item_text=pd.Series(["unrelated line text", "meat"]),
     )
     m = _match(mapping, "MAT-B")
@@ -159,7 +158,7 @@ def test_rule5_unreachable_without_order_item_text():
         source_material=pd.Series(["MAT-X"]),
         source_material_group=None,
         target_prdid=pd.Series(["PRD-1"]),
-        target_proddesc=pd.Series(["Chocolate Bar"]),
+        target_descriptions=[pd.Series(["Chocolate Bar"], name="PRODDESC")],
         # source_order_item_text omitted entirely
     )
     m = _match(mapping, "MAT-X")
@@ -208,7 +207,7 @@ def test_determinism_two_runs_identical():
         source_material_group=pd.Series(["FG", "RM", None, None]),
         target_prdid=pd.Series(["MAT-1", "MAT2"]),
         target_prodgroup=pd.Series(["FG", "FG"]),
-        target_proddesc=pd.Series(["Widget", "Gadget"]),
+        target_descriptions=[pd.Series(["Widget", "Gadget"], name="PRODDESC")],
         source_order_item_text=pd.Series(["widget", "n/a", "gadget", "mystery"]),
     )
     first = match_products(**kwargs)

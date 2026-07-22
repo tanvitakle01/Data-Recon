@@ -17,7 +17,10 @@ def test_package_exports_both_matchers():
     # drop one of the two matchers from `__all__`.
     from backend.recon_engine import matching
 
-    assert set(matching.__all__) == {"match_locations", "match_products"}
+    # Both matchers must remain in the public surface (the recommender and its
+    # helpers are additionally exported — see auxiliary.py — but neither matcher
+    # may be quietly dropped).
+    assert {"match_locations", "match_products"} <= set(matching.__all__)
 
 
 def test_confidence_tiers_are_disjoint_and_cover_auto_apply_and_hold_out():
@@ -76,7 +79,7 @@ def test_held_out_matches_includes_medium_none_and_out_of_scope():
         source_material_group=pd.Series(["FG", "RM", None, None]),
         target_prdid=pd.Series(["EXACT", "PRD-1", "PRD-2"]),
         target_prodgroup=pd.Series(["FG", "FG", "FG"]),
-        target_proddesc=pd.Series([None, "Dough", "Dough"]),
+        target_descriptions=[pd.Series([None, "Dough", "Dough"], name="PRODDESC")],
         source_order_item_text=pd.Series([None, None, "dough", None]),
     )
     held_out = {m.source_value for m in mapping.held_out_matches()}

@@ -10,9 +10,7 @@ function PreviewTable({ data, title }) {
           <thead>
             <tr>
               {data.columns.map((col) => (
-                <th key={col} style={{ position: "sticky", top: 0, background: "#f8fafc" }}>
-                  {col}
-                </th>
+                <th key={col}>{col}</th>
               ))}
             </tr>
           </thead>

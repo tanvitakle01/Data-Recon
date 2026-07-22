@@ -6,9 +6,9 @@
 // refresh dropped the in-memory file/rows).
 //
 // `excludeFields` (optional) drops those columns from the JSON rows before
-// sending — used by /automap to keep MDT/recommended columns out of the
-// auto-mapping heuristic entirely (see runAutomap in TransformationSpecStep)
-// without touching the dataset actually used for reconciliation.
+// sending — used by the field-mapping inference (/api/recon/mapping/infer) to
+// keep MDT/recommended columns out of the inference entirely (see runInference
+// in TransformationSpecStep) without touching the dataset used for reconciliation.
 export function appendDatasetSide(formData, role, roleState, excludeFields) {
   const dataset = roleState?.dataset;
   if (!dataset) return false;
@@ -112,6 +112,50 @@ export function isKeyRole(role) {
   return /key/i.test(String(role));
 }
 
+// A row the user owns (added or edited): it always wins over anything the LLM
+// would generate for the same column, and Regenerate never overwrites it.
+export function isUserRow(row) {
+  return row?.provenance === "user-edited" || row?.provenance === "user-added";
+}
+
+// Merges a freshly-inferred field mapping into the current one, PRESERVING the
+// rows the user owns. On "Regenerate", rows flagged `user-edited` / `user-added`
+// are kept verbatim; only untouched `"generated"` rows are refreshed from the
+// new inference (matched by source_col, in place). A newly inferred row is
+// dropped if a preserved user row already claims its source or target column, so
+// the mapping stays 1:1. Brand-new inferred rows are appended.
+export function mergeGeneratedMapping(prevDisplay, nextDisplay) {
+  const prev = prevDisplay ?? [];
+  const next = nextDisplay ?? [];
+  const userRows = prev.filter(isUserRow);
+  const claimedSrc = new Set(userRows.map((r) => r.source_col).filter(Boolean));
+  const claimedTgt = new Set(userRows.map((r) => r.target_col).filter(Boolean));
+
+  // Inferred rows that don't collide with a preserved user row, keyed by source_col.
+  const nextBySrc = new Map();
+  for (const row of next) {
+    if (claimedSrc.has(row.source_col)) continue;
+    if (row.target_col && claimedTgt.has(row.target_col)) continue;
+    if (!nextBySrc.has(row.source_col)) nextBySrc.set(row.source_col, row);
+  }
+
+  const merged = [];
+  const usedNext = new Set();
+  for (const row of prev) {
+    if (isUserRow(row)) {
+      merged.push(row); // keep the user's row
+    } else if (nextBySrc.has(row.source_col)) {
+      merged.push(nextBySrc.get(row.source_col)); // refresh generated row in place
+      usedNext.add(row.source_col);
+    }
+    // else: a generated row the new inference no longer proposes is dropped
+  }
+  for (const [src, row] of nextBySrc) {
+    if (!usedNext.has(src)) merged.push(row); // brand-new inferred rows
+  }
+  return merged;
+}
+
 // Rebuilds the backend `mapping` object (key_fields / compare_fields) from the
 // current, possibly hand-edited or filtered, display rows so /reconcile stays
 // in sync with what the analyst sees.
@@ -119,6 +163,9 @@ export function rebuildMapping(display, options) {
   const key_fields = [];
   const compare_fields = [];
   for (const row of display) {
+    // Skip incomplete rows (e.g. a freshly-added row the user hasn't finished
+    // filling in) — an unpaired half-row is not a mapping.
+    if (!row.source_col || !row.target_col) continue;
     const pair = { source_col: row.source_col, target_col: row.target_col };
     if (isKeyRole(row.role)) key_fields.push(pair);
     else compare_fields.push(pair);

@@ -1,284 +1,482 @@
 @import "tailwindcss";
 
+/* Scan Canopy's source so Tailwind v4's JIT generates the arbitrary-value
+   utilities its components use (e.g. bg-[var(--bcone-teal)]). Canopy targets
+   Tailwind v3, but because its components resolve colors through CSS custom
+   properties rather than the v3 named-color preset, wiring reduces to this
+   @source + the --bcone-* variables defined in :root below. */
+@source "../../design docs/canopy-design-system/src";
+
+/* ============================================================================
+   DESIGN TOKENS — single source of truth for the whole app.
+   One neutral ground, ONE brand accent (indigo) held apart from status color,
+   and a semantic set where every confidence tier / reconciliation outcome maps
+   to exactly one meaning. Legacy variable names (--accent-strong, --sage,
+   --border-color, …) are aliased at the bottom of :root so existing components
+   keep rendering while they migrate to the canonical tokens.
+   ============================================================================ */
+
+/* Register the palette as Tailwind colors so utilities (bg-accent, text-match,
+   border-subtle, …) resolve to the same tokens the CSS classes use. */
 @theme {
-  --color-mint-50: #F8FCFC;
-  --color-mint-100: #EEF8F7;
-  --color-mint-200: #D9ECE9;
-  --color-mint-300: #B8DFD9;
-  --color-mint-400: #9BDACC;
-  --color-mint-500: #7DD3C7;
-  --color-mint-600: #5FC4B6;
-  --color-mint-700: #3AA99A;
-  --color-mint-800: #2C8377;
-  --color-mint-900: #1F5F56;
+  --font-sans: "Inter Variable", -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "Cascadia Code", "SFMono-Regular", Consolas, ui-monospace, monospace;
+
+  /* Brand accent — Canopy teal (full Canopy adoption). */
+  --color-accent: #21A6BD;
+  --color-accent-hover: #44AAC0;
+  --color-accent-tint: #E8F6F9;
+
+  --color-match: #15803D;
+  --color-high: #2A8049;
+  --color-medium: #B45309;
+  --color-qty: #B83D0A;
+  --color-missing: #B42318;
+  --color-scope: #475569;
+  --color-extra: #0E7490;
+
+  --color-ink: #1A1B25;
+  --color-ink-2: #43465A;
+  --color-muted: #6B6F80;
+  --color-ground: #FBFBFD;
+  --color-surface: #FFFFFF;
+  --color-surface-2: #F4F5F8;
+  --color-subtle: #E7E8EE;
 }
 
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 :root {
-  /* Luxury pastel palette (light) */
-  --bg: #fafaf8; /* warm white */
-  --bg-2: #f8f7f4; /* soft ivory */
-  --bg-3: #fcfcfb; /* frosted off-white */
+  /* ---- Neutrals (cool bias toward the indigo accent) ---- */
+  --ground: #FBFBFD;
+  --surface: #FFFFFF;
+  --surface-2: #F4F5F8;
+  --surface-3: #ECEEF3;
+  --border: #E7E8EE;
+  --border-strong: #D5D7E0;
 
-  --text: rgba(22, 17, 33, 0.82);
-  --text-h: rgba(9, 6, 13, 0.98);
-  --muted: rgba(100, 116, 139, 0.92);
+  --ink: #1A1B25;
+  --ink-2: #43465A;
+  --muted: #6B6F80;
+  --muted-2: #8A8FA0;
 
-  --border: rgba(229, 231, 235, 0.85);
-  --code-bg: #f4f3ec;
+  --code-bg: #F1F3F6;
 
-  /* Pastel accents */
-  --sage: #cfe3d4;
-  --sage-2: rgba(207, 227, 212, 0.65);
+  /* ---- Brand accent — interactive / brand ONLY, never status ----
+     Canopy teal (#21A6BD) with Canopy's blue (#44AAC0) as the hover, matching
+     Canopy Button's primary variant. The whole app reads through --accent, so
+     this one change recolors every brand/interactive surface to teal. */
+  --accent: #21A6BD;
+  --accent-hover: #44AAC0;
+  --accent-active: #1B8A9E;
+  --accent-tint: #E8F6F9;
+  --accent-tint-2: #D2ECF1;
+  --accent-ring: rgba(33, 166, 189, 0.35);
+  --accent-contrast: #FFFFFF;
 
-  --mist: #d9e8f5;
-  --mist-2: rgba(217, 232, 245, 0.75);
+  /* ---- Canopy (@bristlecone/canopy) CSS custom properties ----
+     Canopy components resolve their colors/radii/shadows through these vars.
+     Inlined from Canopy's theme/globals.css :root block. Its font/body/heading
+     resets are intentionally omitted so this app keeps its bundled Inter /
+     JetBrains Mono typography. Canopy is a light design system, so these are
+     defined once (not re-themed for dark). */
+  --bcone-teal: #21a6bd;
+  --bcone-green: #4bc984;
+  --bcone-charcoal: #333536;
+  --bcone-gray: #7f7f7f;
+  --bcone-light-green: #67c381;
+  --bcone-blue: #44aac0;
+  --bcone-cyan: #45afc2;
+  --bcone-black: #192123;
+  --bcone-white: #ffffff;
+  --bcone-orange: #e05e00;
+  --bcone-purple: #68125e;
+  --bcone-yellow: #fcde0f;
+  --bcone-red: #bf0d3f;
+  --bcone-primary: var(--bcone-teal);
+  --bcone-secondary: var(--bcone-green);
+  --bcone-text-primary: var(--bcone-charcoal);
+  --bcone-text-secondary: var(--bcone-gray);
+  --bcone-bg-default: var(--bcone-white);
+  --bcone-bg-dark: var(--bcone-black);
+  --bcone-error: var(--bcone-red);
+  --bcone-warning: var(--bcone-orange);
+  --bcone-success: var(--bcone-green);
+  --bcone-info: var(--bcone-blue);
+  --bcone-spacing-1: 4px;
+  --bcone-spacing-2: 8px;
+  --bcone-spacing-4: 16px;
+  --bcone-spacing-6: 24px;
+  --bcone-spacing-8: 32px;
+  --bcone-spacing-12: 48px;
+  --bcone-spacing-16: 64px;
+  --bcone-radius-sm: 4px;
+  --bcone-radius-md: 8px;
+  --bcone-radius-lg: 12px;
+  --bcone-radius-pill: 9999px;
+  --bcone-shadow-sm: 0 1px 3px rgba(25, 33, 35, 0.08), 0 1px 2px rgba(25, 33, 35, 0.04);
+  --bcone-shadow-md: 0 4px 6px rgba(25, 33, 35, 0.07), 0 2px 4px rgba(25, 33, 35, 0.06);
+  --bcone-shadow-lg: 0 10px 15px rgba(25, 33, 35, 0.1), 0 4px 6px rgba(25, 33, 35, 0.05);
+  --bcone-font-display: "Arial Black", "Helvetica Neue", sans-serif;
+  --bcone-font-body: Arial, "Helvetica Neue", sans-serif;
+  --bcone-font-code: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
 
-  --lav: #e8e1f5;
-  --lav-2: rgba(232, 225, 245, 0.85);
+  /* ---- Semantic — status meaning only. text / bg / border per tone ---- */
+  --match: #15803D;   --match-bg: #DCFCE7;   --match-bd: #A7E9BF;
+  --high: #2A8049;    --high-bg: #F0FBF3;    --high-bd: #C9EBD4;
+  --medium: #B45309;  --medium-bg: #FEF3C7;  --medium-bd: #F3D998;
+  --qty: #B83D0A;     --qty-bg: #FFEAD9;     --qty-bd: #F7C9A8;
+  --missing: #B42318; --missing-bg: #FEF3F1; --missing-bd: #F4CFC8;
+  --scope: #475569;   --scope-bg: #F1F3F6;   --scope-bd: #DBE0E8;
+  --extra: #0E7490;   --extra-bg: #ECFDFF;   --extra-bd: #B6E9F2;
+  --info: #4F46E5;    --info-bg: #EEF0FE;    --info-bd: #CDD2FB;
 
-  --peach: #f7ddd2;
-  --peach-2: rgba(247, 221, 210, 0.85);
-
-  --rose: #f2dde3;
-  --rose-2: rgba(242, 221, 227, 0.85);
-
-  /* Mint-blue enterprise accent system */
-  --accent: #7DD3C7;
-  --accent-hover: #5FC4B6;
-  --accent-strong: #0D9488;
-  --accent-strong-hover: #0F766E;
-  --sidebar-bg: #EEF8F7;
-  --card-bg: #FFFFFF;
-  --border-color: #D9ECE9;
-  --text-primary: #1F2937;
-  --text-secondary: #6B7280;
-
-  --shadow: rgba(0, 0, 0, 0.04) 0 12px 30px, rgba(0, 0, 0, 0.03) 0 4px 12px;
-
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
-
-  /* Glass system */
-  --glass-bg: rgba(255, 255, 255, 0.78);
-  --glass-border: rgba(255, 255, 255, 0.65);
-  --glass-border-2: rgba(229, 231, 235, 0.6);
-  --glass-shadow:
-    rgba(0, 0, 0, 0.04) 0 4px 12px,
-    rgba(0, 0, 0, 0.03) 0 12px 30px;
-
+  /* ---- Radius scale (4 values + pill) ---- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
   --radius-xl: 18px;
+  --radius-pill: 999px;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
+  /* ---- Elevation scale (3 levels) ---- */
+  --shadow-1: 0 1px 2px rgba(19, 20, 30, 0.05), 0 1px 1px rgba(19, 20, 30, 0.04);
+  --shadow-2: 0 4px 12px rgba(19, 20, 30, 0.07), 0 1px 3px rgba(19, 20, 30, 0.05);
+  --shadow-3: 0 12px 32px rgba(19, 20, 30, 0.10), 0 4px 10px rgba(19, 20, 30, 0.06);
+  --shadow: var(--shadow-2);
+
+  /* ---- Border glow (soft colored shadow bleeding just outside the border) ----
+     Two tiers: `ambient` is a very faint neutral lift on static section cards;
+     `active` is a stronger teal glow reserved for state-relevant moments (the
+     active wizard step, an approved/confirmed section). Both read through the
+     existing accent tokens so they re-theme for dark automatically. These do
+     NOT carry status meaning — semantic tier/outcome colors are untouched. */
+  --glow-ambient: 0 4px 18px -10px rgba(19, 20, 30, 0.14);
+  --glow-active: 0 0 0 1px var(--accent), 0 0 20px -3px var(--accent-ring);
+
+  /* ---- Motion ---- */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur: 170ms;
+  --dur-fast: 120ms;
+
+  /* ---- Type ---- */
+  --sans: "Inter Variable", -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  --heading: var(--sans);
+  --mono: "JetBrains Mono Variable", "Cascadia Code", "SFMono-Regular", Consolas, ui-monospace, monospace;
+
+  /* ============================================================
+     LEGACY ALIASES — map old token names onto the new palette so
+     components that still reference them render correctly until
+     migrated. Do not add new usages of these.
+     ============================================================ */
+  --bg: var(--ground);
+  --bg-2: var(--surface-2);
+  --bg-3: var(--surface);
+  --text: var(--ink);
+  --text-h: var(--ink);
+  --text-primary: var(--ink);
+  --text-secondary: var(--muted);
+  --border-color: var(--border);
+  --card-bg: var(--surface);
+  --sidebar-bg: var(--surface);
+  --accent-strong: var(--accent);
+  --accent-strong-hover: var(--accent-hover);
+  --glass-border: var(--border);
+  --glass-border-2: var(--border);
+  --glass-bg: var(--surface);
+  --glass-shadow: var(--shadow-2);
+  /* decorative pastels retired — alias to neutral tints so old refs stay calm */
+  --sage: var(--match-bg);   --sage-2: var(--match-bg);
+  --mist: var(--info-bg);    --mist-2: var(--info-bg);
+  --lav: var(--accent-tint); --lav-2: var(--accent-tint);
+  --peach: var(--qty-bg);    --peach-2: var(--qty-bg);
+  --rose: var(--missing-bg); --rose-2: var(--missing-bg);
+
   color-scheme: light;
-  color: var(--text);
-  background: var(--bg);
+  color: var(--ink);
+  background: var(--ground);
+
+  font: 15px/1.5 var(--sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
 }
 
+/* ---- Dark theme: redefine tokens only; components read through tokens ---- */
 @media (prefers-color-scheme: dark) {
   :root {
-    /* Keep luxury light even in dark preference: still calm */
-    --bg: #fafaf8;
-    --bg-2: #f8f7f4;
-    --bg-3: #fcfcfb;
-    --text: rgba(22, 17, 33, 0.85);
-    --text-h: rgba(9, 6, 13, 0.98);
-    --border: rgba(229, 231, 235, 0.85);
+    --ground: #0E0F14;
+    --surface: #171923;
+    --surface-2: #1F2230;
+    --surface-3: #272B3A;
+    --border: #282C3A;
+    --border-strong: #363B4D;
+
+    --ink: #EDEEF3;
+    --ink-2: #C3C7D4;
+    --muted: #9297AB;
+    --muted-2: #767C90;
+
+    --code-bg: #1F2230;
+
+    --accent: #4FC3D9;
+    --accent-hover: #6FD0E2;
+    --accent-active: #8ADCEA;
+    --accent-tint: #0E2A30;
+    --accent-tint-2: #123842;
+    --accent-ring: rgba(79, 195, 217, 0.45);
+    --accent-contrast: #0E0F14;
+
+    --match: #4ADE80;   --match-bg: #10281A;   --match-bd: #1E5236;
+    --high: #7FD6A0;    --high-bg: #12241A;    --high-bd: #23422F;
+    --medium: #F5B33F;  --medium-bg: #2C220C;  --medium-bd: #4E3D12;
+    --qty: #FB923C;     --qty-bg: #30200F;     --qty-bd: #543518;
+    --missing: #F98F82; --missing-bg: #2C1512; --missing-bd: #52241F;
+    --scope: #A6B0C2;   --scope-bg: #20242E;   --scope-bd: #333A48;
+    --extra: #3FCBE4;   --extra-bg: #0C2830;   --extra-bd: #164A57;
+    --info: #7C74F0;    --info-bg: #221F3D;    --info-bd: #37326A;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.5);
+    --shadow-3: 0 14px 34px rgba(0, 0, 0, 0.6);
+
+    /* Deeper ambient lift for dark ground; active glow inherits the themed accent. */
+    --glow-ambient: 0 6px 22px -10px rgba(0, 0, 0, 0.6);
+
+    color-scheme: dark;
   }
 }
 
-body {
-  margin: 0;
+/* Explicit theme override wins over the media query in both directions. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] {
+  --ground: #0E0F14;
+  --surface: #171923;
+  --surface-2: #1F2230;
+  --surface-3: #272B3A;
+  --border: #282C3A;
+  --border-strong: #363B4D;
+  --ink: #EDEEF3;
+  --ink-2: #C3C7D4;
+  --muted: #9297AB;
+  --muted-2: #767C90;
+  --code-bg: #1F2230;
+  --accent: #4FC3D9;
+  --accent-hover: #6FD0E2;
+  --accent-active: #8ADCEA;
+  --accent-tint: #0E2A30;
+  --accent-tint-2: #123842;
+  --accent-ring: rgba(79, 195, 217, 0.45);
+  --accent-contrast: #0E0F14;
+  --match: #4ADE80;   --match-bg: #10281A;   --match-bd: #1E5236;
+  --high: #7FD6A0;    --high-bg: #12241A;    --high-bd: #23422F;
+  --medium: #F5B33F;  --medium-bg: #2C220C;  --medium-bd: #4E3D12;
+  --qty: #FB923C;     --qty-bg: #30200F;     --qty-bd: #543518;
+  --missing: #F98F82; --missing-bg: #2C1512; --missing-bd: #52241F;
+  --scope: #A6B0C2;   --scope-bg: #20242E;   --scope-bd: #333A48;
+  --extra: #3FCBE4;   --extra-bg: #0C2830;   --extra-bd: #164A57;
+  --info: #7C74F0;    --info-bg: #221F3D;    --info-bd: #37326A;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-3: 0 14px 34px rgba(0, 0, 0, 0.6);
+  --glow-ambient: 0 6px 22px -10px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
+body { margin: 0; }
+
 #root {
-  width: 100vw;
+  width: 100%;
   margin: 0;
   text-align: left;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  background: var(--bg);
+  background: var(--ground);
 }
 
-
-h1,
-h2 {
+h1, h2, h3 {
   font-family: var(--heading);
-  font-weight: 600;
-  color: var(--text-h);
+  color: var(--ink);
+  text-wrap: balance;
 }
-
 h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 24px 0 12px;
+  @media (max-width: 1024px) { font-size: 26px; margin: 18px 0 10px; }
 }
 h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
   margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
+  @media (max-width: 1024px) { font-size: 17px; }
 }
-p {
-  margin: 0;
-}
+p { margin: 0; }
 
-code,
-.counter {
+/* Technical identifiers — code-like values (PRDID, VBAP-MATNR, contract IDs) */
+code, .mono, .counter {
   font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+  font-variant-ligatures: none;
+  color: var(--ink);
 }
-
 code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
+  font-size: 0.86em;
+  line-height: 1.4;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
   background: var(--code-bg);
+  border: 1px solid var(--border);
 }
 
 /* ----------------------------------------------------------------
-   Shared elevation layer — activates the pastel/glass tokens above
-   (--sage/--mist/--lav/--peach/--rose/--glass-*) that were defined
-   from the start but never actually used anywhere. This is the one
-   place app-wide "premium" treatment lives, so every page (Home,
-   Reconciliation, placeholders, Insights) draws from the same small
-   vocabulary instead of each inventing its own card/button/table.
+   Shared surface / control / table primitives — the app-wide
+   vocabulary every page draws from. Reads entirely through tokens.
    ---------------------------------------------------------------- */
 .surface-elevated {
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid var(--glass-border-2);
-  box-shadow: var(--shadow);
-  border-radius: var(--radius-xl);
-  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+  border-radius: var(--radius-lg);
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-
 .surface-elevated:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--glass-shadow);
+  box-shadow: var(--shadow-2);
+  border-color: var(--border-strong);
 }
 
-.accent-bar {
-  border-left: 3px solid transparent;
-}
-.accent-bar-sage { border-left-color: var(--sage); }
-.accent-bar-mist { border-left-color: var(--mist); }
-.accent-bar-lav { border-left-color: var(--lav); }
-.accent-bar-peach { border-left-color: var(--peach); }
-.accent-bar-rose { border-left-color: var(--rose); }
+.accent-bar { border-left: 3px solid transparent; }
+.accent-bar-sage { border-left-color: var(--match); }
+.accent-bar-mist { border-left-color: var(--info); }
+.accent-bar-lav { border-left-color: var(--accent); }
+.accent-bar-peach { border-left-color: var(--qty); }
+.accent-bar-rose { border-left-color: var(--missing); }
 
 .btn-primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 11px 18px;
-  border-radius: 14px;
-  font-weight: 800;
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
   font-size: 14px;
-  background: linear-gradient(135deg, var(--accent-strong), var(--accent-strong-hover));
-  color: #fff;
-  border: 1px solid rgba(13, 148, 136, 0.4);
-  box-shadow: 0 8px 20px rgba(13, 148, 136, 0.2);
-  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: 1px solid transparent;
+  box-shadow: var(--shadow-1);
+  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
   cursor: pointer;
 }
-.btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 28px rgba(13, 148, 136, 0.28);
-  filter: brightness(1.03);
-}
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
+.btn-primary:hover { background: var(--accent-hover); box-shadow: var(--shadow-2); }
+.btn-primary:active { transform: translateY(1px); }
+.btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 
 .btn-secondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 16px;
-  border-radius: 14px;
-  font-weight: 800;
+  padding: 9px 16px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
   font-size: 13px;
-  background: rgba(255, 255, 255, 0.85);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  background: var(--surface);
+  color: var(--ink-2);
+  border: 1px solid var(--border-strong);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
   cursor: pointer;
 }
-.btn-secondary:hover {
-  background: #fff;
-  border-color: var(--accent-hover);
-  transform: translateY(-1px);
-}
-.btn-secondary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-}
+.btn-secondary:hover { background: var(--surface-2); border-color: var(--accent); color: var(--ink); }
+.btn-secondary:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* Comfortable-but-dense data table: subtle separators, sticky header,
+   right-aligned numerics via .num, hover row. */
 .table-elevated {
   width: 100%;
   border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
 }
 .table-elevated th {
   text-align: left;
-  padding: 10px 12px;
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--text-secondary);
+  padding: 9px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-bottom: 1px solid var(--border-color);
+  letter-spacing: 0.05em;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .table-elevated td {
-  padding: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  border-bottom: 1px solid rgba(217, 236, 233, 0.6);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--border);
 }
-.table-elevated tbody tr {
-  transition: background 140ms ease;
-}
-.table-elevated tbody tr:hover {
-  background: rgba(95, 196, 182, 0.06);
-}
+.table-elevated td.num, .table-elevated th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-elevated tbody tr { transition: background var(--dur-fast) var(--ease); }
+.table-elevated tbody tr:hover { background: var(--surface-2); }
+.table-elevated tbody tr:last-child td { border-bottom: none; }
 
+/* ----------------------------------------------------------------
+   Canonical status badge — the ONE vocabulary for confidence tiers
+   and reconciliation outcomes, used identically everywhere. tone is
+   one of: match high medium qty missing scope extra info neutral.
+   ---------------------------------------------------------------- */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.status-badge__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.status-badge--match   { color: var(--match);   background: var(--match-bg);   border-color: var(--match-bd); }
+.status-badge--high    { color: var(--high);    background: var(--high-bg);    border-color: var(--high-bd); }
+.status-badge--medium  { color: var(--medium);  background: var(--medium-bg);  border-color: var(--medium-bd); }
+.status-badge--qty     { color: var(--qty);     background: var(--qty-bg);     border-color: var(--qty-bd); }
+.status-badge--missing { color: var(--missing); background: var(--missing-bg); border-color: var(--missing-bd); }
+.status-badge--scope   { color: var(--scope);   background: var(--scope-bg);   border-color: var(--scope-bd); }
+.status-badge--extra   { color: var(--extra);   background: var(--extra-bg);   border-color: var(--extra-bd); }
+.status-badge--info    { color: var(--info);    background: var(--info-bg);    border-color: var(--info-bd); }
+.status-badge--neutral { color: var(--muted);   background: var(--surface-2);  border-color: var(--border); }
+
+/* ----------------------------------------------------------------
+   JsonViewer (bespoke shiki code/JSON viewer). shiki emits a bare
+   <pre class="shiki"> with a theme background but no padding — give it
+   comfortable padding and let the code use the app's mono font.
+   ---------------------------------------------------------------- */
+.json-viewer__shiki pre.shiki {
+  margin: 0;
+  padding: 16px;
+  background: transparent !important;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  font-variant-ligatures: none;
+}
+.json-viewer__shiki code { font-family: inherit; }

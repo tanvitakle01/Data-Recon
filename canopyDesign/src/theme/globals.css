@@ -1,0 +1,79 @@
+/* Bristlecone Design System — CSS Custom Properties */
+
+:root {
+  /* === Primary Palette === */
+  --bcone-teal: #21a6bd;
+  --bcone-green: #4bc984;
+  --bcone-charcoal: #333536;
+  --bcone-gray: #7f7f7f;
+  --bcone-light-green: #67c381;
+  --bcone-blue: #44aac0;
+  --bcone-cyan: #45afc2;
+  --bcone-black: #192123;
+  --bcone-white: #ffffff;
+
+  /* === Expanded Palette (use sparingly — 80/20 rule) === */
+  --bcone-orange: #e05e00;
+  --bcone-purple: #68125e;
+  --bcone-yellow: #fcde0f;
+  --bcone-red: #bf0d3f;
+
+  /* === Semantic Aliases === */
+  --bcone-primary: var(--bcone-teal);
+  --bcone-secondary: var(--bcone-green);
+  --bcone-text-primary: var(--bcone-charcoal);
+  --bcone-text-secondary: var(--bcone-gray);
+  --bcone-bg-default: var(--bcone-white);
+  --bcone-bg-dark: var(--bcone-black);
+  --bcone-error: var(--bcone-red);
+  --bcone-warning: var(--bcone-orange);
+  --bcone-success: var(--bcone-green);
+  --bcone-info: var(--bcone-blue);
+
+  /* === Spacing === */
+  --bcone-spacing-1: 4px;
+  --bcone-spacing-2: 8px;
+  --bcone-spacing-4: 16px;
+  --bcone-spacing-6: 24px;
+  --bcone-spacing-8: 32px;
+  --bcone-spacing-12: 48px;
+  --bcone-spacing-16: 64px;
+
+  /* === Border Radius === */
+  --bcone-radius-sm: 4px;
+  --bcone-radius-md: 8px;
+  --bcone-radius-lg: 12px;
+  --bcone-radius-pill: 9999px;
+
+  /* === Elevation === */
+  --bcone-shadow-sm: 0 1px 3px rgba(25, 33, 35, 0.08),
+    0 1px 2px rgba(25, 33, 35, 0.04);
+  --bcone-shadow-md: 0 4px 6px rgba(25, 33, 35, 0.07),
+    0 2px 4px rgba(25, 33, 35, 0.06);
+  --bcone-shadow-lg: 0 10px 15px rgba(25, 33, 35, 0.1),
+    0 4px 6px rgba(25, 33, 35, 0.05);
+
+  /* === Typography === */
+  --bcone-font-display: "Arial Black", "Helvetica Neue", sans-serif;
+  --bcone-font-body: Arial, "Helvetica Neue", sans-serif;
+  --bcone-font-code: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+/* Base resets that apply the brand font */
+body {
+  font-family: var(--bcone-font-body);
+  color: var(--bcone-text-primary);
+  background-color: var(--bcone-bg-default);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--bcone-font-display);
+  font-weight: 900;
+  color: var(--bcone-charcoal);
+}
+
+code, pre, kbd, samp {
+  font-family: var(--bcone-font-code);
+}

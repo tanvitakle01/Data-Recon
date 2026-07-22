@@ -1,0 +1,90 @@
+import { Meta, ColorPalette, ColorItem, Typeset } from "@storybook/blocks";
+
+<Meta title="Brand / Brand Guidelines" />
+
+# Bristlecone Design System
+
+> **Version 1.0** — Bristlecone AI Platform
+
+The Bristlecone design system ensures consistent, enterprise-grade UI across the LLM Gateway and all 8 SAP AI Accelerator apps.
+
+---
+
+## Color Palette
+
+### Primary Palette
+Use these for 80% of all color decisions.
+
+<ColorPalette>
+  <ColorItem title="bcone-teal" subtitle="Primary — buttons, links, CTAs" colors={{ Teal: "#21A6BD" }} />
+  <ColorItem title="bcone-green" subtitle="Secondary — success, confirmations" colors={{ Green: "#4BC984" }} />
+  <ColorItem title="bcone-charcoal" subtitle="Headlines, primary text" colors={{ Charcoal: "#333536" }} />
+  <ColorItem title="bcone-gray" subtitle="Secondary text, borders" colors={{ Gray: "#7F7F7F" }} />
+  <ColorItem title="bcone-black" subtitle="Dark mode background, deep emphasis" colors={{ Black: "#192123" }} />
+  <ColorItem title="Accents" subtitle="Hover / info states" colors={{ "Light Green": "#67C381", Blue: "#44AAC0", Cyan: "#45AFC2" }} />
+</ColorPalette>
+
+### Expanded Palette
+Use sparingly — max 20% of overall color usage.
+
+<ColorPalette>
+  <ColorItem title="bcone-orange" subtitle="Warnings, attention" colors={{ Orange: "#E05E00" }} />
+  <ColorItem title="bcone-purple" subtitle="Tags, categorical accents" colors={{ Purple: "#68125E" }} />
+  <ColorItem title="bcone-yellow" subtitle="Caution, highlights" colors={{ Yellow: "#FCDE0F" }} />
+  <ColorItem title="bcone-red" subtitle="Errors, destructive actions" colors={{ Red: "#BF0D3F" }} />
+</ColorPalette>
+
+---
+
+## Typography
+
+Per the Bristlecone brand guide: **Arial Black / Arial Bold / Arial Normal**. System-available on all platforms — no font loading required.
+
+<Typeset
+  fontSizes={[12, 14, 16, 18, 24, 32, 48]}
+  fontWeight={400}
+  sampleText="Bristlecone Private LLM for SAP"
+  fontFamily={'"Arial", "Helvetica Neue", sans-serif'}
+/>
+
+<Typeset
+  fontSizes={[16, 24, 32, 48]}
+  fontWeight={900}
+  sampleText="Your SAP data never leaves your VPC"
+  fontFamily={'"Arial Black", "Helvetica Neue", sans-serif'}
+/>
+
+---
+
+## Spacing Scale
+
+| Token | Value | Usage |
+|---|---|---|
+| `--bcone-spacing-1` | 4px | Tight gaps, icon padding |
+| `--bcone-spacing-2` | 8px | Component internal padding |
+| `--bcone-spacing-4` | 16px | Default content padding |
+| `--bcone-spacing-6` | 24px | Card padding, section gaps |
+| `--bcone-spacing-8` | 32px | Between sections |
+| `--bcone-spacing-12` | 48px | Page section breaks |
+| `--bcone-spacing-16` | 64px | Hero / major section separation |
+
+---
+
+## Border Radius
+
+| Token | Value | Usage |
+|---|---|---|
+| `--bcone-radius-sm` | 4px | Inputs, buttons, cells |
+| `--bcone-radius-md` | 8px | Cards, dropdowns, modals |
+| `--bcone-radius-lg` | 12px | Large panels |
+| `--bcone-radius-pill` | 9999px | Tags/badges only |
+
+---
+
+## Design Principles
+
+1. **Clean, confident, corporate** — SAP Fiori meets modern SaaS
+2. **Generous whitespace** — use the spacing scale, not ad-hoc values
+3. **Sharp geometry** — 4px radius for controls, 8px for cards; no pill shapes except badges
+4. **Subtle elevation** — `box-shadow` conveys depth, not color fills
+5. **Token-first** — never hardcode a hex color; always use `var(--bcone-*)` or Tailwind `bcone-*` classes

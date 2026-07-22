@@ -31,6 +31,10 @@ class AuditAction(str, Enum):
     PREVIEW_CREATED = "preview_created"
     PREVIEW_APPROVED = "preview_approved"
     PREVIEW_REJECTED = "preview_rejected"
+    # Attribute-mapping library
+    LIBRARY_MAPPING_STORED = "library_mapping_stored"
+    LIBRARY_MAPPING_DELETED = "library_mapping_deleted"
+    LIBRARY_FLUSHED = "library_flushed"
 
 
 class AuditEvent(BaseModel):

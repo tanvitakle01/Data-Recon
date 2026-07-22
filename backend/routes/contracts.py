@@ -18,6 +18,7 @@ from backend.recon_engine import service
 from backend.recon_engine.compiler import ContractCompilerError
 from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome
 from backend.recon_engine.mapping_sheet_parser import parse_mapping_sheet as _parse_sheet
+from backend.recon_engine.sheet_identifier import identify_systems as _identify_systems
 from backend.recon_engine.models.contract import DraftContract
 from backend.recon_engine.models.rules import BusinessRule, BusinessRules
 from backend.recon_engine.operations import list_operations
@@ -117,6 +118,27 @@ async def parse_mapping_sheet(
         raise HTTPException(status_code=400, detail="Could not parse the mapping sheet file.")
 
     return {"filename": filename, **parsed}
+
+
+class IdentifyRequest(BaseModel):
+    # The parsed-sheet payload from /mapping-sheet/parse (dict), or plain rows.
+    mapping_sheet: dict[str, Any] | list[dict[str, Any]] = Field(default_factory=dict)
+
+
+@router.post("/mapping-sheet/identify")
+def identify_mapping_sheet(req: IdentifyRequest) -> dict[str, Any]:
+    """Infer which source/target connectors + candidate fields a parsed sheet
+    describes, constrained to the configured connector allow-list.
+
+    The connector the LLM may pick is limited to configured & enabled
+    connectors; anything else is returned as evidence-bearing ``unidentified``
+    (a warning), never coerced to the nearest match. Degrades to an empty
+    result on any LLM failure rather than raising — the human then selects the
+    connector manually. Field validation against live schema happens on the
+    frontend once a side's connector has loaded its schema.
+    """
+    reset_llm_outcome()  # clear any prior provider outcome for this request
+    return _identify_systems(req.mapping_sheet)
 
 
 @router.post("/contracts/compile")

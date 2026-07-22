@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { Button } from "@bristlecone/canopy";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import { getVisibleSteps } from "../steps/stepConfig";
@@ -52,18 +53,18 @@ function StepShell({
       <div className="wizard-step__body">{children}</div>
 
       <footer className="wizard-step__footer">
-        <button type="button" className="wizard-btn wizard-btn--ghost" onClick={handleBack} disabled={!prevStep}>
+        <Button type="button" variant="outline" onClick={handleBack} disabled={!prevStep}>
           Back
-        </button>
+        </Button>
         {!hideContinue && (
-          <button
+          <Button
             type="button"
-            className="wizard-btn wizard-btn--primary"
+            variant="primary"
             onClick={handleContinue}
             disabled={!canContinue}
           >
             {nextStep ? continueLabel : "Finish"}
-          </button>
+          </Button>
         )}
       </footer>
     </section>

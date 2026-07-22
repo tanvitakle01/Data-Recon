@@ -9,6 +9,8 @@
 // more <RuleSection>, so the set stays easy to extend without touching the
 // shared row/table rendering below.
 
+import { Button, Select } from "@bristlecone/canopy";
+
 function RuleRow({ rule, fieldOptions, onChange, onRemove, removeLabel }) {
   const touched = Boolean(rule.field) || Boolean(rule.instruction);
   const fieldMissing = touched && !rule.field;
@@ -17,18 +19,12 @@ function RuleRow({ rule, fieldOptions, onChange, onRemove, removeLabel }) {
   return (
     <tr>
       <td>
-        <select
-          className="wizard-select wizard-select--sm"
+        <Select
+          className="h-8 text-xs"
           value={rule.field}
           onChange={(e) => onChange({ ...rule, field: e.target.value })}
-        >
-          <option value="">— select field —</option>
-          {fieldOptions.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+          options={[{ value: "", label: "— select field —" }, ...fieldOptions]}
+        />
         {fieldMissing && <p className="wizard-step__error">Field is required.</p>}
       </td>
       <td>
@@ -42,13 +38,14 @@ function RuleRow({ rule, fieldOptions, onChange, onRemove, removeLabel }) {
         {instructionMissing && <p className="wizard-step__error">Instruction is required.</p>}
       </td>
       <td>
-        <button
+        <Button
           type="button"
-          className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+          variant="outline"
+          size="sm"
           onClick={onRemove}
         >
           − {removeLabel}
-        </button>
+        </Button>
       </td>
     </tr>
   );
@@ -78,9 +75,9 @@ function RuleSection({
           <h4 className="rule-builder__section-title">{title}</h4>
           <p className="wizard-field__help">{help}</p>
         </div>
-        <button type="button" className="wizard-btn wizard-btn--ghost" onClick={addRow}>
+        <Button type="button" variant="outline" onClick={addRow}>
           + {addLabel}
-        </button>
+        </Button>
       </div>
 
       {rules.length > 0 ? (

@@ -77,9 +77,8 @@ def match_products(
     source_material_group: pd.Series | None,
     target_prdid: pd.Series,
     target_prodgroup: pd.Series | None = None,
-    target_proddesc: pd.Series | None = None,
-    target_prdiddem: pd.Series | None = None,
-    target_sprdid: pd.Series | None = None,
+    target_descriptions: list[pd.Series] | None = None,
+    target_alt_ids: list[pd.Series] | None = None,
     source_order_item_text: pd.Series | None = None,
     overrides: dict[str, str] | None = None,
 ) -> ValueMapping:
@@ -106,29 +105,37 @@ def match_products(
     prdid_norm = {_normalize_identity(p): p for p in prdid_set}
     prodgroup_by_prdid = _value_groups(target_prdid, target_prodgroup)
 
-    # Rule 4 reachability check — see module docstring.
-    alt_id_by_value: dict[str, str] = {}
-    for alt_col in (target_prdiddem, target_sprdid):
+    # Rule 4 reachability check — see module docstring. ``target_alt_ids`` is a
+    # tier-ranked list of alternate-id columns (PRDIDDEM, SPRDID, ZPECID, …);
+    # each value keeps the column it came from so evidence can cite it. First
+    # column (highest tier) wins on collision.
+    alt_id_by_value: dict[str, tuple[str, str]] = {}  # alt_value -> (prdid, field)
+    for idx, alt_col in enumerate(target_alt_ids or []):
         if alt_col is None:
             continue
+        label = str(alt_col.name) if alt_col.name is not None else f"ALT_ID_{idx}"
         paired = pd.DataFrame({"alt": alt_col.astype(str), "prdid": target_prdid.astype(str)})
         paired = paired[
             paired["alt"].notna() & (paired["alt"].str.strip() != "") & (paired["alt"].str.lower() != "none")
         ]
         for alt, prdid in zip(paired["alt"], paired["prdid"]):
-            alt_id_by_value.setdefault(alt, prdid)
+            alt_id_by_value.setdefault(alt, (prdid, label))
     alt_id_reachable = bool(alt_id_by_value)
 
-    # Rule 5: PRODDESC -> {every PRDID seen with it} (never first-wins — an
+    # Rule 5: description -> {every PRDID seen with it} (never first-wins — an
     # ambiguous description must surface ALL candidates, not silently pick one).
-    desc_to_prdids: dict[str, list[str]] = {}
-    if target_proddesc is not None:
-        paired = pd.DataFrame({"desc": target_proddesc.astype(str), "prdid": target_prdid.astype(str)})
+    # ``target_descriptions`` is a tier-ranked list of description columns
+    # (PRODDESC, PRODDESCDEM, SPRODDESC, …); their maps are unioned so a match
+    # in any of them reaches the bridge.
+    grouped: dict[str, set[str]] = {}
+    for desc_col in (target_descriptions or []):
+        if desc_col is None:
+            continue
+        paired = pd.DataFrame({"desc": desc_col.astype(str), "prdid": target_prdid.astype(str)})
         paired = paired[paired["desc"].notna() & (paired["desc"].str.strip() != "")]
-        grouped: dict[str, set[str]] = {}
         for desc, prdid in zip(paired["desc"], paired["prdid"]):
             grouped.setdefault(_normalize_text(desc), set()).add(prdid)
-        desc_to_prdids = {k: sorted(v) for k, v in grouped.items()}
+    desc_to_prdids: dict[str, list[str]] = {k: sorted(v) for k, v in grouped.items()}
     desc_bridge_reachable = source_order_item_text is not None and bool(desc_to_prdids)
 
     matches: list[ValueMatch] = []
@@ -221,16 +228,16 @@ def match_products(
             )
             continue
 
-        # Rule 4: alternate id (PRDIDDEM/SPRDID) — only if reachable at all.
+        # Rule 4: alternate id (PRDIDDEM/SPRDID/…) — only if reachable at all.
         if alt_id_reachable and material in alt_id_by_value:
-            target_val = alt_id_by_value[material]
+            target_val, alt_field = alt_id_by_value[material]
             matches.append(
                 ValueMatch(
                     source_value=material,
                     target_value=target_val,
                     confidence=Confidence.HIGH,
                     rule="product.rule4_alternate_id",
-                    evidence=f"Matched via alternate id (PRDIDDEM/SPRDID) to PRDID {target_val!r}.",
+                    evidence=f"Matched via alternate id ({alt_field}) to PRDID {target_val!r}.",
                     row_count=row_count,
                 )
             )
@@ -290,9 +297,9 @@ def match_products(
         reason = "No PRDID matches this Material by any deterministic rule"
         unreachable_notes = []
         if not alt_id_reachable:
-            unreachable_notes.append("rule 4/alternate-id: PRDIDDEM/SPRDID are empty in this target data")
+            unreachable_notes.append("rule 4/alternate-id: no alternate-id columns populated in this target data")
         if not desc_bridge_reachable:
-            unreachable_notes.append("rule 5/description-bridge: no SalesOrderItemText supplied or no PRODDESC data")
+            unreachable_notes.append("rule 5/description-bridge: no SalesOrderItemText supplied or no description data")
         if unreachable_notes:
             reason += " (unreachable rules: " + "; ".join(unreachable_notes) + ")"
         matches.append(

@@ -7,6 +7,9 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWizard } from "../context/useWizard";
+import { Button, Badge, Tabs } from "@bristlecone/canopy";
+import { TIER_BADGE_VARIANT } from "../lib/badgeVariants";
+import AuxiliaryFieldsPanel from "../components/AuxiliaryFieldsPanel";
 
 const TIER_LABEL = {
   very_high: "VERY_HIGH",
@@ -19,7 +22,11 @@ const TIER_LABEL = {
 const TIER_ORDER = ["very_high", "high", "medium", "out_of_scope", "none"];
 
 function TierBadge({ tier }) {
-  return <span className={`tier-badge tier-badge--${tier}`}>{TIER_LABEL[tier] ?? tier}</span>;
+  return (
+    <Badge variant={TIER_BADGE_VARIANT[tier] ?? "default"}>
+      {TIER_LABEL[tier] ?? tier}
+    </Badge>
+  );
 }
 
 function tierCounts(matches) {
@@ -56,38 +63,33 @@ function FieldMappingSection({ title, mapping }) {
   }
 
   return (
-    <section className="wizard-section">
+    <section className="wizard-section section-shade section-shade--base">
       <h3 className="wizard-section__title">
         {title}: {mapping.source_field} → {mapping.target_field}
       </h3>
-      <div className="contract-summary">
+      <div className="contract-summary section-tier-strip">
         {TIER_ORDER.map((tier) => (
-          <span key={tier} className="contract-summary__chip">
+          <Badge key={tier} variant="default">
             {TIER_LABEL[tier]}: {counts[tier]}
-          </span>
+          </Badge>
         ))}
       </div>
 
-      <div className="mapping-review__tabs">
-        {[
-          ["all", `All (${matches.length})`],
-          ["very_high", `VERY_HIGH (${counts.very_high})`],
-          ["high", `HIGH (${counts.high})`],
-          ["medium", `MEDIUM (${counts.medium})`],
-          ["none", `NONE (${counts.none})`],
-          ["unmapped", `Unmapped (${counts.none})`],
-          ["excluded", `Excluded from scope (${counts.out_of_scope})`],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            className={`mapping-review__tab${tab === key ? " mapping-review__tab--active" : ""}`}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        className="mapping-review__tabs"
+        variant="pills"
+        value={tab}
+        onChange={setTab}
+        items={[
+          { id: "all", label: `All (${matches.length})` },
+          { id: "very_high", label: `VERY_HIGH (${counts.very_high})` },
+          { id: "high", label: `HIGH (${counts.high})` },
+          { id: "medium", label: `MEDIUM (${counts.medium})` },
+          { id: "none", label: `NONE (${counts.none})` },
+          { id: "unmapped", label: `Unmapped (${counts.none})` },
+          { id: "excluded", label: `Excluded from scope (${counts.out_of_scope})` },
+        ]}
+      />
 
       {tab === "excluded" && (
         <p className="wizard-field__help">
@@ -173,16 +175,16 @@ function MappingReviewPage() {
           </p>
         </div>
         <footer className="wizard-step__footer">
-          <button type="button" className="wizard-btn wizard-btn--ghost" onClick={backToMapping}>
+          <Button type="button" variant="outline" onClick={backToMapping}>
             Back to Mapping
-          </button>
+          </Button>
         </footer>
       </section>
     );
   }
 
   return (
-    <section className="wizard-step">
+    <section className="wizard-step wizard-step--canvas">
       <header className="wizard-step__header">
         <p className="wizard-step__eyebrow">Mapping — Mapping Review</p>
         <h2 className="wizard-step__title">Mapping Review</h2>
@@ -195,12 +197,13 @@ function MappingReviewPage() {
       <div className="wizard-step__body">
         <FieldMappingSection title="Material" mapping={valueMappings.product} />
         <FieldMappingSection title="Plant" mapping={valueMappings.location} />
+        <AuxiliaryFieldsPanel auxiliaryFields={valueMappings.auxiliaryFields} />
       </div>
 
       <footer className="wizard-step__footer">
-        <button type="button" className="wizard-btn wizard-btn--ghost" onClick={backToMapping}>
+        <Button type="button" variant="outline" onClick={backToMapping}>
           Back to Mapping
-        </button>
+        </Button>
       </footer>
     </section>
   );

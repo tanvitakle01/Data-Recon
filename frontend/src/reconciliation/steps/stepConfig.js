@@ -3,7 +3,7 @@ export const WIZARD_STEPS = [
     key: "comparisonType",
     path: "comparison-type",
     number: 1,
-    label: "Type",
+    label: "Dataset Type",
     description: "Choose the business process being reconciled.",
   },
   {

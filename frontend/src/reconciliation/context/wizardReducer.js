@@ -8,6 +8,9 @@ export const WizardActions = {
   SET_DATASET: "SET_DATASET",
   RESET_ROLE: "RESET_ROLE",
   SET_COMPARISON_TYPE: "SET_COMPARISON_TYPE",
+  SET_SHEET_IDENTIFICATION: "SET_SHEET_IDENTIFICATION",
+  CLEAR_SHEET_IDENTIFICATION: "CLEAR_SHEET_IDENTIFICATION",
+  CLEAR_FIELD_CHANGE_NOTICE: "CLEAR_FIELD_CHANGE_NOTICE",
   SET_MAPPING_MODE: "SET_MAPPING_MODE",
   SET_MAPPING_SHEET: "SET_MAPPING_SHEET",
   SET_PARSED_MAPPING_SHEET: "SET_PARSED_MAPPING_SHEET",
@@ -50,6 +53,11 @@ function createInitialTransformationSpec() {
     // valueMappings/deterministicContract), so switching between them never
     // discards the other flow's progress.
     mappingMode: null,
+    // Non-fatal notice shown when a field-selection / dataset change reset
+    // derived work (an approved contract/preview) or orphaned a typed rule.
+    // Surfaced plainly rather than silently swallowed — see
+    // computeFieldChangeNotice. Cleared on a fresh connector/role reset.
+    fieldChangeNotice: null,
     mappingSheet: null, // { name, size, file } — optional uploaded mapping sheet
     parsedMappingSheet: null, // /api/recon/mapping-sheet/parse response (structured rows)
     // Structured Business Rules Builder output — replaces the old free-text
@@ -60,7 +68,7 @@ function createInitialTransformationSpec() {
     // Structured aggregation rules ({ field, aggregation }) applied before
     // reconciliation.
     aggregationRules: [],
-    mapping: null, // { display: [...], mapping: {...} } from /automap, possibly hand-edited
+    mapping: null, // { display: [...], mapping: {...} } from /api/recon/mapping/infer (LLM), possibly hand-edited
     // Deterministic value-level mapping (Material->PRDID, ProductionPlant->LOCID)
     // from /api/recon/value-mapping/run, reviewed on the Mapping Review page.
     valueMappings: null, // { product: ValueMapping, location: ValueMapping } | null
@@ -99,9 +107,52 @@ export function createInitialWizardState() {
     source: createInitialRoleState(),
     target: createInitialRoleState(),
     comparisonType: null,
+    // Sheet-driven system identification from the Step 1 mapping-sheet upload.
+    // Drives the Step 2/3 connector auto-select + field pre-selection. Null
+    // until a sheet is uploaded and identified; independent of the Step 4
+    // mapping-sheet upload (which is preserved unchanged).
+    sheetIdentification: null,
     transformationSpec: createInitialTransformationSpec(),
     reconciliation: null,
   };
+}
+
+// A field-selection / dataset change is only *sometimes* destructive. Typed
+// business rules survive it (they are not cleared by invalidateDerivedState),
+// but derived, field-dependent artifacts (an approved contract, an approved
+// shadow/script preview) genuinely become stale. Rather than silently drop
+// that work, we compute a human-readable notice describing exactly what got
+// reset and which typed rules now reference fields that no longer exist.
+function computeFieldChangeNotice(prevState, role, newDataset) {
+  const spec = prevState.transformationSpec;
+  const notices = [];
+
+  if (spec.contract || spec.deterministicContract || spec.shadowApproved || spec.scriptApproval) {
+    notices.push(
+      `Your approved mapping/preview was reset because the ${role} dataset changed — re-review and re-approve on the Mapping step.`
+    );
+  }
+
+  const otherRole = role === "source" ? "target" : "source";
+  const columns = new Set([
+    ...(newDataset?.columns ?? []),
+    ...(prevState[otherRole]?.dataset?.columns ?? []),
+  ]);
+  const ruleFields = [];
+  for (const key of ["transformationRules", "matchingRules", "filterRules", "aggregationRules"]) {
+    for (const rule of spec[key] ?? []) {
+      const field = rule?.field ?? rule?.source_field;
+      if (field) ruleFields.push(field);
+    }
+  }
+  const orphaned = [...new Set(ruleFields.filter((f) => !columns.has(f)))];
+  if (orphaned.length > 0) {
+    notices.push(
+      `These rules now reference fields no longer in the data: ${orphaned.join(", ")}. Review them on the Mapping step.`
+    );
+  }
+
+  return notices.length > 0 ? notices.join(" ") : null;
 }
 
 // The next step to unlock/navigate to, skipping steps hidden for the current
@@ -119,7 +170,7 @@ function nextStepKey(state, key) {
 // "Mapped source key column missing: 'Plant'"). Clear that derived state and
 // re-lock the downstream steps so the mapping is recomputed against the fresh
 // columns and the comparison is re-run.
-function invalidateDerivedState(state) {
+function invalidateDerivedState(state, fieldChangeNotice = null) {
   const stepStatus = { ...state.stepStatus };
   // Transformation Spec becomes available again only once the step directly
   // before it is complete. Deriving the predecessor from STEP_KEYS keeps this
@@ -145,6 +196,9 @@ function invalidateDerivedState(state) {
       ...state.transformationSpec,
       // mappingMode is a UI choice, not derived data — preserved across a
       // dataset change so the user isn't bounced back to the method chooser.
+      // fieldChangeNotice carries the human-readable explanation of what this
+      // change reset (null clears any prior notice on a fresh connector/reset).
+      fieldChangeNotice,
       mapping: null,
       valueMappings: null,
       draftContract: null,
@@ -184,10 +238,16 @@ export function wizardReducer(state, action) {
       const { role, dataset } = action;
       // Fresh data loaded (upload or re-fetch): replace this role's dataset
       // wholesale and clear any stale mapping/results derived from prior data.
-      return invalidateDerivedState({
-        ...state,
-        [role]: { ...state[role], dataset, status: "ready", error: null },
-      });
+      // When this genuinely resets approved work or orphans a typed rule, a
+      // notice is computed and surfaced rather than silently swallowed (1c).
+      const notice = computeFieldChangeNotice(state, role, dataset);
+      return invalidateDerivedState(
+        {
+          ...state,
+          [role]: { ...state[role], dataset, status: "ready", error: null },
+        },
+        notice
+      );
     }
 
     case WizardActions.RESET_ROLE: {
@@ -197,6 +257,21 @@ export function wizardReducer(state, action) {
 
     case WizardActions.SET_COMPARISON_TYPE:
       return { ...state, comparisonType: action.comparisonType };
+
+    case WizardActions.SET_SHEET_IDENTIFICATION:
+      // Result of the Step 1 sheet upload → /mapping-sheet/identify. Purely
+      // advisory: it seeds the Step 2/3 connector auto-select + field
+      // pre-selection but never itself locks a connector or a dataset.
+      return { ...state, sheetIdentification: action.identification };
+
+    case WizardActions.CLEAR_SHEET_IDENTIFICATION:
+      return { ...state, sheetIdentification: null };
+
+    case WizardActions.CLEAR_FIELD_CHANGE_NOTICE:
+      return {
+        ...state,
+        transformationSpec: { ...state.transformationSpec, fieldChangeNotice: null },
+      };
 
     case WizardActions.SET_MAPPING_MODE:
       // Purely records which flow the user is working in. Never clears the

@@ -15,6 +15,7 @@ import ContractRunResults from "../components/ContractRunResults";
 import DateAlignmentDiagnostic from "../components/DateAlignmentDiagnostic";
 import SummaryCards from "../../components/SummaryCards";
 import ReconciliationResults from "../../components/ReconciliationResults";
+import { Button } from "@bristlecone/canopy";
 
 // Derives business_key / compare_fields for the script-flow production run
 // from the same (possibly hand-edited) field mapping the contract flow uses.
@@ -271,14 +272,15 @@ function ReconciliationRunStep() {
   return (
     <StepShell stepKey="reconciliation" canContinue>
       <div className="recon-run">
-        <button
+        <Button
           type="button"
-          className="wizard-btn wizard-btn--primary wizard-btn--lg"
+          variant="primary"
+          size="lg"
           onClick={runReconciliation}
           disabled={loading}
         >
           {loading ? loadingLabel : reconciliation ? "Re-run Reconciliation" : "Run Reconciliation"}
-        </button>
+        </Button>
         <span className="recon-run__hint">
           {source.dataset?.filename} → {target.dataset?.filename}
           {comparisonType ? ` · ${comparisonType.label}` : ""}

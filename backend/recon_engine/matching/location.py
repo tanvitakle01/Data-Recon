@@ -51,10 +51,10 @@ def _embedded_match(code: str, haystack: str) -> bool:
         start = idx + 1
 
 
-def _locid_for_name(locname: str, target_locid: pd.Series, target_locname: pd.Series) -> str | None:
-    """Resolve a LOCNAME hit back to its LOCID — the field we actually map to."""
-    paired = pd.DataFrame({"id": target_locid.astype(str), "name": target_locname.astype(str)})
-    hit = paired[paired["name"] == locname]
+def _locid_for_name(name_value: str, target_locid: pd.Series, alt_name_series: pd.Series) -> str | None:
+    """Resolve an alt-name hit back to its LOCID — the field we actually map to."""
+    paired = pd.DataFrame({"id": target_locid.astype(str), "name": alt_name_series.astype(str)})
+    hit = paired[paired["name"] == name_value]
     return str(hit["id"].iloc[0]) if not hit.empty else None
 
 
@@ -62,10 +62,18 @@ def match_locations(
     *,
     source_plant: pd.Series,
     target_locid: pd.Series,
-    target_locname: pd.Series | None = None,
+    target_alt_names: list[pd.Series] | None = None,
     overrides: dict[str, str] | None = None,
 ) -> ValueMapping:
     """Match every distinct SAP ``ProductionPlant`` value to an IBP ``LOCID`` value.
+
+    ``target_alt_names`` is a TIER-RANKED list of alternate name/description
+    columns (e.g. ``LOCNAME`` then ``LOCDESCRDEM``) recommended by the MDT
+    Auxiliary Field Recommender — matching-evidence only, tried in order for
+    Rule 2's embedded-code fallback. Each Series carries its column name via
+    ``.name`` so the evidence string cites which field matched. These columns
+    are consumed here and NEVER surface in the mapping output beyond evidence
+    text.
 
     ``overrides`` (source_value -> target_value) short-circuits every rule for
     that value and is recorded at VERY_HIGH with rule ``"location.override"``.
@@ -76,10 +84,16 @@ def match_locations(
     plant_counts = plant_counts[plant_counts.str.strip() != ""].value_counts()
 
     locid_list = sorted(set(target_locid.dropna().astype(str)) - {""})
-    locname_list = (
-        sorted(set(target_locname.dropna().astype(str)) - {""}) if target_locname is not None else []
-    )
     locid_set = set(locid_list)
+
+    # Tier-ranked alt-name columns: (field_label, distinct_values, series).
+    alt_name_lists: list[tuple[str, list[str], pd.Series]] = []
+    for idx, series in enumerate(target_alt_names or []):
+        if series is None:
+            continue
+        label = str(series.name) if series.name is not None else f"ALT_NAME_{idx}"
+        values = sorted(set(series.dropna().astype(str)) - {""})
+        alt_name_lists.append((label, values, series))
 
     matches: list[ValueMatch] = []
     for plant, row_count in plant_counts.items():
@@ -112,17 +126,23 @@ def match_locations(
             )
             continue
 
-        # Rule 2: plant code embedded in LOCID or LOCNAME (boundary-aware).
+        # Rule 2: plant code embedded in LOCID or an alt-name column
+        # (boundary-aware). LOCID is tried first, then each tier-ranked
+        # alt-name column in order.
         embedded_in = next((loc for loc in locid_list if _embedded_match(plant, loc)), None)
         field = "LOCID"
+        matched_alt_series: pd.Series | None = None
         if embedded_in is None:
-            embedded_in = next((loc for loc in locname_list if _embedded_match(plant, loc)), None)
-            field = "LOCNAME"
+            for label, values, series in alt_name_lists:
+                hit = next((n for n in values if _embedded_match(plant, n)), None)
+                if hit is not None:
+                    embedded_in, field, matched_alt_series = hit, label, series
+                    break
         if embedded_in is not None:
             target_val = (
                 embedded_in
                 if field == "LOCID"
-                else _locid_for_name(embedded_in, target_locid, target_locname)
+                else _locid_for_name(embedded_in, target_locid, matched_alt_series)
             )
             if target_val is not None:
                 matches.append(

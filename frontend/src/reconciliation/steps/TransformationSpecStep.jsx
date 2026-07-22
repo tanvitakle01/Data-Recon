@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
+import JsonViewer from "../../components/JsonViewer";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import {
@@ -11,7 +12,9 @@ import {
   cleanAggregationRules,
   cleanBusinessRules,
   hasMappingPayload,
+  mergeGeneratedMapping,
   missingValueMappingRequirements,
+  rebuildMapping,
   sampleRows,
 } from "../lib/payload";
 import {
@@ -21,12 +24,14 @@ import {
   runContractReconciliation,
 } from "../lib/reconRun";
 import StepShell from "../components/StepShell";
+import MappingCard from "../components/MappingCard";
 import MappingEditor from "../components/MappingEditor";
 import BusinessRulesBuilder from "../components/BusinessRulesBuilder";
 import AggregationRulesBuilder from "../components/AggregationRulesBuilder";
 import StatusBadge from "../components/StatusBadge";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
 import ShadowPreviewPanel from "../components/ShadowPreviewPanel";
+import { Button, Badge } from "@bristlecone/canopy";
 
 const DOC_ACCEPT = ".xlsx,.xls,.csv";
 
@@ -84,6 +89,9 @@ function TransformationSpecStep() {
   );
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState(null);
+  // Non-blocking notice from the inference call: a provider-failover message
+  // (served by OpenAI) or a degraded reason (no mapping could be generated).
+  const [mapNotice, setMapNotice] = useState(null);
   const [valueMappingLoading, setValueMappingLoading] = useState(false);
   const [valueMappingError, setValueMappingError] = useState(null);
   const [valueMappingSuccess, setValueMappingSuccess] = useState(false);
@@ -171,17 +179,21 @@ function TransformationSpecStep() {
     if (mappingSheetInputRef.current) mappingSheetInputRef.current.value = "";
   };
 
-  // ── auto-mapping (existing heuristic path, unchanged) ─────────────────────
-  const runAutomap = useCallback(async () => {
+  // ── LLM-inferred field mapping (no-mapping-sheet path) ────────────────────
+  // Infers the source→target FIELD mapping (column→column + Key/Compare role)
+  // from a sample of the fetched data, via the Groq→OpenAI failover client.
+  // FIELD mapping only — value-to-value mapping stays the deterministic
+  // matcher's job. `preserveEdits` keeps rows the user hand-edited and refreshes
+  // only the untouched generated ones (Regenerate); the first run replaces.
+  const runInference = useCallback(async ({ preserveEdits = false, forceLlm = false } = {}) => {
     if (!source.dataset || !target.dataset) return;
 
     const formData = new FormData();
     // Auto-selected MDT/recommended fields (tracked per dataset by the
-    // connector workspaces) are excluded here — before the auto-mapping
-    // heuristic ever sees them — so they can't be classified alongside (and
-    // positionally zipped against) the fields the user actually picked. They
-    // stay in the dataset itself for tracking/validation/approval; only the
-    // /automap request omits them.
+    // connector workspaces) are excluded here — before the inference ever sees
+    // them — so they are never proposed as field-mapping candidates. They feed
+    // the deterministic matcher as evidence and stay in the dataset itself for
+    // tracking/validation/approval; only the inference request omits them.
     const okSource = appendDatasetSide(formData, "source", source, source.dataset?.mdtFields);
     const okTarget = appendDatasetSide(formData, "target", target, target.dataset?.mdtFields);
     if (!okSource || !okTarget) {
@@ -189,21 +201,55 @@ function TransformationSpecStep() {
       return;
     }
 
+    // Attribute-library (tier 1) lookup key: connectors + comparison type + the
+    // FULL per-side column sets. These same source.dataset.columns are sent to
+    // /contracts/compile as source_schema/target_schema, so the canonical key
+    // computed here matches the one store-back uses on run completion — that
+    // equality is what makes an identical column set reuse the stored mapping.
+    // `forceLlm` (Regenerate) skips the library and re-infers via the LLM.
+    formData.append("source_connector", source.kind ?? "excel");
+    formData.append("target_connector", target.kind ?? "excel");
+    formData.append("comparison_type", comparisonType?.id ?? "custom");
+    formData.append("source_columns", JSON.stringify(source.dataset?.columns ?? []));
+    formData.append("target_columns", JSON.stringify(target.dataset?.columns ?? []));
+    if (forceLlm) formData.append("regenerate", "true");
+
     setMapLoading(true);
     setMapError(null);
+    setMapNotice(null);
     try {
-      const res = await api.post("/automap", formData);
+      const res = await api.post("/api/recon/mapping/infer", formData);
+      const data = res.data ?? {};
+      const inferred = data.display ?? [];
+      const nextDisplay = preserveEdits
+        ? mergeGeneratedMapping(mapping?.display, inferred)
+        : inferred;
       dispatch({
         type: WizardActions.SET_TRANSFORMATION_MAPPING,
-        mapping: { display: res.data?.display ?? [], mapping: res.data?.mapping ?? null },
+        mapping: {
+          display: nextDisplay,
+          mapping: rebuildMapping(nextDisplay, data.mapping?.options),
+          // Provenance of the whole card so MappingEditor can label the source
+          // ("Generated via Vector Library" vs "Generated via Groq/OpenAI").
+          origin: {
+            source: data.source ?? null,
+            provider: data.provider ?? null,
+            version: data.library_version ?? null,
+            confidence: data.confidence ?? null,
+          },
+        },
       });
+      // Surface a degraded reason (nothing generated) or a provider-failover
+      // notice (served by OpenAI) without blocking — the table is still usable.
+      if (data.degraded && data.degraded_reason) setMapNotice(data.degraded_reason);
+      else if (data.provider_notice) setMapNotice(data.provider_notice);
     } catch (err) {
       const detail = err?.response?.data?.detail;
-      setMapError(typeof detail === "string" ? detail : "Auto-mapping failed.");
+      setMapError(typeof detail === "string" ? detail : "Field-mapping inference failed.");
     } finally {
       setMapLoading(false);
     }
-  }, [source, target, dispatch]);
+  }, [source, target, comparisonType, dispatch, mapping]);
 
   // Generate suggested mappings automatically when this step has both datasets
   // and no mapping yet — including after a re-upload/re-fetch, which changes
@@ -215,9 +261,9 @@ function TransformationSpecStep() {
     const signature = datasetSignature(source, target);
     if (mappedSignatureRef.current === signature) return;
     mappedSignatureRef.current = signature;
-    const id = setTimeout(runAutomap, 0);
+    const id = setTimeout(() => runInference({ preserveEdits: false }), 0);
     return () => clearTimeout(id);
-  }, [mapping, source, target, runAutomap]);
+  }, [mapping, source, target, runInference]);
 
   // ── deterministic value mapping (Material->PRDID, ProductionPlant->LOCID) ──
   const missingValueMappingReqs = useMemo(
@@ -242,7 +288,14 @@ function TransformationSpecStep() {
       const res = await api.post("/api/recon/value-mapping/run", formData);
       dispatch({
         type: WizardActions.SET_VALUE_MAPPINGS,
-        valueMappings: { product: res.data?.product ?? null, location: res.data?.location ?? null },
+        valueMappings: {
+          product: res.data?.product ?? null,
+          location: res.data?.location ?? null,
+          // Recommended-for-Deterministic-Mapping auxiliary evidence fields
+          // (tier + fill rate + consumed). Surfaced on the Mapping Review page;
+          // never sent into the compile payload (see value_mappings below).
+          auxiliaryFields: res.data?.auxiliary_fields ?? null,
+        },
       });
       setValueMappingSuccess(true);
     } catch (err) {
@@ -386,7 +439,7 @@ function TransformationSpecStep() {
       return "Source and target data must be loaded (with columns detected) before generating transformation rules. Go back to Steps 1–2.";
     }
     if (!comparisonType?.id) {
-      return "Select a comparison type before generating transformation rules.";
+      return "Select a dataset type before generating transformation rules.";
     }
     if (mappingSheet?.name && !parsedMappingSheet) {
       return "The uploaded mapping sheet hasn't finished parsing yet (or failed to parse). Wait for parsing to complete, or remove it and confirm a field mapping instead.";
@@ -499,6 +552,10 @@ function TransformationSpecStep() {
 
   return (
     <StepShell stepKey="transformationSpec" canContinue hideContinue={hideContinue}>
+      {/* Persistent at-a-glance mapping summary + back-links to Steps 2/3.
+          Anchored at #mapping-card (linked from the sidebar). */}
+      <MappingCard />
+
       {/* Mapping-method chooser (no method picked yet) */}
       {mappingMode === null && (
         <section className="wizard-section">
@@ -553,22 +610,26 @@ function TransformationSpecStep() {
             </p>
             <MappingEditor
               mapping={mapping}
+              sourceColumns={sourceColumns}
               targetColumns={targetColumns}
               loading={mapLoading}
               error={mapError}
+              notice={mapNotice}
               onChange={(next) =>
                 dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
               }
               onRegenerate={() => {
                 mappedSignatureRef.current = datasetSignature(source, target);
-                runAutomap();
+                // Regenerate always drops to the LLM (tier 2) and relabels, even
+                // if a library entry exists — the user asked for a fresh inference.
+                runInference({ preserveEdits: true, forceLlm: true });
               }}
             />
 
             <div className="contract-actions" style={{ marginTop: 10 }}>
-              <button
+              <Button
                 type="button"
-                className="wizard-btn wizard-btn--ghost"
+                variant="outline"
                 onClick={runValueMapping}
                 disabled={!canRunValueMapping || valueMappingLoading}
                 title={
@@ -581,15 +642,16 @@ function TransformationSpecStep() {
                 }
               >
                 {valueMappingLoading ? "Matching…" : "Run Deterministic Mapping"}
-              </button>
+              </Button>
               {valueMappings && (
-                <button
+                <Button
                   type="button"
-                  className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                  variant="outline"
+                  size="sm"
                   onClick={() => navigate("/reconciliation/transformation-spec/mapping-review")}
                 >
                   View Mapping Review
-                </button>
+                </Button>
               )}
             </div>
             {valueMappingError && <p className="wizard-step__error">⚠️ {valueMappingError}</p>}
@@ -609,9 +671,10 @@ function TransformationSpecStep() {
               Reconciliation shows the counts to confirm, then runs.
             </p>
             <div className="contract-actions">
-              <button
+              <Button
                 type="button"
-                className="wizard-btn wizard-btn--primary wizard-btn--lg"
+                variant="primary"
+                size="lg"
                 onClick={runDeterministicReconciliation}
                 disabled={!canRunDeterministicRecon || detRunning}
                 title={
@@ -623,7 +686,7 @@ function TransformationSpecStep() {
                 }
               >
                 {detRunning ? "Reconciling…" : "Run Reconciliation"}
-              </button>
+              </Button>
             </div>
             {!valueMappings && (
               <p className="wizard-field__help">
@@ -658,34 +721,36 @@ function TransformationSpecStep() {
             <div className="doc-upload">
               {mappingSheet?.name ? (
                 <div className="doc-upload__file">
-                  <span className="doc-upload__badge">✓ {mappingSheet.name}</span>
-                  <button
+                  <Badge variant="success">✓ {mappingSheet.name}</Badge>
+                  <Button
                     type="button"
-                    className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                    variant="outline"
+                    size="sm"
                     onClick={() => mappingSheetInputRef.current?.click()}
                   >
                     Replace
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
-                    className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                    variant="outline"
+                    size="sm"
                     onClick={removeMappingSheet}
                   >
                     Remove
-                  </button>
+                  </Button>
                 </div>
               ) : (
-                <button
+                <Button
                   type="button"
-                  className="wizard-btn wizard-btn--ghost"
+                  variant="outline"
                   onClick={() => mappingSheetInputRef.current?.click()}
                 >
                   Upload Mapping Sheet
-                </button>
+                </Button>
               )}
               {parseLoading && <span className="wizard-step__hint">Parsing…</span>}
               {parsedMappingSheet && (
-                <span className="doc-upload__badge">✓ {parsedMappingSheet.row_count} rows</span>
+                <Badge variant="success">✓ {parsedMappingSheet.row_count} rows</Badge>
               )}
               {parseError && <p className="wizard-step__error">⚠️ {parseError}</p>}
             </div>
@@ -723,15 +788,19 @@ function TransformationSpecStep() {
             <p className="wizard-field__help">Review source-to-target mappings.</p>
             <MappingEditor
               mapping={mapping}
+              sourceColumns={sourceColumns}
               targetColumns={targetColumns}
               loading={mapLoading}
               error={mapError}
+              notice={mapNotice}
               onChange={(next) =>
                 dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
               }
               onRegenerate={() => {
                 mappedSignatureRef.current = datasetSignature(source, target);
-                runAutomap();
+                // Regenerate always drops to the LLM (tier 2) and relabels, even
+                // if a library entry exists — the user asked for a fresh inference.
+                runInference({ preserveEdits: true, forceLlm: true });
               }}
             />
           </section>
@@ -763,9 +832,9 @@ function TransformationSpecStep() {
               </div>
 
               <div className="contract-actions">
-                <button
+                <Button
                   type="button"
-                  className="wizard-btn wizard-btn--primary"
+                  variant="primary"
                   onClick={generateContract}
                   disabled={!canGenerate || compileLoading}
                 >
@@ -774,10 +843,10 @@ function TransformationSpecStep() {
                     : draftContract
                       ? "Regenerate Transformation Rules"
                       : "Generate Transformation Rules"}
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
-                  className="wizard-btn wizard-btn--primary"
+                  variant="primary"
                   onClick={approveContract}
                   disabled={!draftContract || !validation?.ok || Boolean(contract) || approveLoading}
                 >
@@ -786,7 +855,7 @@ function TransformationSpecStep() {
                     : contract
                       ? "Transformation Rules Approved"
                       : "Approve Transformation Rules"}
-                </button>
+                </Button>
               </div>
 
               {contractError && <p className="wizard-step__error">⚠️ {contractError}</p>}
@@ -829,37 +898,39 @@ function TransformationSpecStep() {
               {draftContract && (
                 <>
                   <div className="contract-summary">
-                    <span className="contract-summary__chip">
+                    <Badge variant="default">
                       Business Keys: {draftContract.business_key?.length ?? 0}
-                    </span>
-                    <span className="contract-summary__chip">
+                    </Badge>
+                    <Badge variant="default">
                       Compare Fields: {draftContract.compare_fields?.length ?? 0}
-                    </span>
-                    <span className="contract-summary__chip">
+                    </Badge>
+                    <Badge variant="default">
                       Operations: {draftContract.operations?.length ?? 0}
-                    </span>
-                    <span className="contract-summary__chip">
+                    </Badge>
+                    <Badge variant="default">
                       Generation Method: {draftContract.compiler ?? "unknown"}
-                    </span>
-                    <span className="contract-summary__chip">
+                    </Badge>
+                    <Badge variant="default">
                       Rules Version: {contract ? `v${contract.contract_version}` : "draft"}
-                    </span>
+                    </Badge>
                   </div>
 
                   {/* Progressive disclosure: technical JSON hidden until requested. */}
                   <div className="contract-json-wrap">
-                    <button
+                    <Button
                       type="button"
-                      className="wizard-btn wizard-btn--ghost wizard-btn--sm"
+                      variant="outline"
+                      size="sm"
                       onClick={() => setShowContract((v) => !v)}
                       aria-expanded={showContract}
                     >
                       {showContract ? "Hide Transformation Rules" : "View Transformation Rules"}
-                    </button>
+                    </Button>
                     {showContract && (
-                      <pre className="contract-json">
-                        {JSON.stringify(contract ?? draftContract, null, 2)}
-                      </pre>
+                      <JsonViewer
+                        value={contract ?? draftContract}
+                        filename="transformation-contract.json"
+                      />
                     )}
                   </div>
                 </>

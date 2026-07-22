@@ -1,0 +1,179 @@
+/* ============================================================================
+   Data Recon — Redesign token layer (fresh Linear/Vercel-style palette)
+   Self-contained Tailwind v4 entry. Ported 1:1 from the Figma Step-2 tokens.
+   All names are new; nothing here collides with the existing app's index.css.
+   ========================================================================== */
+@import "tailwindcss";
+
+/* Scan the redesign tree for utility classes */
+@source "../**/*.{jsx,js}";
+
+/* ---- Tailwind theme mapping (inline => utilities reference the runtime vars,
+        so switching .rdx-dark re-themes every utility) ---------------------- */
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SFMono-Regular", ui-monospace, Consolas, monospace;
+
+  /* surfaces & lines */
+  --color-bg: var(--rdx-bg);
+  --color-surface: var(--rdx-surface);
+  --color-surface-2: var(--rdx-surface-2);
+  --color-surface-3: var(--rdx-surface-3);
+  --color-inset: var(--rdx-inset);
+  --color-line: var(--rdx-line);
+  --color-line-2: var(--rdx-line-2);
+  --color-line-3: var(--rdx-line-3);
+
+  /* text */
+  --color-text: var(--rdx-text);
+  --color-text-secondary: var(--rdx-text-secondary);
+  --color-muted: var(--rdx-muted);
+  --color-faint: var(--rdx-faint);
+  --color-on-accent: var(--rdx-on-accent);
+
+  /* accent */
+  --color-accent: var(--rdx-accent);
+  --color-accent-hover: var(--rdx-accent-hover);
+  --color-accent-active: var(--rdx-accent-active);
+  --color-accent-tint: var(--rdx-accent-tint);
+  --color-accent-ring: var(--rdx-accent-ring);
+  --color-accent-text: var(--rdx-accent-text);
+
+  /* semantic status — used identically everywhere */
+  --color-match-fg: var(--rdx-match-fg);
+  --color-match-bg: var(--rdx-match-bg);
+  --color-match-bd: var(--rdx-match-bd);
+  --color-match-solid: var(--rdx-match-solid);
+  --color-high-fg: var(--rdx-high-fg);
+  --color-high-bg: var(--rdx-high-bg);
+  --color-high-bd: var(--rdx-high-bd);
+  --color-high-solid: var(--rdx-high-solid);
+  --color-medium-fg: var(--rdx-medium-fg);
+  --color-medium-bg: var(--rdx-medium-bg);
+  --color-medium-bd: var(--rdx-medium-bd);
+  --color-medium-solid: var(--rdx-medium-solid);
+  --color-mismatch-fg: var(--rdx-mismatch-fg);
+  --color-mismatch-bg: var(--rdx-mismatch-bg);
+  --color-mismatch-bd: var(--rdx-mismatch-bd);
+  --color-mismatch-solid: var(--rdx-mismatch-solid);
+  --color-missing-fg: var(--rdx-missing-fg);
+  --color-missing-bg: var(--rdx-missing-bg);
+  --color-missing-bd: var(--rdx-missing-bd);
+  --color-missing-solid: var(--rdx-missing-solid);
+  --color-scope-fg: var(--rdx-scope-fg);
+  --color-scope-bg: var(--rdx-scope-bg);
+  --color-scope-bd: var(--rdx-scope-bd);
+  --color-scope-solid: var(--rdx-scope-solid);
+  --color-extra-fg: var(--rdx-extra-fg);
+  --color-extra-bg: var(--rdx-extra-bg);
+  --color-extra-bd: var(--rdx-extra-bd);
+  --color-extra-solid: var(--rdx-extra-solid);
+  --color-info-fg: var(--rdx-info-fg);
+  --color-info-bg: var(--rdx-info-bg);
+  --color-info-bd: var(--rdx-info-bd);
+  --color-info-solid: var(--rdx-info-solid);
+
+  /* elevation */
+  --shadow-e1: 0 1px 2px rgba(11,13,18,.06), 0 1px 1px rgba(11,13,18,.04);
+  --shadow-e2: 0 2px 8px -1px rgba(11,13,18,.08), 0 1px 2px rgba(11,13,18,.05);
+  --shadow-e3: 0 8px 24px -4px rgba(11,13,18,.12), 0 2px 6px -1px rgba(11,13,18,.06);
+
+  /* motion */
+  --ease-brand: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ---- Light theme (default) ------------------------------------------------ */
+.rdx-root {
+  --rdx-bg: #FAFAFB;
+  --rdx-surface: #FFFFFF;
+  --rdx-surface-2: #F5F6F8;
+  --rdx-surface-3: #EEEFF2;
+  --rdx-inset: #F5F6F8;
+  --rdx-line: #E4E6EB;
+  --rdx-line-2: #D3D6DD;
+  --rdx-line-3: #A0A4AE;
+  --rdx-text: #12151C;
+  --rdx-text-secondary: #363B45;
+  --rdx-muted: #6C717C;
+  --rdx-faint: #A0A4AE;
+  --rdx-on-accent: #FFFFFF;
+  --rdx-accent: #5E6AD2;
+  --rdx-accent-hover: #4C57BE;
+  --rdx-accent-active: #3E47A0;
+  --rdx-accent-tint: #EEEFFC;
+  --rdx-accent-ring: #C6CAF4;
+  --rdx-accent-text: #4C57BE;
+
+  --rdx-match-fg: #047E58;  --rdx-match-bg: #E6F6EF;  --rdx-match-bd: #B4E5D3;  --rdx-match-solid: #10B981;
+  --rdx-high-fg: #5C8A22;   --rdx-high-bg: #F0F6E2;   --rdx-high-bd: #D6E9AE;   --rdx-high-solid: #84CC16;
+  --rdx-medium-fg: #B25A09; --rdx-medium-bg: #FCF0DA; --rdx-medium-bd: #F3D6A0; --rdx-medium-solid: #F59E0B;
+  --rdx-mismatch-fg: #C2410C; --rdx-mismatch-bg: #FCE7DB; --rdx-mismatch-bd: #F5C2A2; --rdx-mismatch-solid: #F97316;
+  --rdx-missing-fg: #C0453B; --rdx-missing-bg: #FAEBE9; --rdx-missing-bd: #F0CCC7; --rdx-missing-solid: #E5574B;
+  --rdx-scope-fg: #5A6472;  --rdx-scope-bg: #EDEFF3;  --rdx-scope-bd: #D5DAE2;  --rdx-scope-solid: #64748B;
+  --rdx-extra-fg: #0E7490;  --rdx-extra-bg: #E1F5FA;  --rdx-extra-bd: #AFE2EE;  --rdx-extra-solid: #06B6D4;
+  --rdx-info-fg: #2563EB;   --rdx-info-bg: #E7EEFD;   --rdx-info-bd: #C3D5FB;   --rdx-info-solid: #3B82F6;
+
+  background-color: var(--rdx-bg);
+  color: var(--rdx-text);
+  color-scheme: light;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* ---- Dark theme (toggle .rdx-dark on the root) ---------------------------- */
+.rdx-root.rdx-dark {
+  --rdx-bg: #0B0D12;
+  --rdx-surface: #12151C;
+  --rdx-surface-2: #181C24;
+  --rdx-surface-3: #21262F;
+  --rdx-inset: #0B0D12;
+  --rdx-line: #21262F;
+  --rdx-line-2: #363B45;
+  --rdx-line-3: #4C515C;
+  --rdx-text: #FAFAFB;
+  --rdx-text-secondary: #D3D6DD;
+  --rdx-muted: #A0A4AE;
+  --rdx-faint: #6C717C;
+  --rdx-on-accent: #0B0D12;
+  --rdx-accent: #838BE3;
+  --rdx-accent-hover: #A5ABEC;
+  --rdx-accent-active: #5E6AD2;
+  --rdx-accent-tint: #2A2F63;
+  --rdx-accent-ring: #3E47A0;
+  --rdx-accent-text: #A5ABEC;
+
+  --rdx-match-fg: #4BD0A0;  --rdx-match-bg: #10352A;  --rdx-match-bd: #1C5745;  --rdx-match-solid: #10B981;
+  --rdx-high-fg: #A6D95B;   --rdx-high-bg: #27310F;   --rdx-high-bd: #45521C;   --rdx-high-solid: #84CC16;
+  --rdx-medium-fg: #F5B547; --rdx-medium-bg: #3A2A0C; --rdx-medium-bd: #614413; --rdx-medium-solid: #F59E0B;
+  --rdx-mismatch-fg: #FB9257; --rdx-mismatch-bg: #3A1E0E; --rdx-mismatch-bd: #6B3517; --rdx-mismatch-solid: #F97316;
+  --rdx-missing-fg: #F2938A; --rdx-missing-bg: #371A18; --rdx-missing-bd: #5E2B27; --rdx-missing-solid: #E5574B;
+  --rdx-scope-fg: #9AA6B8;  --rdx-scope-bg: #232A34;  --rdx-scope-bd: #38414F;  --rdx-scope-solid: #64748B;
+  --rdx-extra-fg: #46C6E0;  --rdx-extra-bg: #0C2E37;  --rdx-extra-bd: #164B59;  --rdx-extra-solid: #06B6D4;
+  --rdx-info-fg: #7BA6F8;   --rdx-info-bg: #14203B;   --rdx-info-bd: #24386B;   --rdx-info-solid: #3B82F6;
+
+  background-color: var(--rdx-bg);
+  color: var(--rdx-text);
+  color-scheme: dark;
+}
+
+/* ---- Base niceties -------------------------------------------------------- */
+.rdx-root ::selection { background: var(--rdx-accent-ring); }
+.rdx-root *:focus-visible {
+  outline: 2px solid var(--rdx-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* thin, quiet scrollbars */
+.rdx-root ::-webkit-scrollbar { width: 10px; height: 10px; }
+.rdx-root ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--rdx-line-3) 55%, transparent);
+  border-radius: 999px; border: 2px solid transparent; background-clip: padding-box;
+}
+.rdx-root ::-webkit-scrollbar-thumb:hover { background: var(--rdx-line-3); background-clip: padding-box; }
+.rdx-root ::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rdx-root * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}

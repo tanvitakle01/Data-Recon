@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import StepShell from "../components/StepShell";
@@ -21,32 +22,62 @@ const CONNECTOR_OPTIONS = [
   { id: "custom", label: "Custom Connector", category: "Custom", kind: "custom", roles: [] },
 ];
 
+// The single configured Live-Fetch (SAP) connector for a given role. S/4HANA is
+// the only source system, IBP the only target — so Live Fetch resolves
+// deterministically per role even when no mapping sheet was uploaded.
+function liveFetchOptionFor(role) {
+  return CONNECTOR_OPTIONS.find(
+    (o) => o.category === "SAP" && o.roles.includes(role) && (o.kind === "s4" || o.kind === "ibp")
+  );
+}
+
+const EXCEL_OPTION = CONNECTOR_OPTIONS.find((o) => o.id === "excel_upload");
+
 const SAP_STAGE_LABELS = ["Select Connector", "Connect & Load Metadata", "Build Dataset", "Preview"];
 const FILE_STAGE_LABELS = ["Upload Dataset", "Dataset Preview"];
 const SAP_STAGE_INDEX = { connect: 1, build: 2, preview: 3 };
 
-// Renders identically for role="source" and role="target" — the same
-// progressive sequence of cards either way: pick a connector, then (for
-// files) upload-and-preview, or (for SAP) connect, build the dataset, and
-// preview it. Each stage shows only the controls relevant to it.
+// Renders identically for role="source" and role="target". The connector step
+// now opens on a binary Excel-Upload vs Live-Fetch choice; Live Fetch resolves
+// to the connector the mapping sheet identified (or the sole configured live
+// connector for this role) behind ONE explicit confirmation citing the
+// evidence — a wrong connector silently fetches entirely wrong data, so this
+// click is required even though field selection later is toggle-only. An
+// override reveals the full connector grid (unchanged legacy behavior).
 function ConnectorSelectionStep({ role }) {
   const { state, dispatch } = useWizard();
+  const navigate = useNavigate();
   const roleState = state[role];
   const roleLabel = role === "source" ? "Source" : "Target";
+  const openDetailedPreview = () => navigate(`/reconciliation/dataset-preview/${role}`);
+
+  // Sheet-driven identification for THIS side (may be null / unidentified).
+  const idSide = role === "source" ? state.sheetIdentification?.source : state.sheetIdentification?.target;
 
   // Local, UI-only navigation — never persisted, never touches the reducer.
-  // "Replace File" flips this back to the upload card without discarding the
-  // dataset until a new file is actually chosen.
   const [showUploadAgain, setShowUploadAgain] = useState(false);
-  // Mirrors the SAP workspace's internal card ("connect" | "build" |
-  // "preview") purely so the pills above it stay in sync; the workspace is
-  // the source of truth and reports changes via onStageChange.
   const [sapStage, setSapStage] = useState("connect");
+  // Pre-connector screens (only meaningful before a connector is chosen):
+  // "choose" → binary Excel/Live-Fetch, "confirm" → Live-Fetch confirmation,
+  // "grid" → full legacy connector grid (override target).
+  const [preScreen, setPreScreen] = useState("choose");
 
   const isFileKind = roleState.kind === "excel" || roleState.kind === "csv";
   const isSapKind = roleState.kind === "s4" || roleState.kind === "ibp";
 
-  // Distinguish a first-time assignment from a replacement, purely for logs.
+  // The connector Live Fetch will use: the sheet-identified one when confident
+  // and available for this role, else the sole configured live connector.
+  const identifiedOption = useMemo(() => {
+    if (!idSide?.connector_id) return null;
+    const opt = CONNECTOR_OPTIONS.find((o) => o.id === idSide.connector_id);
+    return opt && opt.roles.includes(role) ? opt : null;
+  }, [idSide, role]);
+  const liveOption = identifiedOption ?? liveFetchOptionFor(role);
+
+  // Fields the sheet says to compare on this side — pre-selected (and
+  // validated against live schema) inside the workspace. Toggle-only there.
+  const preselectFields = idSide?.fields ?? [];
+
   const logAssignment = (kind, filename, rowCount) => {
     const isReplacement = Boolean(roleState.dataset);
     console.debug(
@@ -57,8 +88,10 @@ function ConnectorSelectionStep({ role }) {
   };
 
   const handleSelectConnector = (option) => {
+    if (!option) return;
     setShowUploadAgain(false);
     setSapStage("connect");
+    setPreScreen("choose");
     dispatch({
       type: WizardActions.SET_CONNECTOR,
       role,
@@ -76,6 +109,7 @@ function ConnectorSelectionStep({ role }) {
     }
     setShowUploadAgain(false);
     setSapStage("connect");
+    setPreScreen("choose");
     dispatch({ type: WizardActions.RESET_ROLE, role });
   };
 
@@ -107,7 +141,7 @@ function ConnectorSelectionStep({ role }) {
     });
   };
 
-  const handleSapLoaded = ({ columns, preview, rows, rowCount, mdtFields }) => {
+  const handleSapLoaded = ({ columns, preview, rows, rowCount, mdtFields, auxiliaryFields }) => {
     const filename = `${roleState.connectorId === "sap_s4hana" ? "SAP S/4HANA" : "SAP IBP"} live fetch`;
     logAssignment(roleState.kind, filename, rowCount);
     dispatch({
@@ -116,6 +150,7 @@ function ConnectorSelectionStep({ role }) {
       dataset: {
         datasetId: `${role}-${roleState.kind}-${Date.now()}`,
         filename,
+        kind: roleState.kind,
         columns,
         preview,
         rowCount,
@@ -129,34 +164,128 @@ function ConnectorSelectionStep({ role }) {
         // than chosen directly — excluded from auto-generated mappings
         // downstream, but still present in `columns` for tracking/validation.
         mdtFields: mdtFields ?? [],
+        // MDT auxiliary-evidence recommendation, surfaced on the detailed
+        // preview page. Evidence-only; never mapping/reconciliation data.
+        auxiliaryFields: auxiliaryFields ?? null,
       },
     });
   };
 
   const canContinue = useMemo(() => Boolean(roleState.dataset), [roleState.dataset]);
 
-  // ---- Card 1: connector grid — hidden once a connector is chosen ----
+  // ============ Pre-connector screens (no connector chosen yet) ============
   if (!roleState.connectorId) {
+    // ---- Override target: the full legacy connector grid (unchanged) ----
+    if (preScreen === "grid") {
+      return (
+        <StepShell stepKey={role} canContinue={canContinue}>
+          <button type="button" className="wizard-link" onClick={() => setPreScreen("choose")}>
+            ← Back
+          </button>
+          <div className="wizard-option-grid">
+            {CONNECTOR_OPTIONS.map((option) => {
+              const available = option.roles.includes(role);
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`wizard-option-card ${!available ? "is-disabled" : ""}`}
+                  onClick={() => available && handleSelectConnector(option)}
+                  disabled={!available}
+                >
+                  <span className="wizard-option-card__label">{option.label}</span>
+                  <span className="wizard-option-card__meta">{option.category}</span>
+                  {!available && <span className="wizard-option-card__badge">Coming soon</span>}
+                </button>
+              );
+            })}
+          </div>
+        </StepShell>
+      );
+    }
+
+    // ---- Live-Fetch confirmation: the ONE required connector click ----
+    if (preScreen === "confirm") {
+      const fromSheet = Boolean(idSide?.kind && identifiedOption);
+      const evidence = fromSheet
+        ? idSide.evidence
+        : `Only configured live connector for the ${roleLabel.toLowerCase()} side.`;
+      return (
+        <StepShell stepKey={role} canContinue={canContinue}>
+          <div className="wizard-connector-confirm">
+            <p className="wizard-connector-confirm__title">
+              Live Fetch will connect to <strong>{liveOption?.label ?? "—"}</strong>
+            </p>
+            {evidence && (
+              <p className="wizard-connector-confirm__evidence">
+                {fromSheet ? "Detected from your mapping sheet: " : ""}
+                {evidence}
+              </p>
+            )}
+            {idSide && !idSide.kind && (
+              <p className="wizard-identify__warn">
+                ⚠️ The mapping sheet didn't clearly identify the {roleLabel.toLowerCase()} system
+                {idSide.evidence ? ` (${idSide.evidence})` : ""} — confirm carefully.
+              </p>
+            )}
+            <div className="wizard-connector-confirm__actions">
+              <button
+                type="button"
+                className="wizard-btn wizard-btn--primary"
+                onClick={() => handleSelectConnector(liveOption)}
+              >
+                Confirm &amp; continue
+              </button>
+              <button
+                type="button"
+                className="wizard-link"
+                onClick={() => setPreScreen("grid")}
+              >
+                Override — choose a different connector
+              </button>
+              <button
+                type="button"
+                className="wizard-link"
+                onClick={() => setPreScreen("choose")}
+              >
+                Back
+              </button>
+            </div>
+          </div>
+        </StepShell>
+      );
+    }
+
+    // ---- Default: binary Excel-Upload vs Live-Fetch choice ----
     return (
       <StepShell stepKey={role} canContinue={canContinue}>
-        <div className="wizard-option-grid">
-          {CONNECTOR_OPTIONS.map((option) => {
-            const available = option.roles.includes(role);
-            return (
-              <button
-                key={option.id}
-                type="button"
-                className={`wizard-option-card ${!available ? "is-disabled" : ""}`}
-                onClick={() => available && handleSelectConnector(option)}
-                disabled={!available}
-              >
-                <span className="wizard-option-card__label">{option.label}</span>
-                <span className="wizard-option-card__meta">{option.category}</span>
-                {!available && <span className="wizard-option-card__badge">Coming soon</span>}
-              </button>
-            );
-          })}
+        <div className="wizard-source-choice">
+          <button
+            type="button"
+            className="wizard-choice-card"
+            onClick={() => handleSelectConnector(EXCEL_OPTION)}
+          >
+            <span className="wizard-choice-card__label">Excel Upload</span>
+            <span className="wizard-choice-card__meta">Upload a spreadsheet you already have</span>
+          </button>
+          <button
+            type="button"
+            className="wizard-choice-card"
+            onClick={() => setPreScreen("confirm")}
+            disabled={!liveOption}
+          >
+            <span className="wizard-choice-card__label">Live Fetch</span>
+            <span className="wizard-choice-card__meta">
+              {liveOption ? `Connect to ${liveOption.label}` : "No live connector configured"}
+            </span>
+            {idSide?.kind && identifiedOption && (
+              <span className="wizard-choice-card__badge">Detected from sheet</span>
+            )}
+          </button>
         </div>
+        <button type="button" className="wizard-link" onClick={() => setPreScreen("grid")}>
+          See all connectors
+        </button>
       </StepShell>
     );
   }
@@ -178,8 +307,6 @@ function ConnectorSelectionStep({ role }) {
           />
         ) : (
           <div className="wizard-connector-panel">
-            {/* key ties this upload card to its role so its local file state
-                can never be reused across source/target. */}
             <FileUploadCard
               key={`upload-${role}`}
               title={`${roleLabel} File`}
@@ -192,9 +319,6 @@ function ConnectorSelectionStep({ role }) {
   }
 
   // ---- SAP S/4HANA & SAP IBP: 4-card flow, identical for both connectors.
-  // Cards 2-4 (connect / build / preview) are owned entirely by the
-  // workspace component; it reports which one is active via onStageChange
-  // purely so the pills above it stay in sync. ----
   if (isSapKind) {
     const activeIndex = roleState.dataset ? 3 : SAP_STAGE_INDEX[sapStage] ?? 1;
     return (
@@ -210,6 +334,8 @@ function ConnectorSelectionStep({ role }) {
             dataset={roleState.dataset}
             onLoaded={handleSapLoaded}
             onStageChange={setSapStage}
+            onOpenDetailedPreview={openDetailedPreview}
+            preselectFields={preselectFields}
           />
         )}
         {roleState.kind === "ibp" && (
@@ -218,14 +344,15 @@ function ConnectorSelectionStep({ role }) {
             dataset={roleState.dataset}
             onLoaded={handleSapLoaded}
             onStageChange={setSapStage}
+            onOpenDetailedPreview={openDetailedPreview}
+            preselectFields={preselectFields}
           />
         )}
       </StepShell>
     );
   }
 
-  // Any other/unrecognized kind (shouldn't be reachable — every enabled
-  // CONNECTOR_OPTIONS entry is excel/csv or s4/ibp).
+  // Any other/unrecognized kind (shouldn't be reachable).
   return <StepShell stepKey={role} canContinue={canContinue} />;
 }
 

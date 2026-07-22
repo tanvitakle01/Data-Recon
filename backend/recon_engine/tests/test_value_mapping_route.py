@@ -82,3 +82,62 @@ def test_run_value_mapping_400s_on_missing_target_data(client):
     )
     assert res.status_code == 400
     assert "target" in res.json()["detail"].lower()
+
+
+# ── MDT Auxiliary Field Recommender surface + evidence-only boundary ─────────
+
+def test_run_value_mapping_returns_auxiliary_field_report(client):
+    source_rows = [{"Material": "MAT-1", "MaterialGroup": "FG", "ProductionPlant": "S101"}]
+    target_rows = [
+        {"PRDID": "P1", "PRODGROUP": "FG", "LOCID": "LOC-1", "LOCNAME": "Distribution S101 UK",
+         "PRODDESC": "Widget", "PRDIDDEM": ""},
+    ]
+    res = client.post("/api/recon/value-mapping/run", data=_rows_body(source_rows, target_rows))
+    assert res.status_code == 200, res.text
+    aux = res.json()["auxiliary_fields"]
+    assert set(aux) == {"target_product", "target_location", "source_product", "source_plant"}
+
+    loc = {c["seed_name"]: c for c in aux["target_location"]}
+    # LOCNAME exists + populated + consumed by location Rule 2.
+    assert loc["LOCNAME"]["confirmed_existing"] and loc["LOCNAME"]["confirmed_populated"]
+    assert loc["LOCNAME"]["consumed"] is True
+    # A validation-only attribute is reported but tagged not-consumed.
+    assert loc["LOCATIONTYPE"]["consumed"] is False
+
+    prod = {c["seed_name"]: c for c in aux["target_product"]}
+    # PRDIDDEM present but 0% filled → not recommended, with a real fill rate.
+    assert prod["PRDIDDEM"]["confirmed_existing"] is True
+    assert prod["PRDIDDEM"]["confirmed_populated"] is False
+    assert prod["PRDIDDEM"]["fill_rate"] == 0.0
+
+
+def test_auxiliary_fields_never_leak_into_the_mapping_output(client):
+    # LOCNAME drives a Rule 2 embedded-code match, but it must NEVER become a
+    # mapping field — only Material/PRDID and ProductionPlant/LOCID are fields;
+    # LOCNAME/PRODDESC/etc. may appear ONLY inside evidence text.
+    source_rows = [{"Material": "MAT-1", "MaterialGroup": "FG", "ProductionPlant": "S101"}]
+    target_rows = [
+        {"PRDID": "MAT-1", "PRODGROUP": "FG", "LOCID": "LOC-1", "LOCNAME": "DC S101 hub",
+         "LOCATIONTYPE": "Plant", "PRODDESC": "Widget"},
+    ]
+    body = client.post("/api/recon/value-mapping/run", data=_rows_body(source_rows, target_rows)).json()
+
+    assert body["product"]["source_field"] == "Material"
+    assert body["product"]["target_field"] == "PRDID"
+    assert body["location"]["source_field"] == "ProductionPlant"
+    assert body["location"]["target_field"] == "LOCID"
+
+    aux_names = {"LOCNAME", "LOCATIONTYPE", "PRODDESC", "PRODGROUP", "MaterialGroup"}
+    for mapping_key in ("product", "location"):
+        for m in body[mapping_key]["matches"]:
+            # No auxiliary column name is ever a mapped value/field.
+            assert m["source_value"] not in aux_names
+            assert (m["target_value"] or "") not in aux_names
+            # And the ValueMatch shape carries no aux columns as keys.
+            assert not (aux_names & set(m.keys()))
+
+    # The plant matched via the embedded code in LOCNAME (proving LOCNAME was
+    # used as evidence) — but only as evidence text, never as a field.
+    loc_match = next(m for m in body["location"]["matches"] if m["source_value"] == "S101")
+    assert loc_match["rule"] == "location.rule2_embedded_code"
+    assert loc_match["target_value"] == "LOC-1"

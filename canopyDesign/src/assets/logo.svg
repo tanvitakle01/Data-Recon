@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" fill="none" role="img" aria-label="Bristlecone">
+  <!-- Placeholder wordmark — replace with official Bristlecone SVG asset -->
+  <!-- Accent bar: bcone-teal -->
+  <rect x="0" y="12" width="4" height="16" rx="2" fill="#21A6BD"/>
+  <!-- Wordmark: bcone-charcoal -->
+  <text
+    x="12"
+    y="28"
+    font-family="'Arial Black', 'Helvetica Neue', sans-serif"
+    font-weight="900"
+    font-size="18"
+    fill="#333536"
+    letter-spacing="-0.5"
+  >BRISTLECONE</text>
+  <!-- Tagline dot: bcone-teal -->
+  <circle cx="228" cy="26" r="3" fill="#21A6BD"/>
+</svg>

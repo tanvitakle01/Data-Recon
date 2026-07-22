@@ -1,0 +1,10 @@
+/* Bristlecone Storybook chrome theme overrides */
+
+.sb-show-main {
+  font-family: Arial, "Helvetica Neue", sans-serif;
+}
+
+/* Ensure Tailwind base styles don't conflict with Storybook chrome */
+#storybook-root {
+  font-family: Arial, "Helvetica Neue", sans-serif;
+}

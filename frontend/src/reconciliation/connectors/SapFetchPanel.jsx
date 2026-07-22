@@ -1,6 +1,7 @@
 import { useState } from "react";
 import api from "../../services/api";
 import PreviewTable from "../../components/PreviewTable";
+import { Button } from "@bristlecone/canopy";
 
 const SYSTEMS = {
   s4: {
@@ -58,9 +59,9 @@ function SapFetchPanel({ system, dataset, onLoaded }) {
     <div className="wizard-connector-panel">
       <div className="sap-fetch">
         <div className="sap-fetch__row">
-          <button
+          <Button
             type="button"
-            className="wizard-btn wizard-btn--primary"
+            variant="primary"
             onClick={fetchData}
             disabled={status === "connecting"}
           >
@@ -69,7 +70,7 @@ function SapFetchPanel({ system, dataset, onLoaded }) {
               : dataset
                 ? `Re-fetch from ${config.label}`
                 : `Fetch from ${config.label}`}
-          </button>
+          </Button>
 
           <span className={`sap-fetch__status is-${status}`}>
             {status === "idle" && "Not connected"}
@@ -83,13 +84,13 @@ function SapFetchPanel({ system, dataset, onLoaded }) {
 
         {dataset && (
           <div className="sap-fetch__preview">
-            <button
+            <Button
               type="button"
-              className="wizard-btn wizard-btn--ghost"
+              variant="outline"
               onClick={() => setShowPreview((s) => !s)}
             >
               {showPreview ? "Hide preview" : "Preview data"}
-            </button>
+            </Button>
             {showPreview && (
               <PreviewTable
                 data={{ columns: dataset.columns, preview: dataset.preview }}

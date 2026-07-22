@@ -7,11 +7,12 @@ import {
   SapConnectedBar,
   SapConnectedSummary,
 } from "./SapConnectionGate";
-import { exportDatasetToCsv } from "../../utils/csvExport";
 import {
   S4_TRANSFORMATION_DISCOVERY_FIELDS,
   recommendedFieldsFor,
+  withAuxiliaryFields,
 } from "../lib/transformationDiscoveryFields";
+import { matchProposedToSchema } from "../lib/fieldMatching";
 import "./ibpWorkspace.css";
 import "./s4Workspace.css";
 
@@ -36,7 +37,13 @@ function looksNumeric(v) {
 
 const shortName = (e) => (e && e.startsWith("A_") ? e.slice(2) : e);
 
-function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
+function S4DatasetWorkspace({
+  onLoaded,
+  dataset,
+  onStageChange,
+  onOpenDetailedPreview,
+  preselectFields = [],
+}) {
   // ---- connection stage ----
   // Metadata is no longer fetched on mount; the user must explicitly connect.
   // "idle" → connect prompt, "connecting" → skeletons, "error" → retry card,
@@ -51,11 +58,11 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
 
   // ---- card stage (progressive disclosure within the workspace) ----
   // "connect" → connected-summary only (Card 2), "build" → the full
-  // entity/join/column workspace (Card 3), "preview" → imported dataset
-  // preview only (Card 4). Initialized from `dataset` (not an effect) so a
-  // returning user with an already-imported dataset lands straight on the
-  // preview card with no flash of the earlier cards.
-  const [stage, setStage] = useState(dataset ? "preview" : "connect");
+  // entity/join/column workspace (Card 3). The imported data grid is no longer
+  // a stage here — it lives on a dedicated preview page. Initialized from
+  // `dataset` (not an effect) so a returning user with an already-imported
+  // dataset lands on the Build card (with "Open Detailed Preview" available).
+  const [stage, setStage] = useState(dataset ? "build" : "connect");
   useEffect(() => {
     onStageChange?.(stage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,6 +87,11 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   // not the trigger field itself, and clears once a field is deselected.
   const [autoSelectedByEntity, setAutoSelectedByEntity] = useState({});
   const [propFilter, setPropFilter] = useState("");
+  // Proposals already auto-selected by a match scan — so a join-driven re-scan
+  // only auto-selects fields it NEWLY resolved, and never re-adds a field the
+  // user has since manually deselected. (preselectUnmatched itself is derived
+  // below, not stored.)
+  const matchScanRef = useRef(new Set());
 
   // ---- preview ----
   const [previewRows, setPreviewRows] = useState([]);
@@ -93,21 +105,7 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   const [fetching, setFetching] = useState(false);
   const [imported, setImported] = useState(Boolean(dataset));
   const [importedCount, setImportedCount] = useState(dataset?.rowCount ?? null);
-  const [importedPreview, setImportedPreview] = useState(
-    dataset
-      ? {
-          columns: dataset.columns ?? [],
-          rows: (dataset.preview ?? []).slice(0, 10),
-          rowCount: dataset.rowCount ?? 0,
-        }
-      : null
-  );
   const [error, setError] = useState(null);
-
-  // ---- export (full dataset, exactly as received — not the 10-row preview) ----
-  const [importedRows, setImportedRows] = useState(dataset?.rows ?? null);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState(null);
 
   const invalidate = () => setImported(false);
 
@@ -190,12 +188,6 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
     return meta;
   };
 
-  const defaultProps = (meta, count, includeKeys) => {
-    const keys = meta.keys;
-    const nonKeys = meta.properties.filter((p) => !p.is_key).map((p) => p.name);
-    return (includeKeys ? keys : []).concat(nonKeys.slice(0, count));
-  };
-
   // ---- choose primary entity ----
   const choosePrimary = async (entity) => {
     setPrimaryEntity(entity);
@@ -219,7 +211,43 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
         loadEntityMeta(entity),
         api.get(`/api/connectors/s4/entities/${encodeURIComponent(entity)}/relationships`),
       ]);
-      setSelectedByEntity({ [entity]: defaultProps(meta, 4, true) });
+      // Sheet-driven pre-selection ONLY: pre-check the proposed fields that
+      // actually exist here (validated against the live schema). There is NO
+      // default/fallback selection — with no uploaded mapping sheet, or a sheet
+      // that proposed nothing matching this entity, nothing is auto-selected and
+      // the user picks columns explicitly. (S/4 TABLE-FIELD forms like VBAP-MATNR
+      // frequently won't match OData semantic names; unmatched proposals are
+      // surfaced rather than guessed.) Entity keys are NEVER seeded here (they're
+      // join plumbing, added to the fetch by the backend on its own).
+      const propNames = meta.properties.map((p) => p.name);
+      let primarySelection = [];
+      if (preselectFields.length > 0) {
+        const { matched } = matchProposedToSchema(preselectFields, propNames);
+        // Seed the scan tracker so a later join re-scan treats these as
+        // already-resolved (won't re-add them if the user deselects them).
+        matchScanRef.current = new Set(matched);
+        primarySelection = matched;
+      } else {
+        matchScanRef.current = new Set();
+      }
+      // Drop any structural key (entity key) that slipped into the base
+      // selection — keys are excluded from data columns generally (Fix 1).
+      const keyNames = new Set(meta.properties.filter((p) => p.is_key).map((p) => p.name));
+      for (const k of meta.keys || []) keyNames.add(k);
+      primarySelection = primarySelection.filter((n) => !keyNames.has(n));
+
+      // Widen with MDT auxiliary evidence fields: for each trigger field present
+      // (Material / ProductionPlant), auto-add its supporting attributes that
+      // exist here, tracked in autoSelectedByEntity so they flow through the
+      // mdtFields boundary — fetched + previewed + fed to the deterministic
+      // matcher, but excluded from the field mapping / reconciliation output.
+      const { selection, autoAdded } = withAuxiliaryFields(
+        S4_TRANSFORMATION_DISCOVERY_FIELDS,
+        primarySelection,
+        propNames
+      );
+      setSelectedByEntity({ [entity]: selection });
+      setAutoSelectedByEntity({ [entity]: autoAdded });
       const rp = relRes.data ?? {};
       setRelationships(rp.success ? rp.relationships ?? [] : []);
     } catch (err) {
@@ -232,11 +260,53 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   // ---- joins ----
   const joinedEntities = useMemo(() => joins.map((j) => j.entity), [joins]);
 
+  // A field is a STRUCTURAL key — excluded from the selectable data-column list
+  // AND never auto-selected as a data column — when it is EITHER:
+  //   (a) an entity KEY (`is_key`, the metadata's own key tag, distinct from
+  //       the business Key/Compare roles), on ANY entity; or
+  //   (b) used as a join predicate (`joins[].keys[].left/right`) — the primary
+  //       side contributes its `.left` keys, each joined entity its `.right`.
+  // This is a GENERAL rule (no hardcoded per-entity list): entity keys such as
+  // SalesOrder/SalesOrderItem are join plumbing, not data a user reconciles.
+  // The keys stay in `entityMeta`, so the Join Builder dropdowns (which read
+  // entityMeta directly) still see them.
+  const structuralKeyNamesByEntity = useMemo(() => {
+    const map = {};
+    const add = (entity, name) => {
+      if (!entity || !name) return;
+      (map[entity] ??= new Set()).add(name);
+    };
+    // (a) entity keys, for every entity whose metadata is loaded.
+    for (const [entity, meta] of Object.entries(entityMeta)) {
+      for (const p of meta.properties || []) if (p.is_key) add(entity, p.name);
+      for (const k of meta.keys || []) add(entity, k);
+    }
+    // (b) join-predicate fields.
+    for (const j of joins) {
+      for (const k of j.keys || []) {
+        add(j.entity, k.right);
+        add(primaryEntity, k.left);
+      }
+    }
+    return map;
+  }, [joins, primaryEntity, entityMeta]);
+
+  const dataFieldNames = useCallback(
+    (entity) => {
+      const excluded = structuralKeyNamesByEntity[entity] ?? new Set();
+      return (entityMeta[entity]?.properties || [])
+        .map((p) => p.name)
+        .filter((n) => !excluded.has(n));
+    },
+    [structuralKeyNamesByEntity, entityMeta]
+  );
+
   const addJoin = async (rel) => {
     if (rel.target_entity === primaryEntity || joinedEntities.includes(rel.target_entity)) return;
     invalidate();
     try {
       const meta = await loadEntityMeta(rel.target_entity);
+      const suggestedKeys = new Set(rel.suggested_keys || []);
       setJoins((prev) => [
         ...prev,
         {
@@ -245,9 +315,22 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
           keys: (rel.suggested_keys || []).map((k) => ({ left: k, right: k })),
         },
       ]);
+
+      // A3: re-scan the sheet's proposed fields against this newly-joined
+      // entity's schema (excluding the join-key fields, A1). Any proposal that
+      // was unmatched against the primary alone but exists here is auto-selected
+      // on this entity now — matchScanRef guards against re-adding one the user
+      // already deselected. A2: everything else on a joined entity starts
+      // unchecked but selectable.
+      const dataNames = meta.properties
+        .map((p) => p.name)
+        .filter((n) => !suggestedKeys.has(n));
+      const { matched } = matchProposedToSchema(preselectFields, dataNames);
+      const newly = matched.filter((n) => !matchScanRef.current.has(n));
+      matchScanRef.current = new Set([...matchScanRef.current, ...matched]);
       setSelectedByEntity((prev) => ({
         ...prev,
-        [rel.target_entity]: defaultProps(meta, 3, false),
+        [rel.target_entity]: newly,
       }));
     } catch (err) {
       setError(`Failed to add join: ${err?.message || err}`);
@@ -256,6 +339,12 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
 
   const removeJoin = (entity) => {
     invalidate();
+    // Dropping an entity narrows the schema — forget any proposals that were
+    // resolved via it so a later re-join can auto-select them again (A3).
+    const removedNames = new Set((entityMeta[entity]?.properties || []).map((p) => p.name));
+    matchScanRef.current = new Set(
+      [...matchScanRef.current].filter((n) => !removedNames.has(n))
+    );
     setJoins((prev) => prev.filter((j) => j.entity !== entity));
     setSelectedByEntity((prev) => {
       const next = { ...prev };
@@ -327,9 +416,10 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
   };
   const selectGroup = (entity, all) => {
     invalidate();
+    // "All" selects only real data fields — join keys are excluded (A1).
     setSelectedByEntity((prev) => ({
       ...prev,
-      [entity]: all ? (entityMeta[entity]?.properties || []).map((p) => p.name) : [],
+      [entity]: all ? dataFieldNames(entity) : [],
     }));
     setAutoSelectedByEntity((prev) => ({ ...prev, [entity]: new Set() }));
   };
@@ -344,9 +434,20 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
     [entitiesInPlay, selectedByEntity]
   );
   const totalAvailable = useMemo(
-    () => entitiesInPlay.reduce((n, e) => n + (entityMeta[e]?.properties.length || 0), 0),
-    [entitiesInPlay, entityMeta]
+    () => entitiesInPlay.reduce((n, e) => n + dataFieldNames(e).length, 0),
+    [entitiesInPlay, dataFieldNames]
   );
+
+  // A3: sheet-proposed fields still not found on ANY in-play entity's schema
+  // (join keys excluded). Derived — so it automatically re-scans across joined
+  // entities as the join set changes, resolving proposals a wider join brings
+  // in. Surfaced as "select manually" hints; auto-selection of newly-resolved
+  // proposals happens in addJoin (the event that actually widens the schema).
+  const preselectUnmatched = useMemo(() => {
+    if (!primaryEntity || preselectFields.length === 0) return [];
+    const allAvailable = entitiesInPlay.flatMap((e) => (entityMeta[e] ? dataFieldNames(e) : []));
+    return matchProposedToSchema(preselectFields, allAvailable).unmatched;
+  }, [primaryEntity, preselectFields, entitiesInPlay, entityMeta, dataFieldNames]);
 
   const joinsValid = useMemo(
     () => joins.every((j) => j.keys.length > 0 && j.keys.every((k) => k.left && k.right)),
@@ -453,42 +554,32 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
       if (!p.success) return setError(p.error || "Failed to fetch dataset");
       const rows = p.rows ?? [];
       const columns = p.columns ?? previewCols;
+      const auxiliaryFields = p.auxiliary_fields ?? null;
       setImported(true);
       setImportedCount(rows.length);
-      setImportedPreview({ columns, rows: rows.slice(0, 10), rowCount: rows.length });
-      setImportedRows(rows);
-      setStage("preview");
+      // Stay on the Build card after import; the full data grid now lives on a
+      // dedicated preview page opened via "Open Detailed Preview".
       // Fields auto-checked by a Transformation Discovery rule (MDT/recommended
       // fields), flattened across every entity in play — carried along so
       // downstream mapping generation can exclude them while they remain
-      // selectable here for tracking/validation.
+      // selectable here for tracking/validation. The dataset (rows, preview,
+      // columns, auxiliaryFields) is persisted to wizard state, which is what
+      // the detailed-preview page reads.
       const mdtFields = Array.from(
         new Set(entitiesInPlay.flatMap((e) => Array.from(autoSelectedByEntity[e] || [])))
       );
-      onLoaded?.({ columns, preview: rows.slice(0, 10), rows, rowCount: rows.length, mdtFields });
+      onLoaded?.({
+        columns,
+        preview: rows.slice(0, 10),
+        rows,
+        rowCount: rows.length,
+        mdtFields,
+        auxiliaryFields,
+      });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
     } finally {
       setFetching(false);
-    }
-  };
-
-  // ---- download imported dataset as CSV (client-side, no re-fetch) ----
-  const downloadDataset = async () => {
-    if (!importedPreview || !importedRows?.length) return;
-    setDownloadError(null);
-    setDownloading(true);
-    try {
-      await exportDatasetToCsv({
-        sourceSystem: "S4",
-        datasetName: shortName(primaryEntity),
-        columns: importedPreview.columns,
-        rows: importedRows,
-      });
-    } catch (err) {
-      setDownloadError(`Failed to export dataset: ${err?.message || err}`);
-    } finally {
-      setDownloading(false);
     }
   };
 
@@ -548,87 +639,6 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
         onContinue={() => setStage("build")}
         refreshing={refreshing}
       />
-    );
-  }
-
-  // ---- Card 4: imported dataset preview only — the sole screen that shows
-  // actual data rows. "Back"/"Re-import" both return to Card 3 without
-  // clearing any entity/join/column selections (the workspace never unmounts).
-  if (stage === "preview") {
-    return (
-      <div className="ibpw-root">
-        {imported && importedPreview && importedPreview.rows.length > 0 && (
-          <section className="ibpw-panel ibpw-imported">
-            <header className="ibpw-panel__head">
-              <h4 className="ibpw-panel__title">Imported Dataset Preview</h4>
-              <span className="ibpw-spacer" />
-              {primaryEntity && <span className="ibpw-badge ibpw-badge--count">{primaryEntity}</span>}
-              <span className="ibpw-badge ibpw-badge--accent">{importedPreview.rowCount.toLocaleString()} rows</span>
-              <span className="ibpw-badge ibpw-badge--count">{importedPreview.columns.length} cols</span>
-              <button
-                type="button"
-                className="ibpw-btn ibpw-btn--ghost ibpw-btn--header"
-                onClick={downloadDataset}
-                disabled={downloading || fetching || !importedRows?.length}
-              >
-                {downloading && <span className="ibpw-btn__spin" />}
-                {downloading ? "Preparing…" : "Download Data"}
-              </button>
-            </header>
-            {downloadError && <p className="ibpw-summary__error">⚠️ {downloadError}</p>}
-            <div className="ibpw-grid-wrap">
-              <table className="ibpw-grid">
-                <colgroup>
-                  {importedPreview.columns.map((c) => (
-                    <col key={c} style={{ width: DEFAULT_COL_WIDTH }} />
-                  ))}
-                </colgroup>
-                <thead>
-                  <tr>
-                    {importedPreview.columns.map((c) => (
-                      <th key={c} style={{ position: "sticky" }}>
-                        <div className="ibpw-grid__th-inner">
-                          <span className="ibpw-grid__th-label" title={c}>{c}</span>
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {importedPreview.rows.map((row, idx) => (
-                    <tr key={idx}>
-                      {importedPreview.columns.map((c) => (
-                        <td key={c} className={looksNumeric(row[c]) ? "ibpw-grid__num" : ""} title={row[c] != null ? String(row[c]) : ""}>
-                          {row[c] != null ? String(row[c]) : ""}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="ibpw-imported__caption">
-              Showing {importedPreview.rows.length} of {importedPreview.rowCount.toLocaleString()} rows
-            </p>
-          </section>
-        )}
-
-        <div className="ibpw-card-actions">
-          <button type="button" className="ibpw-btn ibpw-btn--ghost" onClick={() => setStage("build")}>
-            Back
-          </button>
-          <button
-            type="button"
-            className="ibpw-btn"
-            onClick={importDataset}
-            disabled={fetching || !canQuery}
-          >
-            {fetching && <span className="ibpw-btn__spin" />}
-            {fetching ? "Importing…" : "Re-import Dataset"}
-          </button>
-        </div>
-        {error && <p className="ibpw-summary__error">⚠️ {String(error)}</p>}
-      </div>
     );
   }
 
@@ -851,21 +861,32 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
                 </div>
               </header>
 
+              {preselectUnmatched.length > 0 && (
+                <p className="ibpw-preselect-note">
+                  From the mapping sheet, these fields weren't matched to this entity's schema —
+                  select them manually if needed: {preselectUnmatched.join(", ")}
+                </p>
+              )}
+
               <div style={{ maxHeight: 260, overflowY: "auto" }}>
                 {entitiesInPlay.map((entity) => {
                   const meta = entityMeta[entity];
                   if (!meta) return null;
+                  // Hide structural keys (entity keys + join predicates) from
+                  // the selectable list — they're join plumbing, not data.
+                  const excluded = structuralKeyNamesByEntity[entity] ?? new Set();
+                  const dataProps = meta.properties.filter((p) => !excluded.has(p.name));
                   const q = propFilter.trim().toLowerCase();
                   const props = q
-                    ? meta.properties.filter((p) => p.name.toLowerCase().includes(q))
-                    : meta.properties;
+                    ? dataProps.filter((p) => p.name.toLowerCase().includes(q))
+                    : dataProps;
                   const sel = selectedByEntity[entity] || [];
                   return (
                     <div key={entity} className="s4j-group">
                       <div className="s4j-group__head">
                         <span className="s4j-group__name">{entity}</span>
                         <span className="s4j-group__role">{entity === primaryEntity ? "primary" : "joined"}</span>
-                        <span className="ibpw-badge ibpw-badge--count">{sel.length}/{meta.properties.length}</span>
+                        <span className="ibpw-badge ibpw-badge--count">{sel.length}/{dataProps.length}</span>
                         <span className="ibpw-spacer" />
                         <button type="button" className="ibpw-chip-btn" onClick={() => selectGroup(entity, true)}>All</button>
                         <button type="button" className="ibpw-chip-btn" onClick={() => selectGroup(entity, false)}>None</button>
@@ -1042,8 +1063,19 @@ function S4DatasetWorkspace({ onLoaded, dataset, onStageChange }) {
               </button>
 
               {imported && !fetching && (
+                <button
+                  type="button"
+                  className="ibpw-btn ibpw-btn--ghost"
+                  onClick={() => onOpenDetailedPreview?.()}
+                >
+                  Open Detailed Preview
+                </button>
+              )}
+
+              {imported && !fetching && (
                 <p className="ibpw-summary__hint">
-                  Dataset ready — use <strong>Continue</strong> below to proceed.
+                  Dataset ready — open the detailed preview to inspect rows, or use{" "}
+                  <strong>Continue</strong> below to proceed.
                 </p>
               )}
               {error && <p className="ibpw-summary__error">⚠️ {String(error)}</p>}

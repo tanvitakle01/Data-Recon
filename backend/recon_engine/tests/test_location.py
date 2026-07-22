@@ -48,7 +48,7 @@ def test_rule2_embedded_in_locname_when_locid_has_no_hit():
     mapping = match_locations(
         source_plant=pd.Series(["S101"]),
         target_locid=pd.Series(["LOC-9"]),
-        target_locname=pd.Series(["DC - S101"]),
+        target_alt_names=[pd.Series(["DC - S101"], name="LOCNAME")],
     )
     m = _match(mapping, "S101")
     assert m.confidence == Confidence.HIGH
@@ -83,7 +83,9 @@ def test_determinism_two_runs_identical():
     kwargs = dict(
         source_plant=pd.Series(["PL01", "S101", "B301", "5006"]),
         target_locid=pd.Series(["PL01", "DCS101@S21400", "PL5006@S21400"]),
-        target_locname=pd.Series(["Vendor1-Alternate Supplier B", "DC - S101", "PL - 5006"]),
+        target_alt_names=[
+            pd.Series(["Vendor1-Alternate Supplier B", "DC - S101", "PL - 5006"], name="LOCNAME")
+        ],
     )
     first = match_locations(**kwargs)
     second = match_locations(**kwargs)

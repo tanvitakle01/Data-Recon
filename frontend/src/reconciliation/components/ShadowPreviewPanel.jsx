@@ -21,6 +21,7 @@ import {
   runContractReconciliation,
 } from "../lib/reconRun";
 import BeforeAfterCurtain from "./BeforeAfterCurtain";
+import { Button, Badge } from "@bristlecone/canopy";
 
 function dedupe(list) {
   return Array.from(new Set(list.filter(Boolean)));
@@ -54,11 +55,11 @@ function PaginatedTable({ columns, rows, pageSize = 10 }) {
         </table>
       </div>
       <div className="review-pager">
-        <button type="button" className="wizard-btn wizard-btn--ghost" disabled={clamped <= 0}
-          onClick={() => setPage(clamped - 1)}>◀ Prev</button>
+        <Button type="button" variant="outline" disabled={clamped <= 0}
+          onClick={() => setPage(clamped - 1)}>◀ Prev</Button>
         <span className="review-pager__label">Page {clamped + 1} of {pages}</span>
-        <button type="button" className="wizard-btn wizard-btn--ghost" disabled={clamped >= pages - 1}
-          onClick={() => setPage(clamped + 1)}>Next ▶</button>
+        <Button type="button" variant="outline" disabled={clamped >= pages - 1}
+          onClick={() => setPage(clamped + 1)}>Next ▶</Button>
       </div>
     </>
   );
@@ -78,7 +79,7 @@ function OperationsTable({ operations }) {
           {operations.map((op, i) => (
             <tr key={i}>
               <td>{i + 1}</td>
-              <td><span className="class-pill class-pill--modified">{op.op}</span></td>
+              <td><Badge variant="warning">{op.op}</Badge></td>
               <td>{op.field ?? "—"}</td>
               <td className="run-meta__mono">
                 {op.params && Object.keys(op.params).length ? JSON.stringify(op.params) : "—"}
@@ -268,22 +269,22 @@ function ShadowPreviewPanel() {
       </p>
 
       <div className="review-meta">
-        <span className="contract-summary__chip">
+        <Badge variant="default">
           Transformation Rules: {contract.contract_id} v{contract.contract_version}
-        </span>
+        </Badge>
         {shadowPreview && (
           <>
-            <span className="contract-summary__chip">
+            <Badge variant="default">
               Source rows: {shadowPreview.source?.total_rows ?? 0}
-            </span>
-            <span className="contract-summary__chip">
+            </Badge>
+            <Badge variant="default">
               Shadow rows: {shadowPreview.shadow?.total_rows ?? 0}
               {shadowPreview.row_count_changed ? " (changed by filters/aggregation)" : ""}
-            </span>
+            </Badge>
             {shadowPreview.target && (
-              <span className="contract-summary__chip">
+              <Badge variant="default">
                 Target rows: {shadowPreview.target?.total_rows ?? 0}
-              </span>
+              </Badge>
             )}
           </>
         )}
@@ -312,9 +313,9 @@ function ShadowPreviewPanel() {
             {shadowPreview.aggregation_rules?.length > 0 && (
               <div className="review-meta" style={{ marginTop: 10 }}>
                 {shadowPreview.aggregation_rules.map((a, i) => (
-                  <span key={i} className="contract-summary__chip">
+                  <Badge key={i} variant="default">
                     {a.source_field}: {a.aggregation}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             )}
@@ -329,22 +330,22 @@ function ShadowPreviewPanel() {
           </section>
 
           <div className="contract-actions">
-            <button
+            <Button
               type="button"
-              className="wizard-btn wizard-btn--ghost"
+              variant="outline"
               onClick={() => buildPreview({ force: true })}
               disabled={loading || running}
             >
               Regenerate Shadow
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="wizard-btn wizard-btn--primary"
+              variant="primary"
               onClick={approveShadow}
               disabled={Boolean(shadowApproved) || running}
             >
               {shadowApproved ? "✓ Shadow Approved" : "Approve Shadow Dataset"}
-            </button>
+            </Button>
           </div>
 
           {shadowApproved && (
@@ -354,14 +355,15 @@ function ShadowPreviewPanel() {
                 You can now run reconciliation.
               </p>
               <div className="contract-actions">
-                <button
+                <Button
                   type="button"
-                  className="wizard-btn wizard-btn--primary wizard-btn--lg"
+                  variant="primary"
+                  size="lg"
                   onClick={runReconciliation}
                   disabled={running}
                 >
                   {running ? "Reconciling…" : "Run Reconciliation"}
-                </button>
+                </Button>
               </div>
             </>
           )}

@@ -48,6 +48,8 @@ from backend.routes.date_alignment_preview import router as date_alignment_previ
 from backend.routes.comparison_types import router as comparison_types_router
 from backend.routes.contracts import router as contracts_router
 from backend.routes.value_mapping import router as value_mapping_router
+from backend.routes.mapping_infer import router as mapping_infer_router
+from backend.routes.library import router as library_router
 from backend.routes.recon_v2 import router as recon_v2_router
 from backend.routes.script_transformations import router as script_transformations_router
 from backend.recon_engine.storage.db import init_storage
@@ -111,6 +113,8 @@ app.include_router(date_alignment_preview_router)
 app.include_router(comparison_types_router)
 app.include_router(contracts_router)
 app.include_router(value_mapping_router)
+app.include_router(mapping_infer_router)
+app.include_router(library_router)
 app.include_router(recon_v2_router)
 app.include_router(script_transformations_router)
 

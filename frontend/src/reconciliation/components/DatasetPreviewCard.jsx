@@ -1,4 +1,5 @@
 import PreviewTable from "../../components/PreviewTable";
+import { Button, Badge } from "@bristlecone/canopy";
 
 // Flow A (Excel/CSV) "Dataset Preview" card — the second and final card of
 // the file-upload path. Purely a presentation of the dataset already sitting
@@ -16,7 +17,7 @@ function DatasetPreviewCard({ dataset, onReplaceFile }) {
   return (
     <div className="wizard-preview-card">
       <div className="wizard-preview-card__status">
-        <span className="wizard-pill wizard-pill--complete">✓ Dataset imported</span>
+        <Badge variant="success">✓ Dataset imported</Badge>
         <span className="wizard-preview-card__filename">{dataset.filename}</span>
       </div>
 
@@ -42,9 +43,9 @@ function DatasetPreviewCard({ dataset, onReplaceFile }) {
         title="Data preview"
       />
 
-      <button type="button" className="wizard-btn wizard-btn--ghost" onClick={onReplaceFile}>
+      <Button type="button" variant="outline" className="mt-4" onClick={onReplaceFile}>
         Replace File
-      </button>
+      </Button>
     </div>
   );
 }

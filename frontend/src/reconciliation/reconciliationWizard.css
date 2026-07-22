@@ -1,113 +1,41 @@
+/* ============================================================================
+   Reconciliation wizard styling. Reads entirely through the design tokens
+   defined in index.css so light/dark themes and the single accent/status
+   palette stay consistent with the rest of the app. The persistent step
+   navigator now lives in the app sidebar (WizardSidebarNav / .wsb-* below);
+   the old in-page .wizard-stepper rail has been removed.
+
+   Colour discipline:
+     - brand / interactive / selection  -> --accent family
+     - success / match / "done"         -> --match (VERY_HIGH), --high (HIGH)
+     - warning / medium / "modified"    -> --medium
+     - quantity mismatch                -> --qty
+     - missing / removed / error        -> --missing
+     - extra in target                  -> --extra
+     - out of scope                     -> --scope
+     - informational / aggregated       -> --info
+   ============================================================================ */
+
 .wizard-shell {
-  display: flex;
-  align-items: flex-start;
-  gap: 24px;
-}
-
-@media (max-width: 900px) {
-  .wizard-shell {
-    flex-direction: column;
-  }
-}
-
-/* ---- Stepper rail ---- */
-.wizard-stepper {
-  flex: 0 0 224px;
-  position: sticky;
-  top: 16px;
-}
-
-@media (max-width: 900px) {
-  .wizard-stepper {
-    position: static;
-    width: 100%;
-  }
-  .wizard-stepper ol {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px !important;
-  }
-  .wizard-stepper__item {
-    flex: 1 1 auto;
-  }
-}
-
-.wizard-stepper ol {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.wizard-stepper__item button {
   width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: rgba(71, 85, 105, 0.9);
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
 }
 
-.wizard-stepper__item button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.wizard-stepper__num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(148, 163, 184, 0.18);
-  color: rgba(71, 85, 105, 0.9);
-  flex: none;
-}
-
-.wizard-stepper__item.is-complete .wizard-stepper__num {
-  background: rgba(13, 148, 136, 0.15);
-  color: #0d9488;
-}
-
-.wizard-stepper__item.is-active button {
-  background: rgba(13, 148, 136, 0.08);
-  border-color: rgba(13, 148, 136, 0.35);
-  color: #0f172a;
-}
-
-.wizard-stepper__item.is-active .wizard-stepper__num {
-  background: #0d9488;
-  color: #fff;
-}
-
-.wizard-stepper__item.is-locked .wizard-stepper__label {
-  color: rgba(100, 116, 139, 0.6);
-}
-
-/* ---- Step content card ---- */
+/* ---- Step content ---- */
 .wizard-content {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
 }
 
 .wizard-step {
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid rgba(229, 231, 235, 0.85);
-  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
   padding: 28px 30px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow-1);
+}
+
+@media (max-width: 720px) {
+  .wizard-step { padding: 20px 18px; }
 }
 
 .wizard-step__eyebrow {
@@ -116,20 +44,21 @@
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #0d9488;
+  color: var(--accent);
 }
 
 .wizard-step__title {
   margin: 0 0 6px;
   font-size: 22px;
   font-weight: 800;
-  color: rgba(15, 23, 42, 0.92);
+  letter-spacing: -0.01em;
+  color: var(--ink);
 }
 
 .wizard-step__desc {
   margin: 0;
-  max-width: 60ch;
-  color: rgba(71, 85, 105, 0.9);
+  max-width: 68ch;
+  color: var(--ink-2);
   font-size: 14px;
 }
 
@@ -142,17 +71,19 @@
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  border-top: 1px solid rgba(229, 231, 235, 0.85);
+  border-top: 1px solid var(--border);
   padding-top: 18px;
 }
 
 .wizard-btn {
   padding: 10px 18px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   border: 1px solid transparent;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
 .wizard-btn:disabled {
@@ -160,19 +91,36 @@
   opacity: 0.45;
 }
 
+.wizard-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
 .wizard-btn--ghost {
-  background: transparent;
-  border-color: rgba(203, 213, 225, 0.9);
-  color: rgba(71, 85, 105, 0.9);
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--ink-2);
+}
+
+.wizard-btn--ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--ink);
 }
 
 .wizard-btn--primary {
-  background: #0d9488;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: var(--shadow-1);
 }
 
 .wizard-btn--primary:hover:not(:disabled) {
-  background: #0b7a70;
+  background: var(--accent-hover);
+  box-shadow: var(--shadow-2);
+}
+
+.wizard-btn--primary:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 /* ---- Option grid: comparison type (Step 1), connector picker (Steps 2 & 3) ---- */
@@ -188,16 +136,23 @@
   flex-direction: column;
   gap: 4px;
   padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(229, 231, 235, 0.85);
-  background: #fff;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
   text-align: left;
   cursor: pointer;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+    background var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.wizard-option-card:hover:not(.is-disabled) {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-1);
 }
 
 .wizard-option-card.is-selected {
-  border-color: #0d9488;
-  box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.15);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-tint-2);
 }
 
 .wizard-option-card.is-disabled {
@@ -205,15 +160,20 @@
   opacity: 0.55;
 }
 
+.wizard-option-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
 .wizard-option-card__label {
   font-size: 14px;
   font-weight: 700;
-  color: rgba(15, 23, 42, 0.9);
+  color: var(--ink);
 }
 
 .wizard-option-card__meta {
   font-size: 11px;
-  color: rgba(100, 116, 139, 0.85);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -223,7 +183,7 @@
   font-size: 12px;
   font-weight: 400;
   line-height: 1.4;
-  color: rgba(100, 116, 139, 0.95);
+  color: var(--muted);
 }
 
 .wizard-option-card__badge {
@@ -233,9 +193,10 @@
   font-size: 10px;
   font-weight: 700;
   padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.18);
-  color: rgba(71, 85, 105, 0.85);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
 }
 
 .wizard-connector-panel {
@@ -243,17 +204,17 @@
 }
 
 .wizard-step__hint {
-  color: rgba(100, 116, 139, 0.9);
+  color: var(--muted);
   font-size: 13px;
 }
 
 .wizard-step__error {
-  color: #b91c1c;
+  color: var(--missing);
   font-size: 13px;
 }
 
 .wizard-step__success {
-  color: #0d9488;
+  color: var(--match);
   font-size: 13px;
 }
 
@@ -263,19 +224,20 @@
   align-items: center;
   gap: 10px;
   font-size: 13px;
-  color: rgba(71, 85, 105, 0.9);
+  color: var(--ink-2);
 }
 
 .wizard-pill {
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
 }
 
 .wizard-pill--complete {
-  background: rgba(13, 148, 136, 0.12);
-  color: #0d9488;
+  background: var(--match-bg);
+  color: var(--match);
+  border: 1px solid var(--match-bd);
 }
 
 /* ---- Sub-stage progress pills (progressive disclosure within Source/Target) ---- */
@@ -295,13 +257,13 @@
   gap: 6px;
   font-size: 12px;
   font-weight: 700;
-  color: rgba(148, 163, 184, 0.9);
+  color: var(--muted-2);
 }
 
 .wizard-substage-pills__item:not(:last-child)::after {
   content: "›";
   margin-left: 8px;
-  color: rgba(203, 213, 225, 0.9);
+  color: var(--border-strong);
   font-weight: 400;
 }
 
@@ -313,26 +275,26 @@
   height: 18px;
   border-radius: 50%;
   font-size: 10px;
-  background: rgba(148, 163, 184, 0.18);
+  background: var(--surface-2);
   color: inherit;
 }
 
 .wizard-substage-pills__item.is-done {
-  color: #0d9488;
+  color: var(--match);
 }
 
 .wizard-substage-pills__item.is-done .wizard-substage-pills__marker {
-  background: rgba(13, 148, 136, 0.15);
-  color: #0d9488;
+  background: var(--match-bg);
+  color: var(--match);
 }
 
 .wizard-substage-pills__item.is-active {
-  color: rgba(15, 23, 42, 0.92);
+  color: var(--ink);
 }
 
 .wizard-substage-pills__item.is-active .wizard-substage-pills__marker {
-  background: #0d9488;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 
 /* ---- "Change connector" back-link (SAP flow, above the workspace) ---- */
@@ -345,21 +307,21 @@
   margin: 0 0 14px;
   font-size: 12px;
   font-weight: 700;
-  color: rgba(71, 85, 105, 0.85);
+  color: var(--ink-2);
   cursor: pointer;
   text-decoration: none;
 }
 
 .wizard-link:hover {
-  color: #0d9488;
+  color: var(--accent);
   text-decoration: underline;
 }
 
 /* ---- Dataset Preview card (Excel/CSV, Card 2) ---- */
 .wizard-preview-card {
-  border: 1px solid rgba(229, 231, 235, 0.85);
-  border-radius: 14px;
-  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
   padding: 20px;
 }
 
@@ -373,7 +335,7 @@
 .wizard-preview-card__filename {
   font-size: 13px;
   font-weight: 600;
-  color: rgba(71, 85, 105, 0.95);
+  color: var(--ink-2);
 }
 
 .wizard-preview-card__stats {
@@ -392,13 +354,13 @@
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: rgba(100, 116, 139, 0.85);
+  color: var(--muted);
 }
 
 .wizard-preview-card__stat-value {
   font-size: 16px;
   font-weight: 700;
-  color: rgba(15, 23, 42, 0.92);
+  color: var(--ink);
 }
 
 .wizard-preview-card .wizard-btn {
@@ -414,26 +376,26 @@
   display: block;
   font-size: 13px;
   font-weight: 700;
-  color: rgba(15, 23, 42, 0.85);
+  color: var(--ink);
   margin-bottom: 6px;
 }
 
 .wizard-field__help {
   margin: 6px 0 0;
   font-size: 13px;
-  color: rgba(100, 116, 139, 0.9);
+  color: var(--muted);
 }
 
 .wizard-select,
 .wizard-input {
   width: 100%;
   padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(203, 213, 225, 0.9);
-  background: #fff;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
   font-size: 14px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--ink);
 }
 
 .wizard-select--sm,
@@ -451,12 +413,12 @@
 .wizard-textarea {
   width: 100%;
   padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(203, 213, 225, 0.9);
-  background: #fff;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
   font-size: 14px;
   line-height: 1.5;
-  color: #0f172a;
+  color: var(--ink);
   resize: vertical;
   font-family: inherit;
 }
@@ -464,14 +426,15 @@
 .wizard-select:focus-visible,
 .wizard-input:focus-visible,
 .wizard-textarea:focus-visible {
-  outline: 2px solid rgba(13, 148, 136, 0.5);
-  outline-offset: 1px;
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* ---- Sections inside a step ---- */
 .wizard-section {
   padding: 18px 0;
-  border-bottom: 1px solid rgba(229, 231, 235, 0.85);
+  border-bottom: 1px solid var(--border);
 }
 
 .wizard-section:first-of-type {
@@ -487,7 +450,63 @@
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 800;
-  color: rgba(15, 23, 42, 0.9);
+  color: var(--ink);
+}
+
+/* ============================================================
+   SECTION SHADE ZONES
+   Differentiate sibling sections by neutral DEPTH within one family
+   (Preview deepest → MDT mid → Mapping tables lightest) so each reads
+   as a separate entity at a glance. Each zone is a card with an ambient
+   border glow. IMPORTANT: this is a neutral-depth + glow system only —
+   the semantic tier/outcome colors (match/high/medium/missing/scope/…)
+   are unaffected; badges sit ON TOP of whatever shade their zone uses.
+   ============================================================ */
+.section-shade {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  box-shadow: var(--glow-ambient);
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+/* When a shade card also carries .wizard-section, neutralise that class's
+   separator/padding quirks (incl. its :first/:last-of-type overrides) so every
+   zone renders as a full, evenly-padded card rather than a bordered strip. */
+.section-shade.wizard-section,
+.section-shade.wizard-section:first-of-type,
+.section-shade.wizard-section:last-of-type {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.section-shade + .section-shade { margin-top: 16px; }
+
+.section-shade--deep { background: var(--surface-3); }
+.section-shade--mid  { background: var(--surface-2); }
+.section-shade--base { background: var(--surface); }
+
+/* Stronger, state-relevant glow — reserved for active/confirmed containers,
+   so the glow reinforces state rather than decorating every box uniformly. */
+.section-shade.is-confirmed {
+  border-color: var(--accent);
+  box-shadow: var(--glow-active);
+}
+
+/* Tier summary reads as its own shallow strip (surface-2) inside a base
+   (white) mapping card, so the tier badges are visually grouped. */
+.section-tier-strip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+/* Mapping Review renders as shaded cards floating on the ground canvas, so
+   the page shell itself steps back rather than being another white card. */
+.wizard-step--canvas {
+  background: var(--ground);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 /* ---- SAP fetch panel ---- */
@@ -504,19 +523,19 @@
 }
 
 .sap-fetch__status.is-idle {
-  color: rgba(100, 116, 139, 0.9);
+  color: var(--muted);
 }
 
 .sap-fetch__status.is-connecting {
-  color: #b4700f;
+  color: var(--medium);
 }
 
 .sap-fetch__status.is-connected {
-  color: #0d9488;
+  color: var(--match);
 }
 
 .sap-fetch__status.is-error {
-  color: #b91c1c;
+  color: var(--missing);
 }
 
 .sap-fetch__preview {
@@ -531,9 +550,9 @@
   flex-direction: column;
   gap: 6px;
   padding: 14px;
-  border: 1px solid rgba(229, 231, 235, 0.85);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
   font-size: 13px;
 }
 
@@ -552,9 +571,10 @@
   align-self: flex-start;
   margin-top: 4px;
   padding: 3px 10px;
-  border-radius: 999px;
-  background: rgba(13, 148, 136, 0.12);
-  color: #0d9488;
+  border-radius: var(--radius-pill);
+  background: var(--match-bg);
+  color: var(--match);
+  border: 1px solid var(--match-bd);
   font-size: 12px;
   font-weight: 700;
 }
@@ -567,6 +587,25 @@
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 10px;
+}
+
+.mapping-editor__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.mapping-editor__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mapping-editor__title {
+  font-weight: 800;
+  font-size: 0.95rem;
 }
 
 .mapping-editor__table-wrap {
@@ -595,23 +634,23 @@
   margin: 0 0 4px;
   font-size: 14px;
   font-weight: 800;
-  color: rgba(15, 23, 42, 0.9);
+  color: var(--ink);
 }
 
 /* ---- Transformation preview placeholder (Step 4 Section D) ---- */
 .transform-preview-placeholder {
-  border: 1px dashed rgba(203, 213, 225, 0.9);
-  border-radius: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
   padding: 18px 20px;
-  background: rgba(248, 250, 252, 0.7);
-  color: rgba(71, 85, 105, 0.9);
+  background: var(--surface-2);
+  color: var(--ink-2);
   font-size: 14px;
 }
 
 .transform-preview-placeholder__title {
   margin: 0 0 4px;
   font-weight: 800;
-  color: rgba(15, 23, 42, 0.85);
+  color: var(--ink);
 }
 
 /* ---- Transformation contract panel (Step 4 Section D) ---- */
@@ -622,26 +661,32 @@
   margin: 12px 0;
 }
 
+/* Lifecycle checklist chip (StatusBadge.jsx): pending / ok / fail. Maps onto
+   the neutral / match / missing tones from the shared palette. */
 .contract-status {
   padding: 4px 12px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 12px;
   font-weight: 700;
+  border: 1px solid transparent;
 }
 
 .contract-status--pending {
-  background: rgba(148, 163, 184, 0.14);
-  color: rgba(100, 116, 139, 0.95);
+  background: var(--surface-2);
+  color: var(--muted);
+  border-color: var(--border);
 }
 
 .contract-status--ok {
-  background: rgba(13, 148, 136, 0.12);
-  color: #0d9488;
+  background: var(--match-bg);
+  color: var(--match);
+  border-color: var(--match-bd);
 }
 
 .contract-status--fail {
-  background: rgba(185, 28, 28, 0.1);
-  color: #b91c1c;
+  background: var(--missing-bg);
+  color: var(--missing);
+  border-color: var(--missing-bd);
 }
 
 .contract-actions {
@@ -662,12 +707,14 @@
   margin: 12px 0;
 }
 
+/* Informational metadata chips — kept neutral so they never compete with
+   status colour. */
 .contract-summary__chip {
   padding: 4px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(13, 148, 136, 0.25);
-  background: rgba(13, 148, 136, 0.06);
-  color: rgba(15, 23, 42, 0.85);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--ink-2);
   font-size: 12px;
   font-weight: 700;
 }
@@ -676,15 +723,17 @@
   margin-top: 10px;
 }
 
+/* Deliberate dark code viewer for raw contract JSON. */
 .contract-json {
   max-height: 420px;
   overflow: auto;
   margin: 6px 0 0;
   padding: 14px 16px;
-  border: 1px solid rgba(229, 231, 235, 0.9);
-  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
   background: #0f172a;
   color: #e2e8f0;
+  font-family: var(--mono);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -707,9 +756,9 @@
 
 .class-card {
   padding: 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(229, 231, 235, 0.9);
-  background: rgba(248, 250, 252, 0.7);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
   text-align: center;
 }
 
@@ -717,27 +766,23 @@
   margin: 0;
   font-size: 22px;
   font-weight: 800;
-  color: rgba(15, 23, 42, 0.9);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
 }
 
 .class-card__label {
   margin: 2px 0 0;
   font-size: 12px;
   font-weight: 700;
-  color: rgba(100, 116, 139, 0.95);
+  color: var(--muted);
 }
 
-.class-card--ok .class-card__value {
-  color: #0d9488;
-}
-
-.class-card--fail .class-card__value {
-  color: #b91c1c;
-}
-
-.class-card--warn .class-card__value {
-  color: #b4700f;
-}
+/* Outcome tones — one meaning each, matching the canonical status palette. */
+.class-card--match .class-card__value   { color: var(--match); }
+.class-card--qty .class-card__value     { color: var(--qty); }
+.class-card--missing .class-card__value { color: var(--missing); }
+.class-card--extra .class-card__value   { color: var(--extra); }
+.class-card--total .class-card__value   { color: var(--ink); }
 
 .run-meta {
   display: grid;
@@ -748,16 +793,16 @@
 
 .run-meta__card {
   padding: 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(229, 231, 235, 0.9);
-  background: rgba(248, 250, 252, 0.7);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .run-meta__title {
   margin: 0 0 8px;
   font-size: 13px;
   font-weight: 800;
-  color: rgba(15, 23, 42, 0.9);
+  color: var(--ink);
 }
 
 .run-meta__list {
@@ -775,92 +820,126 @@
 }
 
 .run-meta__list dt {
-  color: rgba(100, 116, 139, 0.95);
+  color: var(--muted);
   font-weight: 700;
 }
 
 .run-meta__list dd {
   margin: 0;
-  color: rgba(15, 23, 42, 0.9);
+  color: var(--ink);
   text-align: right;
   overflow-wrap: anywhere;
 }
 
 .run-meta__mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 11px;
 }
 
+/* Reconciliation outcome pills. */
 .class-pill {
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--border);
 }
 
 .class-pill--match {
-  background: rgba(13, 148, 136, 0.12);
-  color: #0d9488;
+  background: var(--match-bg);
+  color: var(--match);
+  border-color: var(--match-bd);
 }
 
-.class-pill--mismatch,
+.class-pill--mismatch {
+  background: var(--qty-bg);
+  color: var(--qty);
+  border-color: var(--qty-bd);
+}
+
 .class-pill--exception {
-  background: rgba(185, 28, 28, 0.1);
-  color: #b91c1c;
+  background: var(--missing-bg);
+  color: var(--missing);
+  border-color: var(--missing-bd);
 }
 
-.class-pill--missing_in_source,
+/* "Missing in source" = the row only exists in the target = extra in target;
+   "missing in target" = truly missing. Distinct hues per spec. */
+.class-pill--missing_in_source {
+  background: var(--extra-bg);
+  color: var(--extra);
+  border-color: var(--extra-bd);
+}
+
 .class-pill--missing_in_target {
-  background: rgba(180, 112, 15, 0.12);
-  color: #b4700f;
+  background: var(--missing-bg);
+  color: var(--missing);
+  border-color: var(--missing-bd);
 }
 
-/* Transformation Preview: modified-columns change-type pills. */
+/* Transformation Preview: modified-columns change-type pills (diff palette). */
 .class-pill--added {
-  background: rgba(13, 148, 136, 0.12);
-  color: #0d9488;
+  background: var(--match-bg);
+  color: var(--match);
+  border-color: var(--match-bd);
 }
 
 .class-pill--removed {
-  background: rgba(185, 28, 28, 0.1);
-  color: #b91c1c;
+  background: var(--missing-bg);
+  color: var(--missing);
+  border-color: var(--missing-bd);
 }
 
 .class-pill--renamed,
 .class-pill--modified {
-  background: rgba(180, 112, 15, 0.12);
-  color: #b4700f;
+  background: var(--medium-bg);
+  color: var(--medium);
+  border-color: var(--medium-bd);
 }
 
 /* ---- Mapping Review (Step 4 sub-flow: deterministic value mapping) ---- */
 .tier-badge {
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
+  border: 1px solid transparent;
 }
 
-.tier-badge--very_high,
+/* VERY_HIGH strong green vs HIGH soft green — distinguishable confidence
+   levels, not the same token reused. */
+.tier-badge--very_high {
+  background: var(--match-bg);
+  color: var(--match);
+  border-color: var(--match-bd);
+}
+
 .tier-badge--high {
-  background: rgba(13, 148, 136, 0.12);
-  color: #0d9488;
+  background: var(--high-bg);
+  color: var(--high);
+  border-color: var(--high-bd);
 }
 
 .tier-badge--medium {
-  background: rgba(180, 112, 15, 0.12);
-  color: #b4700f;
+  background: var(--medium-bg);
+  color: var(--medium);
+  border-color: var(--medium-bd);
 }
 
 .tier-badge--none {
-  background: rgba(185, 28, 28, 0.1);
-  color: #b91c1c;
+  background: var(--missing-bg);
+  color: var(--missing);
+  border-color: var(--missing-bd);
 }
 
 .tier-badge--out_of_scope {
-  background: rgba(71, 85, 105, 0.12);
-  color: #475569;
+  background: var(--scope-bg);
+  color: var(--scope);
+  border-color: var(--scope-bd);
 }
 
 .mapping-review__tabs {
@@ -872,35 +951,42 @@
 
 .mapping-review__tab {
   padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(229, 231, 235, 0.9);
-  background: rgba(248, 250, 252, 0.7);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
   font-size: 12px;
   font-weight: 700;
-  color: rgba(100, 116, 139, 0.95);
+  color: var(--muted);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.mapping-review__tab:hover {
+  border-color: var(--border-strong);
+  color: var(--ink);
 }
 
 .mapping-review__tab--active {
-  border-color: rgba(13, 148, 136, 0.5);
-  background: rgba(13, 148, 136, 0.1);
-  color: #0d9488;
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent);
 }
 
 .mapping-review__candidates {
   margin: 4px 0 0;
   padding-left: 18px;
   font-size: 12px;
-  color: rgba(100, 116, 139, 0.95);
+  color: var(--muted);
 }
 
 .mapping-review__ambiguous-row {
-  background: rgba(180, 112, 15, 0.06);
+  background: var(--medium-bg);
 }
 
 .recon-run__hint {
   font-size: 13px;
-  color: rgba(100, 116, 139, 0.9);
+  color: var(--muted);
 }
 
 .field-diffs {
@@ -909,19 +995,20 @@
   gap: 6px;
 }
 
+/* Field-level value mismatch chips. */
 .field-diff-chip {
   padding: 3px 9px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: rgba(185, 28, 28, 0.08);
-  color: #7f1d1d;
-  border: 1px solid rgba(185, 28, 28, 0.18);
+  font-family: var(--mono);
+  background: var(--qty-bg);
+  color: var(--qty);
+  border: 1px solid var(--qty-bd);
   white-space: nowrap;
 }
 
 .field-diff-chip strong {
-  color: #b91c1c;
+  color: var(--qty);
 }
 
 .date-diag {
@@ -938,11 +1025,11 @@
   justify-content: space-between;
   gap: 12px;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  border-bottom: 1px solid var(--border);
 }
 
 .date-diag__label {
-  color: #64748b;
+  color: var(--muted);
   font-size: 13px;
   font-weight: 600;
 }
@@ -950,25 +1037,25 @@
 .date-diag__value {
   font-size: 13px;
   font-weight: 800;
-  color: #0f172a;
+  color: var(--ink);
 }
 
 .date-diag__value--ok {
-  color: #047857;
+  color: var(--match);
 }
 
 .date-diag__value--warn {
-  color: #b4700f;
+  color: var(--medium);
 }
 
 .date-diag__note {
-  color: #92400e;
+  color: var(--medium);
   font-size: 13px;
   margin-top: 8px;
 }
 
 .date-diag__note--warn {
-  color: #b91c1c;
+  color: var(--missing);
   font-weight: 700;
 }
 
@@ -998,23 +1085,24 @@
 
 .review-pager__label {
   font-size: 12px;
-  color: rgba(100, 116, 139, 0.9);
+  color: var(--muted);
 }
 
 .review-arrow {
   text-align: center;
   font-weight: 700;
-  color: #b4700f;
+  color: var(--medium);
 }
-.review-arrow--added { color: #0d9488; }
-.review-arrow--removed { color: #b91c1c; }
+.review-arrow--added { color: var(--match); }
+.review-arrow--removed { color: var(--missing); }
 
-/* ---- Before / After curtain ---- */
+/* ---- Before / After curtain (Transformation Preview) ----
+   Diff palette: add=match, mod=medium, del=missing, agg=info. */
 .curtain {
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   padding: 12px;
-  background: rgba(148, 163, 184, 0.05);
+  background: var(--surface-2);
 }
 
 .curtain__legend {
@@ -1023,7 +1111,7 @@
   gap: 14px;
   margin-bottom: 10px;
   font-size: 12px;
-  color: rgba(100, 116, 139, 0.95);
+  color: var(--muted);
 }
 .curtain__legend-item {
   display: inline-flex;
@@ -1036,16 +1124,16 @@
   border-radius: 3px;
   display: inline-block;
 }
-.curtain-swatch--add { background: rgba(13, 148, 136, 0.35); }
-.curtain-swatch--mod { background: rgba(180, 112, 15, 0.35); }
-.curtain-swatch--del { background: rgba(185, 28, 28, 0.3); }
-.curtain-swatch--agg { background: rgba(37, 99, 235, 0.3); }
+.curtain-swatch--add { background: var(--bcone-green); }
+.curtain-swatch--mod { background: var(--bcone-orange); }
+.curtain-swatch--del { background: var(--bcone-red); }
+.curtain-swatch--agg { background: var(--bcone-blue); }
 
 .curtain__scroll {
   overflow-x: auto;
   max-height: 460px;
   overflow-y: auto;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
 }
 
 /* The stage sizes itself to the table content; both layers overlay it exactly
@@ -1071,31 +1159,34 @@
 .curtain-table {
   border-collapse: collapse;
   width: 100%;
-  background: var(--surface, #fff);
+  background: var(--surface);
   font-size: 12px;
 }
 .curtain-table th,
 .curtain-table td {
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  border: 1px solid var(--border);
   padding: 6px 10px;
   text-align: left;
   white-space: nowrap;
+  color: var(--ink-2);
 }
 .curtain-table thead th {
   position: sticky;
   top: 0;
-  background: rgba(148, 163, 184, 0.14);
+  background: var(--surface-2);
+  color: var(--muted);
   font-weight: 700;
   z-index: 1;
 }
 .curtain__layer--after .curtain-table {
-  background: var(--surface, #fff);
+  background: var(--surface);
 }
 
-.curtain-cell--add { background: rgba(13, 148, 136, 0.22); font-weight: 700; }
-.curtain-cell--mod { background: rgba(180, 112, 15, 0.22); font-weight: 700; }
-.curtain-cell--del { background: rgba(185, 28, 28, 0.18); font-weight: 700; }
-.curtain-cell--agg { background: rgba(37, 99, 235, 0.18); font-weight: 700; }
+/* Diff cell tints — colour + border derived from the semantic tokens. */
+.curtain-cell--add { background: color-mix(in srgb, var(--bcone-green) 15%, transparent);  color: #1a6b3a;              font-weight: 700; }
+.curtain-cell--mod { background: color-mix(in srgb, var(--bcone-orange) 15%, transparent); color: var(--bcone-orange); font-weight: 700; }
+.curtain-cell--del { background: color-mix(in srgb, var(--bcone-red) 15%, transparent);    color: var(--bcone-red);    font-weight: 700; }
+.curtain-cell--agg { background: color-mix(in srgb, var(--bcone-blue) 15%, transparent);   color: var(--bcone-blue);   font-weight: 700; }
 
 .curtain__handle {
   position: absolute;
@@ -1103,7 +1194,7 @@
   bottom: 0;
   width: 3px;
   margin-left: -1.5px;
-  background: #2563eb;
+  background: var(--accent);
   cursor: ew-resize;
   z-index: 3;
 }
@@ -1115,8 +1206,8 @@
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #2563eb;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  background: var(--accent);
+  box-shadow: var(--shadow-2);
 }
 .curtain__grip::before {
   content: "⇔";
@@ -1125,7 +1216,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--accent-contrast);
   font-size: 12px;
 }
 
@@ -1136,10 +1227,774 @@
   font-size: 11px;
   font-weight: 700;
   padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.72);
-  color: #fff;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+  color: var(--surface);
   pointer-events: none;
 }
 .curtain__tag--left { left: 8px; }
 .curtain__tag--right { right: 8px; }
+
+/* ============================================================================
+   Wizard step navigator — lives in the persistent app sidebar, nested under
+   the "Reconciliation Engine" nav item (WizardSidebarNav, rendered inside
+   .contextNav of AppLayout). Global
+   (non-module) classes so the component can reference them by string. Reads
+   through tokens; supports the expanded list and the collapsed icon rail.
+   ============================================================================ */
+.wsb {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px 4px;
+}
+.wsb--collapsed {
+  padding: 8px 6px 4px;
+  align-items: stretch;
+}
+
+/* Section labels ("Steps", "Context", "Jump to") */
+.wsb__label {
+  margin: 10px 6px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* Reconciliation Engine substep region — themed to the sidebar's sub color. */
+  color: var(--sb-sub, #bbb9ab);
+  opacity: 0.85;
+}
+.wsb__label:first-child { margin-top: 2px; }
+
+/* ---- Step list ---- */
+.wsb__steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wsb-step {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--sb-sub, #bbb9ab);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+/* Basalt-black glow/highlight; substep text stays visible. */
+.wsb-step:hover:not(:disabled) {
+  background: var(--sb-hover-bg, rgba(30, 30, 30, 0.32));
+  color: var(--sb-sub, #bbb9ab);
+  box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
+}
+.wsb-step:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(237, 231, 225, 0.35);
+}
+.wsb-step:disabled {
+  cursor: not-allowed;
+  color: var(--sb-sub, #bbb9ab);
+  opacity: 0.55;
+}
+
+/* Step marker (number / check) */
+.wsb-step__mk {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(187, 185, 171, 0.14);
+  color: var(--sb-sub, #bbb9ab);
+  border: 1px solid rgba(187, 185, 171, 0.3);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.wsb-step__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wsb-step__glyph {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--sb-sub, #bbb9ab);
+  opacity: 0.8;
+}
+
+/* Completed step: green marker + check */
+.wsb-step.is-complete .wsb-step__mk {
+  background: var(--match-bg);
+  color: var(--match);
+  border-color: var(--match-bd);
+}
+
+/* Locked step: de-emphasised */
+.wsb-step.is-locked .wsb-step__label { color: var(--sb-sub, #bbb9ab); }
+.wsb-step.is-locked .wsb-step__mk { opacity: 0.6; }
+
+/* Active step: basalt highlight + a cream bar/marker so the current substep
+   reads brighter than the resting #BBB9AB items. */
+.wsb-step.is-active {
+  background: var(--sb-active-bg, rgba(30, 30, 30, 0.46));
+  color: var(--sb-main, #ede7e1);
+  font-weight: 700;
+  box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
+}
+.wsb-step.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--sb-main, #ede7e1);
+}
+.wsb-step.is-active .wsb-step__mk {
+  background: var(--sb-main, #ede7e1);
+  color: var(--sb-bg, #143d4a);
+  border-color: transparent;
+}
+.wsb-step.is-active .wsb-step__glyph { color: var(--sb-main, #ede7e1); opacity: 1; }
+
+/* ---- Context summary (expanded only) ---- */
+.wsb-ctx {
+  margin: 2px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wsb-ctx__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 6px;
+}
+.wsb-ctx__k {
+  flex: 0 0 52px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--sb-sub, #bbb9ab);
+  opacity: 0.75;
+}
+.wsb-ctx__v {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--sb-sub, #bbb9ab);
+  overflow-wrap: anywhere;
+}
+.wsb-ctx__mode {
+  font-weight: 500;
+  color: var(--sb-sub, #bbb9ab);
+  opacity: 0.75;
+}
+.wsb-ctx__mono {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--sb-sub, #bbb9ab);
+  opacity: 0.75;
+}
+
+/* ---- Quick links ---- */
+.wsb__rail-div {
+  height: 1px;
+  margin: 8px 6px;
+  background: rgba(187, 185, 171, 0.24);
+}
+.wsb__links {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wsb-link {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--sb-sub, #bbb9ab);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.wsb-link:hover {
+  background: var(--sb-hover-bg, rgba(30, 30, 30, 0.32));
+  color: var(--sb-main, #ede7e1);
+  box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
+}
+.wsb-link:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(237, 231, 225, 0.35);
+}
+.wsb-link__ic {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--sb-sub, #bbb9ab);
+}
+.wsb-link:hover .wsb-link__ic { color: var(--sb-main, #ede7e1); }
+.wsb-link__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================================
+   Collapsed rail: icon-only, centered, labels hidden, tooltips on hover.
+   ============================================================================ */
+.wsb--collapsed .wsb__label,
+.wsb--collapsed .wsb-step__label,
+.wsb--collapsed .wsb-step__glyph,
+.wsb--collapsed .wsb-link__label {
+  display: none;
+}
+.wsb--collapsed .wsb-step,
+.wsb--collapsed .wsb-link {
+  justify-content: center;
+  padding: 8px 0;
+  gap: 0;
+}
+.wsb--collapsed .wsb-step.is-active::before { left: -6px; }
+
+/* Tooltip for the collapsed rail (mirrors the app-nav tooltip treatment). */
+.wsb--collapsed .wsb-step::after,
+.wsb--collapsed .wsb-link::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  background: var(--sb-hover, #1e1e1e);
+  color: var(--sb-main, #ede7e1);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  z-index: 60;
+}
+.wsb--collapsed .wsb-step:hover::after,
+.wsb--collapsed .wsb-step:focus-visible::after,
+.wsb--collapsed .wsb-link:hover::after,
+.wsb--collapsed .wsb-link:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* ── Sheet-driven identification (Step 1) ───────────────────────────────── */
+.wizard-identify {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.wizard-identify__result {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wizard-identify__filebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.wizard-identify__filename {
+  font-weight: 600;
+  color: var(--ink);
+}
+.wizard-identify__side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wizard-identify__side-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.wizard-identify__side-title {
+  font-weight: 600;
+  color: var(--ink-2);
+  min-width: 96px;
+}
+.wizard-identify__confidence {
+  font-size: 12px;
+  color: var(--ink-2);
+  text-transform: capitalize;
+}
+.wizard-identify__evidence,
+.wizard-identify__fields {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.wizard-identify__fields {
+  font-size: 12px;
+  opacity: 0.85;
+}
+.wizard-identify__provider {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+  opacity: 0.75;
+}
+.wizard-identify__warn {
+  margin: 0;
+  font-size: 13px;
+  color: var(--warning, #b26a00);
+}
+
+/* ── Connector step: binary choice + Live-Fetch confirmation ─────────────── */
+.wizard-source-choice {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.wizard-choice-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.wizard-choice-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-1);
+}
+.wizard-choice-card:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.wizard-choice-card__label {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 15px;
+}
+.wizard-choice-card__meta {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.wizard-choice-card__badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.wizard-connector-confirm {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wizard-connector-confirm__title {
+  margin: 0;
+  font-size: 15px;
+  color: var(--ink);
+}
+.wizard-connector-confirm__evidence {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.wizard-connector-confirm__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.wizard-btn {
+  padding: 9px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 600;
+}
+.wizard-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+.wizard-btn--primary:hover {
+  background: var(--accent-hover);
+}
+
+/* ── Field pre-selection: unmatched sheet fields note ────────────────────── */
+.ibpw-preselect-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--warning, #b26a00);
+  background: var(--surface-2, rgba(0, 0, 0, 0.03));
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+}
+
+/* ── Mapping Card (Step 4) ───────────────────────────────────────────────── */
+.wizard-mapcard {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.wizard-mapcard__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.wizard-mapcard__hint {
+  font-size: 12px;
+  color: var(--ink-2);
+  opacity: 0.8;
+}
+.wizard-mapcard__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2, rgba(0, 0, 0, 0.03));
+  color: var(--warning, #b26a00);
+  font-size: 13px;
+}
+.wizard-mapcard__side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.wizard-mapcard__side-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.wizard-mapcard__side-title {
+  font-weight: 600;
+  color: var(--ink-2);
+  min-width: 70px;
+}
+.wizard-mapcard__mode {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.wizard-mapcard__spacer {
+  flex: 1;
+}
+.wizard-mapcard__fields {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.wizard-mapcard__fields--empty {
+  opacity: 0.7;
+}
+.wizard-mapcard__mdt {
+  opacity: 0.7;
+}
+
+/* ── Recommended-for-Deterministic-Mapping auxiliary fields (Mapping Review) ── */
+.aux-group {
+  margin-top: 14px;
+}
+.aux-group__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 0 0 6px;
+}
+.aux--absent td,
+.aux--empty td {
+  opacity: 0.6;
+}
+/* Compact variant — rendered inside a connector's data-preview card. */
+.aux-panel--compact {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-1, rgba(148, 163, 184, 0.25));
+}
+.aux-panel__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-1, inherit);
+  margin: 0 0 4px;
+}
+
+/* ============================================================================
+   RECONCILIATION WORKFLOW THEME — scoped entirely to .wizard-shell.
+     Global background        -> #F7EFE2 (cream) replacing white on page,
+                                 containers, panels, forms, empty states
+     Headers/step indicators  -> #2E3626 (Ebony Wood)
+     Buttons / chips / CTAs    -> bg #7F8466 (sage), text/icon #2E3626 (all states)
+     Text links (non-button)   -> transparent bg, #2E3626 text, subtle hover
+     Tables / cards / previews -> bg #98AA9D (green), text #FFFFFF
+   Every override is prefixed with .wizard-shell so nothing outside the
+   reconciliation workflow changes. The cream background is applied by remapping
+   the neutral --surface/--ground tokens on the root; cards/tables re-remap those
+   tokens locally to green so their headers/rows/labels/values turn white-on-green
+   uniformly (th uses --surface-2, td text uses --ink-2, …) without per-cell
+   rules; semantic status colors (--match/--qty/diff tints) are left untouched.
+   ============================================================================ */
+.wizard-shell {
+  --rc-header: #2e3626;       /* Ebony Wood — headers / step labels */
+  --rc-btn-bg: #7f8466;       /* button / CTA background — sage */
+  --rc-btn-fg: #2e3626;       /* button text/icon — Ebony Wood */
+  --rc-surface: #98aa9d;      /* table / card / data-display background — green */
+  --rc-surface-2: #8a9c8f;    /* table header / hover shade (deeper green) */
+  --rc-surface-3: #7e9184;
+  --rc-surface-fg: #ffffff;   /* text on the green data surfaces */
+  --rc-line: rgba(255, 255, 255, 0.28);
+  --rc-line-strong: rgba(255, 255, 255, 0.42);
+
+  /* Global background: replace white with warm cream on every non-overridden
+     surface (page, content containers, panels, forms, empty states). */
+  --surface: #f7efe2;
+  --surface-2: #f0e6d5;
+  --surface-3: #e9ddc9;
+  --ground: #f7efe2;
+}
+
+/* ---- 1. Headers & step indicators → Ebony Wood ---- */
+.wizard-shell .wizard-step__eyebrow,
+.wizard-shell .wizard-step__title,
+.wizard-shell .wizard-section__title,
+.wizard-shell .rule-builder__section-title,
+.wizard-shell .mapping-editor__title,
+.wizard-shell .run-meta__title,
+.wizard-shell .transform-preview-placeholder__title,
+.wizard-shell .wizard-connector-confirm__title {
+  color: var(--rc-header);
+}
+
+/* ---- 2. Buttons / chips / CTAs → #CBB8A0 bg + Ebony text, held across states.
+   Canopy <Button> renders a plain <button> styled with Tailwind utilities, so
+   !important is required to keep the color through hover/active/selected.
+   Connector-workspace controls (.ibpw-root *) are EXCLUDED from the blanket
+   rule — their CTA buttons are themed explicitly in §4 while their entity/field
+   list rows stay as selection rows (not filled buttons). Non-button text links
+   are handled separately in §2b. ---- */
+.wizard-shell button:not(:where(.ibpw-root *)),
+.wizard-shell button:not(:where(.ibpw-root *)):hover,
+.wizard-shell button:not(:where(.ibpw-root *)):active,
+.wizard-shell button:not(:where(.ibpw-root *))[aria-selected="true"],
+.wizard-shell button.is-active:not(:where(.ibpw-root *)),
+.wizard-shell .wizard-btn,
+.wizard-shell .wizard-btn:hover,
+.wizard-shell .wizard-btn--primary,
+.wizard-shell .wizard-btn--primary:hover,
+.wizard-shell .wizard-btn--ghost,
+.wizard-shell .wizard-option-card,
+.wizard-shell .wizard-option-card:hover,
+.wizard-shell .wizard-option-card.is-selected,
+.wizard-shell .wizard-choice-card,
+.wizard-shell .wizard-choice-card:hover,
+.wizard-shell .wizard-choice-card.is-selected,
+.wizard-shell .mapping-review__tab,
+.wizard-shell .mapping-review__tab:hover,
+.wizard-shell .mapping-review__tab--active {
+  background-color: var(--rc-btn-bg) !important;
+  color: var(--rc-btn-fg) !important;
+  border-color: var(--rc-btn-bg) !important;
+}
+/* Icon + inner text ride the Ebony foreground. */
+.wizard-shell button:not(:where(.ibpw-root *)) *,
+.wizard-shell button:not(:where(.ibpw-root *)) svg,
+.wizard-shell .wizard-option-card *,
+.wizard-shell .wizard-choice-card * {
+  color: var(--rc-btn-fg) !important;
+}
+/* Inner chips/badges inside a button: transparent + Ebony outline. */
+.wizard-shell .wizard-option-card__badge,
+.wizard-shell .wizard-choice-card__badge,
+.wizard-shell button:not(:where(.ibpw-root *)) [class*="badge" i] {
+  background: transparent !important;
+  border-color: rgba(46, 54, 38, 0.5) !important;
+}
+/* Selection stays legible via an Ebony ring (colors themselves don't change). */
+.wizard-shell .wizard-option-card.is-selected,
+.wizard-shell .wizard-choice-card.is-selected,
+.wizard-shell .mapping-review__tab--active {
+  box-shadow: 0 0 0 2px var(--rc-btn-fg) inset !important;
+}
+.wizard-shell button:not(:where(.ibpw-root *)):focus-visible {
+  box-shadow: 0 0 0 3px rgba(46, 54, 38, 0.4) !important;
+}
+
+/* ---- 2b. Clickable TEXT links (non-button actions) → transparent bg, Ebony
+   text, same color on hover with only a subtle opacity emphasis. Covers the
+   wizard's text back-link and any inline anchor/expandable-text control. These
+   rules sit after §2 and are more specific than the blanket button rule, so a
+   .wizard-link that happens to render as a <button> still reads as a text link.
+   Connector-workspace internals are excluded. ---- */
+.wizard-shell .wizard-link,
+.wizard-shell .wizard-link:hover,
+.wizard-shell a:not(:where(.ibpw-root *)),
+.wizard-shell a:not(:where(.ibpw-root *)):hover {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: var(--rc-header) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.wizard-shell .wizard-link *,
+.wizard-shell a:not(:where(.ibpw-root *)) * {
+  color: var(--rc-header) !important;
+}
+.wizard-shell .wizard-link:hover,
+.wizard-shell a:not(:where(.ibpw-root *)):hover {
+  opacity: 0.75; /* subtle emphasis only — color unchanged */
+}
+
+/* ---- 3. Cards / surfaces / tables → Clay bg + Ebony text ---- */
+.wizard-shell .surface-elevated,
+.wizard-shell .wizard-preview-card,
+.wizard-shell .wizard-mapcard,
+.wizard-shell .run-meta__card,
+.wizard-shell .class-card,
+.wizard-shell .class-cards > *,
+.wizard-shell .doc-upload,
+.wizard-shell .wizard-identify__result,
+.wizard-shell .wizard-connector-confirm,
+.wizard-shell .curtain,
+.wizard-shell .section-tier-strip {
+  background-color: var(--rc-surface) !important;   /* #98AA9D green */
+  color: var(--rc-surface-fg);                       /* #FFFFFF */
+  border-color: var(--rc-line);
+  /* Local token remap → the table + labels/values inside turn white-on-green. */
+  --surface: #98aa9d;
+  --surface-2: #8a9c8f;
+  --surface-3: #7e9184;
+  --ground: #98aa9d;
+  --ink: #ffffff;
+  --ink-2: #ffffff;
+  --ink-1: #ffffff;
+  --muted: rgba(255, 255, 255, 0.85);
+  --muted-2: rgba(255, 255, 255, 0.7);
+  --border: rgba(255, 255, 255, 0.28);
+  --border-strong: rgba(255, 255, 255, 0.42);
+}
+/* Table headers follow the same scheme (a touch deeper for hierarchy). */
+.wizard-shell .table-elevated th,
+.wizard-shell .curtain-table thead th {
+  background: var(--rc-surface-2);
+  color: var(--rc-surface-fg);
+}
+
+/* ---- 4. Connector workspaces (S4 / IBP) adopt the palette via their tokens,
+   so their panels/cards/preview grid retheme coherently instead of every list
+   row becoming a black block. ---- */
+.wizard-shell .ibpw-root {
+  --ibpw-surface: #f7efe2;      /* panels → cream */
+  --ibpw-ink: #2e3626;
+  --ibpw-muted: rgba(46, 54, 38, 0.8);
+  --ibpw-faint: rgba(46, 54, 38, 0.62);
+  --ibpw-line: rgba(46, 54, 38, 0.2);
+  --ibpw-accent: #7f8466;       /* sage — selection tint / accent lines */
+  --ibpw-accent-soft: rgba(127, 132, 102, 0.16);
+  --ibpw-accent-line: rgba(127, 132, 102, 0.4);
+  --ibpw-hover: rgba(127, 132, 102, 0.1);
+}
+/* Connector CTA / action / chip buttons → #7F8466 bg + Ebony text, held across
+   states (matches §2). Entity/field selection ROWS are intentionally not
+   included here — they stay selection rows, not filled buttons. */
+.wizard-shell .ibpw-root .ibpw-btn,
+.wizard-shell .ibpw-root .ibpw-btn:hover,
+.wizard-shell .ibpw-root .ibpw-btn--ghost,
+.wizard-shell .ibpw-root .ibpw-btn--header,
+.wizard-shell .ibpw-root .ibpw-chip-btn,
+.wizard-shell .ibpw-root .ibpw-chip-btn:hover,
+.wizard-shell .ibpw-root .ibpw-recent__chip,
+.wizard-shell .ibpw-root .ibpw-recent__chip:hover,
+.wizard-shell .ibpw-root .sapc-btn,
+.wizard-shell .ibpw-root .sapc-btn:hover,
+.wizard-shell .ibpw-root .sapc-actionbtn,
+.wizard-shell .ibpw-root .sapc-actionbtn:hover,
+.wizard-shell .ibpw-root .sapc-actionbtn--primary {
+  background-color: var(--rc-btn-bg) !important;
+  color: var(--rc-btn-fg) !important;
+  border-color: var(--rc-btn-bg) !important;
+}
+.wizard-shell .ibpw-root .ibpw-btn svg,
+.wizard-shell .ibpw-root .sapc-btn svg,
+.wizard-shell .ibpw-root .sapc-actionbtn svg { color: var(--rc-btn-fg) !important; }
+/* Dataset-preview grid = a data-display table → green surface, white text
+   (its panel is cream, so the table itself carries the green background). */
+.wizard-shell .ibpw-grid { background: var(--rc-surface); }
+.wizard-shell .ibpw-grid thead th {
+  background: var(--rc-surface-2);
+  color: var(--rc-surface-fg);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+.wizard-shell .ibpw-grid tbody td {
+  color: var(--rc-surface-fg);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.wizard-shell .ibpw-grid tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.08); }
+.wizard-shell .ibpw-grid tbody tr:hover td { background: rgba(255, 255, 255, 0.14); }
