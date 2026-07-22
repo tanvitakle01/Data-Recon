@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
-import JsonViewer from "../../components/JsonViewer";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import {
   appendDatasetSide,
   buildMappingSheetPayload,
-  buildRuleFieldOptions,
   buildValueMappingFormData,
   cleanAggregationRules,
-  cleanBusinessRules,
-  hasMappingPayload,
   mergeGeneratedMapping,
   missingValueMappingRequirements,
   rebuildMapping,
@@ -24,16 +20,12 @@ import {
   runContractReconciliation,
 } from "../lib/reconRun";
 import StepShell from "../components/StepShell";
-import MappingCard from "../components/MappingCard";
 import MappingEditor from "../components/MappingEditor";
-import BusinessRulesBuilder from "../components/BusinessRulesBuilder";
-import AggregationRulesBuilder from "../components/AggregationRulesBuilder";
-import StatusBadge from "../components/StatusBadge";
+import RecipeEditor from "../components/RecipeEditor";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
 import ShadowPreviewPanel from "../components/ShadowPreviewPanel";
-import { Button, Badge } from "@bristlecone/canopy";
-
-const DOC_ACCEPT = ".xlsx,.xls,.csv";
+import { serializeOperations } from "../lib/recipeModel";
+import { Button } from "@bristlecone/canopy";
 
 // Applied vs excluded distinct-value counts for one field's value mapping.
 // Applied = VERY_HIGH/HIGH (what the executor writes to the shadow); excluded
@@ -56,16 +48,11 @@ function TransformationSpecStep() {
   const { source, target, comparisonType, transformationSpec } = state;
   const {
     mappingMode,
-    mappingSheet,
     parsedMappingSheet,
-    transformationRules,
-    matchingRules,
-    filterRules,
     aggregationRules,
+    recipe,
     mapping,
     valueMappings,
-    draftContract,
-    validation,
     contract,
     useScriptTransformations,
   } = transformationSpec;
@@ -73,19 +60,19 @@ function TransformationSpecStep() {
   const setMappingMode = (mode) =>
     dispatch({ type: WizardActions.SET_MAPPING_MODE, mappingMode: mode });
 
-  const fieldOptions = useMemo(
-    () => buildRuleFieldOptions(source, target, parsedMappingSheet),
-    [source, target, parsedMappingSheet],
-  );
-  const setRuleCategory = (category, rules) =>
-    dispatch({ type: WizardActions.SET_BUSINESS_RULES, category, rules });
-
-  // Aggregation rules operate on SOURCE fields (measures + date fields), so the
-  // dropdown lists source columns only.
   const sourceColumns = useMemo(() => source.dataset?.columns ?? [], [source.dataset]);
-  const sourceFieldOptions = useMemo(
-    () => sourceColumns.map((c) => ({ value: c, label: c })),
-    [sourceColumns],
+  const targetColumns = useMemo(() => target.dataset?.columns ?? [], [target.dataset]);
+  // Stable identities so the recipe's live preview only refetches on a real
+  // change (recipe/selection/data), not on every unrelated parent re-render.
+  const sourceSample = useMemo(() => sampleRows(source), [source]);
+  const recipePreviewContext = useMemo(
+    () => ({
+      comparison_type: comparisonType?.id ?? "custom",
+      source_type: source.kind ?? "excel",
+      target_type: target.kind ?? "excel",
+      target_schema: targetColumns,
+    }),
+    [comparisonType, source.kind, target.kind, targetColumns],
   );
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState(null);
@@ -95,9 +82,6 @@ function TransformationSpecStep() {
   const [valueMappingLoading, setValueMappingLoading] = useState(false);
   const [valueMappingError, setValueMappingError] = useState(null);
   const [valueMappingSuccess, setValueMappingSuccess] = useState(false);
-  const [parseLoading, setParseLoading] = useState(false);
-  const [parseError, setParseError] = useState(null);
-  const [compileLoading, setCompileLoading] = useState(false);
   const [contractError, setContractError] = useState(null);
   // Non-blocking notice when an LLM provider failover occurred (Groq→OpenAI) or
   // when every AI provider was unavailable (spec points 5 & 6).
@@ -108,9 +92,6 @@ function TransformationSpecStep() {
   // contract compile/approve state above.
   const [detRunning, setDetRunning] = useState(false);
   const [detRunError, setDetRunError] = useState(null);
-  // Contract JSON is hidden by default (progressive disclosure for business users).
-  const [showContract, setShowContract] = useState(false);
-  const mappingSheetInputRef = useRef(null);
   // Signature of the (source, target) datasets we last auto-mapped. When the
   // user re-uploads or re-fetches, the dataset id changes and the reducer
   // clears the stale mapping, so a new signature re-triggers auto-mapping
@@ -146,38 +127,6 @@ function TransformationSpecStep() {
       cancelled = true;
     };
   }, [useScriptTransformations, dispatch]);
-
-  // ── mapping sheet upload + parse ──────────────────────────────────────────
-  const handleMappingSheetFile = async (file) => {
-    dispatch({
-      type: WizardActions.SET_MAPPING_SHEET,
-      mappingSheet: file ? { name: file.name, size: file.size, file } : null,
-    });
-    setParseError(null);
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append("file", file);
-    setParseLoading(true);
-    try {
-      const res = await api.post("/api/recon/mapping-sheet/parse", formData);
-      dispatch({ type: WizardActions.SET_PARSED_MAPPING_SHEET, parsedMappingSheet: res.data });
-    } catch (err) {
-      const detail = err?.response?.data?.detail;
-      setParseError(typeof detail === "string" ? detail : "Could not parse the mapping sheet.");
-    } finally {
-      setParseLoading(false);
-    }
-  };
-
-  // Remove the uploaded mapping sheet: SET_MAPPING_SHEET(null) also clears the
-  // parsed rows and the compiled/validated/approved contract (reducer), so
-  // contract eligibility falls back to the field mapping with no page refresh.
-  const removeMappingSheet = () => {
-    dispatch({ type: WizardActions.SET_MAPPING_SHEET, mappingSheet: null });
-    setParseError(null);
-    if (mappingSheetInputRef.current) mappingSheetInputRef.current.value = "";
-  };
 
   // ── LLM-inferred field mapping (no-mapping-sheet path) ────────────────────
   // Infers the source→target FIELD mapping (column→column + Key/Compare role)
@@ -425,121 +374,116 @@ function TransformationSpecStep() {
     [source, target, dispatch],
   );
 
-  // Defensive pre-flight checks: /contracts/compile's `CompileRequest`
-  // requires mapping_sheet + rules + source_schema + target_schema +
-  // comparison_type + source_type + target_type, wrapped as one object (never
-  // the raw parsed-sheet object posted directly as the request body — that
-  // 422s with `loc: ["body", "source_schema"]` because it never arrives inside
-  // a "mapping_sheet" field). Surface each missing piece with a specific,
-  // actionable message instead of letting a vague 422 reach the user.
-  const validateBeforeGeneratingContract = (mappingSheetPayload) => {
-    const sourceColumns = source.dataset?.columns ?? [];
-    const targetColumns = target.dataset?.columns ?? [];
-    if (!sourceColumns.length || !targetColumns.length) {
-      return "Source and target data must be loaded (with columns detected) before generating transformation rules. Go back to Steps 1–2.";
-    }
-    if (!comparisonType?.id) {
-      return "Select a dataset type before generating transformation rules.";
-    }
-    if (mappingSheet?.name && !parsedMappingSheet) {
-      return "The uploaded mapping sheet hasn't finished parsing yet (or failed to parse). Wait for parsing to complete, or remove it and confirm a field mapping instead.";
-    }
-    if (!hasMappingPayload(mappingSheetPayload)) {
-      return "Upload a mapping sheet or confirm at least one field mapping first.";
-    }
-    return null;
-  };
-
-  const generateContract = async () => {
-    const mappingSheetPayload = buildMappingSheetPayload(parsedMappingSheet, mapping);
-    const validationError = validateBeforeGeneratingContract(mappingSheetPayload);
-    if (validationError) {
-      setContractError(validationError);
-      return;
-    }
-
-    // /contracts/compile's CompileRequest requires mapping_sheet to be
-    // WRAPPED alongside these sibling fields — never post the parsed-sheet
-    // object by itself as the request body.
-    const payload = {
-      mapping_sheet: mappingSheetPayload,
-      // Legacy free-text field, retired from this UI — the Business Rules
-      // Builder below sends structured rules instead (still accepted by
-      // the backend from any older caller that only has this field).
-      rules: "",
-      transformation_rules: cleanBusinessRules(transformationRules),
-      matching_rules: cleanBusinessRules(matchingRules),
-      filter_rules: cleanBusinessRules(filterRules),
-      aggregation_rules: cleanAggregationRules(aggregationRules),
-      // The Rules step's confirmed field mapping — human-owned, never
-      // inferred by the compiler (see ContractBody's docstring).
-      business_key: (mapping?.mapping?.key_fields ?? []).map((f) => ({
+  // The confirmed field mapping (human-owned; never inferred by a compiler).
+  const mappingKeyFields = useCallback(
+    () =>
+      (mapping?.mapping?.key_fields ?? []).map((f) => ({
         source_field: f.source_col,
         target_field: f.target_col,
       })),
-      compare_fields: (mapping?.mapping?.compare_fields ?? []).map((f) => ({
+    [mapping],
+  );
+  const mappingCompareFields = useCallback(
+    () =>
+      (mapping?.mapping?.compare_fields ?? []).map((f) => ({
         source_field: f.source_col,
         target_field: f.target_col,
       })),
-      // Manual flow never applies deterministic value mappings — those belong
-      // to the Deterministic flow (runDeterministicReconciliation), which
-      // attaches them on its own separate contract.
-      value_mappings: [],
-      source_schema: source.dataset?.columns ?? [],
-      target_schema: target.dataset?.columns ?? [],
-      comparison_type: comparisonType?.id ?? "custom",
-      source_type: source.kind ?? "excel",
-      target_type: target.kind ?? "excel",
-      actor: "wizard-user",
-    };
-    // TEMP DIAGNOSTIC — confirms the exact shape leaving the browser. Remove
-    // once the request/response shape is confirmed in the field.
-    console.log("Compile payload", payload);
+    [mapping],
+  );
 
-    setCompileLoading(true);
+  // Optional AI convenience: turn a plain-language description into recipe steps
+  // by reusing the SAME Groq compile entry point. Returns the drafted
+  // operations for RecipeEditor to append (nothing is auto-applied).
+  const draftStepsFromDescription = useCallback(
+    async (description) => {
+      const payload = {
+        mapping_sheet: buildMappingSheetPayload(parsedMappingSheet, mapping),
+        // The whole description is handed to the compiler as free-text rules;
+        // Groq drafts operations from it (deterministic stub only covers a few
+        // phrasings — if no AI is configured the user just builds steps by hand).
+        rules: description,
+        transformation_rules: [],
+        matching_rules: [],
+        filter_rules: [],
+        aggregation_rules: [],
+        business_key: mappingKeyFields(),
+        compare_fields: mappingCompareFields(),
+        value_mappings: [],
+        source_schema: source.dataset?.columns ?? [],
+        target_schema: target.dataset?.columns ?? [],
+        comparison_type: comparisonType?.id ?? "custom",
+        source_type: source.kind ?? "excel",
+        target_type: target.kind ?? "excel",
+        actor: "wizard-user",
+      };
+      const res = await api.post("/api/recon/contracts/compile", payload);
+      setProviderNotice(res.data?.provider_notice ?? null);
+      return res.data?.draft?.operations ?? [];
+    },
+    [parsedMappingSheet, mapping, source, target, comparisonType, mappingKeyFields, mappingCompareFields],
+  );
+
+  // The DraftContract the recipe authors: operations straight from the recipe
+  // (no compiler runs) + the human-owned field mapping + structured aggregation
+  // rules — exactly the shape /compile would return.
+  const buildRecipeDraft = () => ({
+    comparison_type: comparisonType?.id ?? "custom",
+    source_type: source.kind ?? "excel",
+    target_type: target.kind ?? "excel",
+    operations: serializeOperations(recipe ?? []),
+    aggregation_rules: cleanAggregationRules(aggregationRules),
+    business_key: mappingKeyFields(),
+    compare_fields: mappingCompareFields(),
+    // Manual flow never applies deterministic value mappings — those belong to
+    // the Deterministic flow.
+    value_mappings: [],
+    source_schema: source.dataset?.columns ?? [],
+    target_schema: target.dataset?.columns ?? [],
+    options: { case_insensitive: true, trim_whitespace: true },
+    compiler: "recipe",
+  });
+
+  // Single CTA for the Manual contract flow: validate the recipe-authored draft
+  // (Gate 1/2), then approve it — which hands off to the existing shadow-curtain
+  // approval flow (ShadowPreviewPanel keys off the approved contract). Gate
+  // internals stay hidden; only a concise error surfaces if validation fails.
+  const approveTransformations = async () => {
+    if (!source.dataset || !target.dataset) return;
+    setApproveLoading(true);
     setContractError(null);
     setProviderNotice(null);
     try {
-      const res = await api.post("/api/recon/contracts/compile", payload);
-      const draft = res.data?.draft;
-      // Surface the AI-provider fallback / unavailability notice, if any. The
-      // workflow always continues (OpenAI or the deterministic fallback).
-      setProviderNotice(res.data?.provider_notice ?? null);
+      const draft = buildRecipeDraft();
       dispatch({ type: WizardActions.SET_DRAFT_CONTRACT, draftContract: draft });
-      await validateDraft(draft);
-    } catch (err) {
-      const detail = err?.response?.data?.detail;
-      setContractError(typeof detail === "string" ? detail : "Transformation rules generation failed.");
-    } finally {
-      setCompileLoading(false);
-    }
-  };
-
-  const approveContract = async () => {
-    if (!draftContract) return;
-    setApproveLoading(true);
-    setContractError(null);
-    try {
+      const report = await validateDraft(draft);
+      if (!report?.ok) {
+        const firstError =
+          report?.gate1?.errors?.[0] ||
+          report?.gate2?.errors?.[0] ||
+          "These transformation steps aren't valid yet — review the recipe and try again.";
+        setContractError(firstError);
+        return;
+      }
       const res = await api.post("/api/recon/contracts/approve", {
-        draft: draftContract,
+        draft,
         approved_by: "wizard-user",
       });
       dispatch({ type: WizardActions.SET_APPROVED_CONTRACT, contract: res.data?.contract });
     } catch (err) {
       const detail = err?.response?.data?.detail;
-      setContractError(typeof detail === "string" ? detail : "Transformation rules approval failed.");
+      setContractError(typeof detail === "string" ? detail : "Approval failed.");
     } finally {
       setApproveLoading(false);
     }
   };
 
-  const hasMappingSheet = Boolean(mappingSheet?.name);
-  const targetColumns = target.dataset?.columns ?? [];
-  const gate1 = validation?.gate1;
-  const gate2 = validation?.gate2;
-  const canGenerate =
+  // Approve is enabled once both datasets are loaded and at least one Key field
+  // mapping is confirmed (Gate 1 requires ≥1 business key). A recipe with zero
+  // steps is valid — it reconciles the raw source against the target.
+  const canApprove =
     Boolean(source.dataset && target.dataset) &&
-    (Boolean(parsedMappingSheet?.rows?.length) || Boolean(mapping?.display?.length));
+    (mapping?.mapping?.key_fields?.length ?? 0) > 0;
 
   // The run happens inline on this page for the Deterministic flow and for the
   // Manual contract flow (via ShadowPreviewPanel), so the generic Continue is
@@ -552,10 +496,6 @@ function TransformationSpecStep() {
 
   return (
     <StepShell stepKey="transformationSpec" canContinue hideContinue={hideContinue}>
-      {/* Persistent at-a-glance mapping summary + back-links to Steps 2/3.
-          Anchored at #mapping-card (linked from the sidebar). */}
-      <MappingCard />
-
       {/* Mapping-method chooser (no method picked yet) */}
       {mappingMode === null && (
         <section className="wizard-section">
@@ -572,7 +512,7 @@ function TransformationSpecStep() {
             >
               <span className="wizard-option-card__label">Manual Mapping</span>
               <span className="wizard-option-card__meta">
-                Mapping sheet · rules · transformations · reviewed shadow preview
+                Field mapping · transformation recipe · reviewed shadow preview
               </span>
             </button>
             <button
@@ -699,93 +639,15 @@ function TransformationSpecStep() {
       )}
 
       {/* ── Flow 2: Manual Mapping ─────────────────────────────────────────
-          The existing Rules-page content, unchanged, plus the relocated inline
-          Transformation Preview (shadow diff + Approve Shadow + inline Run) for
-          the contract engine. */}
+          Field mapping → transformation recipe → single Approve CTA → the
+          existing shadow-curtain approval. The Transformation Recipe is the
+          only place operations are authored (no mapping-sheet upload here, no
+          separate aggregation card — both live elsewhere / in the recipe). */}
       {mappingMode === "manual" && (
         <>
-          {/* Section A — Mapping Sheet */}
+          {/* Field Mapping — confirmed FIRST, before authoring any transforms. */}
           <section className="wizard-section">
-            <h3 className="wizard-section__title">Mapping Sheet</h3>
-            <p className="wizard-field__help">Optional. .xlsx, .xls, or .csv.</p>
-
-            {/* Hidden input; driven by the buttons below so Replace can re-open it. */}
-            <input
-              ref={mappingSheetInputRef}
-              type="file"
-              accept={DOC_ACCEPT}
-              style={{ display: "none" }}
-              onChange={(e) => handleMappingSheetFile(e.target.files?.[0] ?? null)}
-            />
-
-            <div className="doc-upload">
-              {mappingSheet?.name ? (
-                <div className="doc-upload__file">
-                  <Badge variant="success">✓ {mappingSheet.name}</Badge>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => mappingSheetInputRef.current?.click()}
-                  >
-                    Replace
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={removeMappingSheet}
-                  >
-                    Remove
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => mappingSheetInputRef.current?.click()}
-                >
-                  Upload Mapping Sheet
-                </Button>
-              )}
-              {parseLoading && <span className="wizard-step__hint">Parsing…</span>}
-              {parsedMappingSheet && (
-                <Badge variant="success">✓ {parsedMappingSheet.row_count} rows</Badge>
-              )}
-              {parseError && <p className="wizard-step__error">⚠️ {parseError}</p>}
-            </div>
-          </section>
-
-          {/* Section B — Rules */}
-          <section className="wizard-section">
-            <h3 className="wizard-section__title">Rules</h3>
-            <p className="wizard-field__help">
-              Configure transformations, matching, filters, and aggregation.
-            </p>
-            <BusinessRulesBuilder
-              fieldOptions={fieldOptions}
-              transformationRules={transformationRules}
-              matchingRules={matchingRules}
-              filterRules={filterRules}
-              onChangeCategory={setRuleCategory}
-            />
-          </section>
-
-          {/* Section B2 — Aggregation */}
-          <section className="wizard-section">
-            <h3 className="wizard-section__title">Aggregation</h3>
-            <p className="wizard-field__help">Group and summarize source data.</p>
-            <AggregationRulesBuilder
-              fieldOptions={sourceFieldOptions}
-              rules={aggregationRules ?? []}
-              onChange={(rules) => dispatch({ type: WizardActions.SET_AGGREGATION_RULES, rules })}
-            />
-          </section>
-
-          {/* Section C — Mapping */}
-          <section className="wizard-section">
-            <h3 className="wizard-section__title">Mapping</h3>
-            <p className="wizard-field__help">Review source-to-target mappings.</p>
+            <h3 className="wizard-section__title">Field Mapping</h3>
             <MappingEditor
               mapping={mapping}
               sourceColumns={sourceColumns}
@@ -805,148 +667,65 @@ function TransformationSpecStep() {
             />
           </section>
 
-          {/* Section D — Transformation Preview (USE_SCRIPT_TRANSFORMATIONS) or the
-              contract flow, decided by the backend feature flag. */}
+          {/* Transformation Recipe — the SOLE authoring surface for operations[]
+              (filters, transforms, aggregations), with a live preview. */}
+          <section className="wizard-section">
+            <h3 className="wizard-section__title">Transformation Recipe</h3>
+            <p className="wizard-field__help">
+              Build an ordered list of transformation steps — each step is one operation applied to
+              the source. Drag to reorder within a phase (Filters → Transforms → Aggregations); the
+              live preview shows the dataset after each enabled step. What you see is exactly what runs.
+            </p>
+            <RecipeEditor
+              steps={recipe ?? []}
+              onChange={(next) => {
+                dispatch({ type: WizardActions.SET_RECIPE, recipe: next });
+                // Editing the recipe invalidates a prior approval — reset it so
+                // the Approve CTA re-enables for the changed steps.
+                if (contract) {
+                  dispatch({ type: WizardActions.SET_DRAFT_CONTRACT, draftContract: null });
+                }
+              }}
+              sourceColumns={sourceColumns}
+              sourceSample={sourceSample}
+              previewContext={recipePreviewContext}
+              onDraftSteps={draftStepsFromDescription}
+            />
+          </section>
+
+          {/* Script-transformation flow keeps its own preview/approval panel. */}
           {useScriptTransformations && <TransformationPreviewPanel />}
+
+          {/* Footer — one primary CTA. No gate diagnostics, no JSON viewer. */}
           {!useScriptTransformations && (
             <section className="wizard-section">
-              <h3 className="wizard-section__title">Transformation Rules</h3>
-              <p className="wizard-field__help">Rules used to align source and target data.</p>
-
-              <div className="contract-checklist">
-                <StatusBadge
-                  ok={hasMappingSheet ? Boolean(parsedMappingSheet) : null}
-                  label={
-                    hasMappingSheet
-                      ? `Mapping Sheet ${parsedMappingSheet ? "Parsed" : "Uploaded"}`
-                      : "Mapping Sheet (optional — field mapping used instead)"
-                  }
-                />
-                <StatusBadge ok={draftContract ? true : null} label="Transformation Rules Generated" />
-                <StatusBadge ok={gate1 ? gate1.ok : null} label="Structure Check" />
-                <StatusBadge ok={gate2 ? gate2.ok : null} label="Sample Validation" />
-                <StatusBadge
-                  ok={contract ? true : null}
-                  label={contract ? `Approved — Rules v${contract.contract_version}` : "Approved"}
-                />
-              </div>
-
               <div className="contract-actions">
                 <Button
                   type="button"
                   variant="primary"
-                  onClick={generateContract}
-                  disabled={!canGenerate || compileLoading}
-                >
-                  {compileLoading
-                    ? "Generating…"
-                    : draftContract
-                      ? "Regenerate Transformation Rules"
-                      : "Generate Transformation Rules"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="primary"
-                  onClick={approveContract}
-                  disabled={!draftContract || !validation?.ok || Boolean(contract) || approveLoading}
+                  size="lg"
+                  onClick={approveTransformations}
+                  disabled={!canApprove || approveLoading || Boolean(contract)}
                 >
                   {approveLoading
                     ? "Approving…"
                     : contract
-                      ? "Transformation Rules Approved"
+                      ? "✓ Transformation Rules Approved"
                       : "Approve Transformation Rules"}
                 </Button>
               </div>
-
-              {contractError && <p className="wizard-step__error">⚠️ {contractError}</p>}
-
-              {providerNotice && <p className="wizard-step__hint">ℹ️ {providerNotice}</p>}
-
-              {validation && !validation.ok && (
-                <div className="contract-gate-errors">
-                  {(gate1?.errors ?? []).map((msg, i) => (
-                    <p key={`g1-${i}`} className="wizard-step__error">
-                      Structure Check: {msg}
-                    </p>
-                  ))}
-                  {(gate2?.errors ?? []).map((msg, i) => (
-                    <p key={`g2-${i}`} className="wizard-step__error">
-                      Sample Validation: {msg}
-                    </p>
-                  ))}
-                </div>
-              )}
-              {(gate1?.info ?? []).length > 0 && (
-                <div className="contract-gate-info">
-                  {gate1.info.map((msg, i) => (
-                    <p key={`g1i-${i}`} className="wizard-step__hint">
-                      ✓ {msg}
-                    </p>
-                  ))}
-                </div>
-              )}
-              {validation?.ok && (gate2?.warnings ?? []).length > 0 && (
-                <div className="contract-gate-errors">
-                  {gate2.warnings.map((msg, i) => (
-                    <p key={`g2w-${i}`} className="wizard-step__hint">
-                      Sample Validation warning: {msg}
-                    </p>
-                  ))}
-                </div>
-              )}
-
-              {draftContract && (
-                <>
-                  <div className="contract-summary">
-                    <Badge variant="default">
-                      Business Keys: {draftContract.business_key?.length ?? 0}
-                    </Badge>
-                    <Badge variant="default">
-                      Compare Fields: {draftContract.compare_fields?.length ?? 0}
-                    </Badge>
-                    <Badge variant="default">
-                      Operations: {draftContract.operations?.length ?? 0}
-                    </Badge>
-                    <Badge variant="default">
-                      Generation Method: {draftContract.compiler ?? "unknown"}
-                    </Badge>
-                    <Badge variant="default">
-                      Rules Version: {contract ? `v${contract.contract_version}` : "draft"}
-                    </Badge>
-                  </div>
-
-                  {/* Progressive disclosure: technical JSON hidden until requested. */}
-                  <div className="contract-json-wrap">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowContract((v) => !v)}
-                      aria-expanded={showContract}
-                    >
-                      {showContract ? "Hide Transformation Rules" : "View Transformation Rules"}
-                    </Button>
-                    {showContract && (
-                      <JsonViewer
-                        value={contract ?? draftContract}
-                        filename="transformation-contract.json"
-                      />
-                    )}
-                  </div>
-                </>
-              )}
-
-              {!draftContract && (
+              {!canApprove && !contract && (
                 <p className="wizard-field__help">
-                  Generate transformation rules to review the keys, compare fields, and steps used to
-                  align your data.
+                  Confirm at least one Key field mapping above to approve.
                 </p>
               )}
+              {contractError && <p className="wizard-step__error">⚠️ {contractError}</p>}
+              {providerNotice && <p className="wizard-step__hint">ℹ️ {providerNotice}</p>}
             </section>
           )}
 
-          {/* Relocated inline shadow preview + approval + Run (contract engine
-              only). Renders nothing until the contract is approved. */}
+          {/* Inline shadow preview + approval + Run (contract engine only).
+              Renders nothing until the contract is approved. */}
           {!useScriptTransformations && <ShadowPreviewPanel />}
         </>
       )}

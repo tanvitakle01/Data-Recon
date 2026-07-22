@@ -15,20 +15,6 @@ const ORIGIN_BADGE = {
   "user-edited": { label: "Manual · edited", variant: "warning" },
 };
 
-// Card-level provenance banner: where the whole mapping was sourced from. Reads
-// the origin the infer response stamped onto the mapping (see TransformationSpecStep).
-function cardSource(origin) {
-  if (!origin) return null;
-  if (origin.source === "library") {
-    return { label: "Generated via Vector Library", variant: "info" };
-  }
-  if (origin.source === "llm" && origin.provider) {
-    const name = origin.provider === "openai" ? "OpenAI" : "Groq";
-    return { label: `Generated via ${name}`, variant: "default" };
-  }
-  return null;
-}
-
 function MappingEditor({
   mapping,
   sourceColumns = [],
@@ -41,10 +27,9 @@ function MappingEditor({
 }) {
   const display = mapping?.display ?? [];
   const options = mapping?.mapping?.options;
-  const source = cardSource(mapping?.origin);
 
-  // Preserve the card-level origin through edits so the "Generated via …"
-  // banner survives a manual tweak (per-row badges still flip to Manual).
+  // Preserve the card-level origin through edits (per-row badges still flip to
+  // Manual) so a later Regenerate can honour it.
   const commit = (nextDisplay) =>
     onChange({
       display: nextDisplay,
@@ -79,18 +64,9 @@ function MappingEditor({
     <div className="mapping-editor">
       <div className="mapping-editor__head">
         <div>
-          <div className="mapping-editor__title-row">
-            <span className="mapping-editor__title">Generated Mapping</span>
-            {source ? (
-              <Badge variant={source.variant}>{source.label}</Badge>
-            ) : (
-              <Badge variant="info">AI-inferred</Badge>
-            )}
-          </div>
           <p className="wizard-field__help">
-            Field mapping inferred from a sample of the fetched data. Adjust the target column or role
-            for any row, or add a row for a pairing that's missing — your edits and additions are
-            preserved when you regenerate.
+            Confirm the source-to-target field mapping. Adjust the target column or role for any row,
+            or add a row for a missing pairing.
           </p>
         </div>
         <div className="mapping-editor__head-actions">

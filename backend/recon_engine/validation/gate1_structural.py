@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from backend.recon_engine.models.contract import DraftContract, TransformationContract
 from backend.recon_engine.operations import is_allowed, get_operation
+from backend.recon_engine.operations.safe_expr import validate_expression
 
 
 @dataclass
@@ -61,6 +62,10 @@ def validate_structural(
 
     # ── operations ───────────────────────────────────────────────────────────
     for op in parsed.operations:
+        # Disabled steps are inert: the executor skips them, so they must not
+        # validate against the schema nor alter the tracked column shape.
+        if not getattr(op, "enabled", True):
+            continue
         if not is_allowed(op.op):
             errors.append(f"operation '{op.op}' is not in the allow-listed registry.")
             continue
@@ -75,6 +80,26 @@ def validate_structural(
             live_columns = [op.params["to"] if c == op.field else c for c in live_columns]
         elif op.op == "concat_fields":
             # concat_fields writes into a (possibly new) 'into' column.
+            into = op.params.get("into")
+            if into and into not in live_columns:
+                live_columns = [*live_columns, into]
+        elif op.op == "split_field":
+            # split_field writes into 'into' (a possibly new column); when 'into'
+            # is omitted it overwrites the field in place (no schema change).
+            into = op.params.get("into")
+            if into and into not in live_columns:
+                live_columns = [*live_columns, into]
+        elif op.op == "calculated_column":
+            # The expression is the one free-form input in the whole engine —
+            # validate it here against the live schema (allow-listed functions,
+            # numeric literals, and columns that actually exist), then add the
+            # computed 'into' column so later ops / keys can reference it.
+            expr = op.params.get("expression")
+            if expr is not None:
+                errors.extend(
+                    f"operation 'calculated_column' {e}"
+                    for e in validate_expression(str(expr), live_columns)
+                )
             into = op.params.get("into")
             if into and into not in live_columns:
                 live_columns = [*live_columns, into]

@@ -637,6 +637,104 @@ def build_shadow_preview(
     }
 
 
+# ── recipe preview (draft, per-step, read-only) ──────────────────────────────
+
+def build_recipe_preview(
+    *,
+    draft: dict[str, Any] | DraftContract,
+    source_snapshot_id: str | None = None,
+    source_rows: list[dict[str, Any]] | None = None,
+    active_step_index: int | None = None,
+    preview_rows: int = 100,
+    actor: str = "system",
+) -> dict[str, Any]:
+    """Live before/after preview for the recipe editor — no approval, no run.
+
+    Unlike :func:`build_shadow_preview` (which requires an APPROVED, persisted
+    contract), this runs an UNSAVED ``draft``'s operations against a SAMPLE of
+    the raw source so the editor can show the effect of each step as it is
+    authored. It reuses the exact deterministic executor
+    (:func:`build_shadow_source`) and the exact diff engine
+    (:func:`_compute_row_diffs`) the Review-Changes checkpoint uses — there is no
+    parallel preview engine, so what the user sees here is what a real run does.
+
+    ``active_step_index`` drives the "up to this step" preview: operations AFTER
+    that index (in authored order) are treated as disabled for this call, so the
+    preview reflects the recipe truncated at the selected step. Each op's own
+    ``enabled`` flag is still honoured. Because the executor buckets by fixed
+    phase and preserves within-phase order (Decision B), the previewed prefix is
+    exactly the subset a run of that prefix would execute.
+
+    Provide the source as either a persisted ``source_snapshot_id`` (a sample is
+    taken) or inline ``source_rows`` (already a sample). Raw source is never
+    mutated (the executor copies).
+    """
+    init_storage()
+
+    if isinstance(draft, DraftContract):
+        parsed = draft
+    else:
+        parsed = DraftContract.model_validate(draft)
+
+    # Resolve the source sample.
+    if source_snapshot_id:
+        raw_source = snapshot_store.load_snapshot_frame(source_snapshot_id).head(
+            max(1, preview_rows)
+        )
+    elif source_rows is not None:
+        raw_source = pd.DataFrame(source_rows).head(max(1, preview_rows))
+    else:
+        raise ValueError("Provide either source_snapshot_id or source_rows.")
+
+    # Truncate the recipe to the enabled prefix: disable every op after the
+    # selected step (authored order) without mutating the caller's draft.
+    ops = list(parsed.operations)
+    if active_step_index is not None:
+        ops = [
+            op.model_copy(update={"enabled": op.enabled and i <= active_step_index})
+            for i, op in enumerate(ops)
+        ]
+        parsed = parsed.model_copy(update={"operations": ops})
+
+    built = build_shadow_source(parsed, raw_source)
+    shadow_display = built.shadow_df.drop(columns=[LINEAGE_COL], errors="ignore")
+    fingerprint = shadow_fingerprint(built.shadow_df)
+
+    diffs = _compute_row_diffs(raw_source, shadow_display, built.lineage, limit=preview_rows)
+    changed_cells = sum(1 for d in diffs for c in d["changes"] if c.get("changed"))
+    # Columns touched anywhere in the sample — drives the editor's affected-column
+    # highlight without the UI having to re-scan every cell.
+    affected_columns = sorted(
+        {
+            c["field"]
+            for d in diffs
+            for c in d["changes"]
+            if c.get("changed") and c.get("field")
+        }
+    )
+
+    return {
+        "operations": [op.model_dump(mode="json") for op in parsed.operations],
+        "active_step_index": active_step_index,
+        "source": {
+            "columns": [str(c) for c in raw_source.columns],
+            "rows": _rows_as_records(raw_source, preview_rows),
+            "total_rows": int(raw_source.shape[0]),
+        },
+        "shadow": {
+            "columns": [str(c) for c in shadow_display.columns],
+            "rows": _rows_as_records(shadow_display, preview_rows),
+            "total_rows": int(shadow_display.shape[0]),
+        },
+        "diffs": diffs,
+        "affected_columns": affected_columns,
+        "changed_cells": changed_cells,
+        "row_count_changed": len(shadow_display) != len(raw_source),
+        "shadow_fingerprint": fingerprint,
+        "preview_rows": min(preview_rows, len(shadow_display)),
+    }
+
+
 # ── run reconciliation (runtime, deterministic) ─────────────────────────────
 
 def _store_back_attribute_library(contract, run_id: str, summary, actor: str) -> None:

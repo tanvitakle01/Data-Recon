@@ -234,8 +234,12 @@ def build_shadow_source(
         df = df.loc[keep_mask].reset_index(drop=True)
 
     # Bucket ops by stage, preserving relative order within each stage.
+    # Disabled steps are authored but inert — skipped entirely so they neither
+    # run nor affect the shadow (the recipe editor toggles them without deleting).
     filters, transforms, aggregates = [], [], []
     for op in contract.operations:
+        if not getattr(op, "enabled", True):
+            continue
         spec = get_operation(op.op)  # KeyError here == not allow-listed
         if spec.kind == OperationKind.FILTER:
             filters.append((spec, op))

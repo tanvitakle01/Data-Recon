@@ -101,6 +101,11 @@ class ContractOperation(BaseModel):
         default=None, description="Column the operation acts on (if applicable)."
     )
     params: dict[str, Any] = Field(default_factory=dict)
+    # A disabled step is authored but inert: the executor skips it when building
+    # the Shadow_Source and Gate 1 ignores it (it neither runs nor changes the
+    # column shape). Lets the recipe editor toggle a step off without deleting
+    # it. Defaults True so every existing contract keeps running unchanged.
+    enabled: bool = Field(default=True, description="Whether this step is applied.")
 
 
 class BusinessKeyField(BaseModel):

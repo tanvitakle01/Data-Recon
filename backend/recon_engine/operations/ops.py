@@ -282,6 +282,66 @@ def conditional_suffix(df: pd.DataFrame, field: str, params: dict[str, Any]) -> 
     return out
 
 
+def split_field(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
+    """Split each value of ``field`` on ``separator`` and keep the part at the
+    0-based ``index``, writing into ``into`` (defaults to ``field`` itself).
+
+    An out-of-range index yields null for that row; nulls stay null. ``into``
+    may be a new column (Gate 1 tracks it as added, like ``concat_fields``).
+    """
+    out = df.copy()
+    sep = str(params["separator"])
+    index = int(params["index"])
+    into = params.get("into") or field
+    col = out[field]
+
+    def _part(v: Any) -> Any:
+        if pd.isna(v):
+            return v
+        parts = str(v).split(sep)
+        return parts[index] if -len(parts) <= index < len(parts) else None
+
+    out[into] = col.map(_part)
+    return out
+
+
+def convert_uom(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
+    """Convert a numeric field's unit of measure by a fixed ``factor``.
+
+    ``operation`` is 'multiply' (default) or 'divide' — e.g. cases→eaches with
+    factor 12 (multiply), or grams→kilograms with factor 1000 (divide). Optional
+    ``decimals`` rounds the result. Non-numeric values become null (a genuine
+    signal, surfaced by Gate 2). The conversion is fixed data, never code.
+    """
+    out = df.copy()
+    factor = float(params["factor"])
+    operation = str(params.get("operation", "multiply")).lower()
+    numeric = pd.to_numeric(out[field], errors="coerce")
+    converted = numeric / factor if operation == "divide" else numeric * factor
+    decimals = params.get("decimals")
+    if decimals is not None:
+        converted = converted.round(int(decimals))
+    out[field] = converted
+    return out
+
+
+def calculated_column(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> pd.DataFrame:
+    """Compute a new column ``into`` from a safe, allow-listed ``expression``.
+
+    The expression (e.g. ``ABS(PLNMG - DEMANDQTY)``) references existing columns
+    and a fixed function set. It is parsed to an AST and evaluated
+    deterministically by :mod:`~backend.recon_engine.operations.safe_expr` —
+    NEVER Python ``eval``/``exec``. Gate 1 validates the expression against the
+    live schema before this ever runs.
+    """
+    from backend.recon_engine.operations.safe_expr import eval_expression
+
+    out = df.copy()
+    into = params["into"]
+    out[into] = eval_expression(str(params["expression"]), out)
+    return out
+
+
 # ── filter ops ───────────────────────────────────────────────────────────────
 
 def reject_null(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
@@ -322,6 +382,19 @@ def sum_aggregate(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.Da
     tmp = df[by].copy()
     tmp[field] = numeric
     return tmp.groupby(by, as_index=False, dropna=False)[field].sum()
+
+
+def deduplicate(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> pd.DataFrame:
+    """Drop duplicate rows keyed on the ``by`` columns, keeping ``keep``.
+
+    ``keep`` is 'first' (default) or 'last'. Row-reducing, so it is an AGGREGATE
+    op — the executor collapses lineage of every duplicate onto the kept row
+    (identical grouping key handling to the other aggregates)."""
+    by = list(params["by"])
+    keep = str(params.get("keep", "first")).lower()
+    if keep not in ("first", "last"):
+        keep = "first"
+    return df.drop_duplicates(subset=by, keep=keep).copy()
 
 
 # ── compare ops (used by the reconciler, not the shadow builder) ─────────────

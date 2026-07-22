@@ -15,6 +15,7 @@ export const WizardActions = {
   SET_MAPPING_SHEET: "SET_MAPPING_SHEET",
   SET_PARSED_MAPPING_SHEET: "SET_PARSED_MAPPING_SHEET",
   SET_BUSINESS_RULES: "SET_BUSINESS_RULES",
+  SET_RECIPE: "SET_RECIPE",
   SET_AGGREGATION_RULES: "SET_AGGREGATION_RULES",
   SET_TRANSFORMATION_MAPPING: "SET_TRANSFORMATION_MAPPING",
   SET_VALUE_MAPPINGS: "SET_VALUE_MAPPINGS",
@@ -65,6 +66,11 @@ function createInitialTransformationSpec() {
     transformationRules: [],
     matchingRules: [],
     filterRules: [],
+    // Step-recipe editor state: an ordered list of steps, each = one
+    // ContractOperation ({ id, op, kind, field, params, enabled }). Authored
+    // intent (like business rules), so it SURVIVES a dataset change —
+    // invalidateDerivedState only resets the derived contract/preview, not this.
+    recipe: [],
     // Structured aggregation rules ({ field, aggregation }) applied before
     // reconciliation.
     aggregationRules: [],
@@ -317,6 +323,12 @@ export function wizardReducer(state, action) {
         transformationSpec: { ...state.transformationSpec, [category]: rules },
       };
     }
+
+    case WizardActions.SET_RECIPE:
+      return {
+        ...state,
+        transformationSpec: { ...state.transformationSpec, recipe: action.recipe },
+      };
 
     case WizardActions.SET_AGGREGATION_RULES:
       return {

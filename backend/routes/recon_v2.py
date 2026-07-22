@@ -84,6 +84,46 @@ class ShadowPreviewRequest(BaseModel):
     actor: str = "system"
 
 
+class RecipePreviewRequest(BaseModel):
+    # The unsaved draft contract being authored in the recipe editor. Must carry
+    # `operations` (+ schemas/options); business_key/compare_fields are optional
+    # for a preview since it only builds the Shadow_Source, not a reconciliation.
+    draft: dict[str, Any]
+    # Source sample: either a persisted snapshot (sampled server-side) or inline
+    # rows already sampled by the caller. Exactly one is expected.
+    source_snapshot_id: str | None = None
+    source_rows: list[dict[str, Any]] | None = None
+    # "Preview up to this step" (authored index): later ops are treated as
+    # disabled. None = preview the whole recipe.
+    active_step_index: int | None = None
+    preview_rows: int | None = None
+    actor: str = "system"
+
+
+@router.post("/recipe-preview")
+def recipe_preview(req: RecipePreviewRequest) -> dict[str, Any]:
+    """Live, read-only before/after preview for the recipe editor.
+
+    Runs an UNSAVED draft's operations (optionally truncated at
+    ``active_step_index``) against a sample of the raw source via the same
+    deterministic executor + diff engine a real run uses. Creates no run,
+    shadow, or result — pure read."""
+    default_rows = get_settings().preview_rows
+    try:
+        return service.build_recipe_preview(
+            draft=req.draft,
+            source_snapshot_id=req.source_snapshot_id,
+            source_rows=req.source_rows,
+            active_step_index=req.active_step_index,
+            preview_rows=req.preview_rows if req.preview_rows is not None else default_rows,
+            actor=req.actor,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/snapshots")
 def create_snapshot(req: SnapshotRequest) -> dict[str, Any]:
     try:

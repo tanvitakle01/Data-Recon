@@ -188,6 +188,28 @@ _SPECS: list[OperationSpec] = [
         optional_params=("canonical_format",),
     ),
     OperationSpec(
+        "split_field", OperationKind.TRANSFORM, ops.split_field,
+        "Split a value on 'separator' and keep the part at 0-based 'index', "
+        "writing to 'into' (new column, defaults to the field itself).",
+        required_params=("separator", "index"),
+        optional_params=("into",),
+    ),
+    OperationSpec(
+        "convert_uom", OperationKind.TRANSFORM, ops.convert_uom,
+        "Convert a numeric field's unit by a fixed 'factor' via 'operation' "
+        "('multiply' default or 'divide'), optionally rounded to 'decimals'.",
+        required_params=("factor",),
+        optional_params=("operation", "decimals"),
+    ),
+    OperationSpec(
+        "calculated_column", OperationKind.TRANSFORM, ops.calculated_column,
+        "Compute a new column 'into' from a safe, allow-listed 'expression' "
+        "(e.g. 'ABS(PLNMG - DEMANDQTY)'). Parsed to an AST and evaluated "
+        "deterministically — never executable code. See operations.safe_expr.",
+        requires_field=False,
+        required_params=("expression", "into"),
+    ),
+    OperationSpec(
         "reject_null", OperationKind.FILTER, ops.reject_null,
         "Drop rows where the field is null/blank.",
     ),
@@ -213,6 +235,15 @@ _SPECS: list[OperationSpec] = [
         "sum_aggregate", OperationKind.AGGREGATE, ops.sum_aggregate,
         "Group by key columns and sum the field.",
         required_params=("by",),
+        field_list_params=("by",),
+    ),
+    OperationSpec(
+        "deduplicate", OperationKind.AGGREGATE, ops.deduplicate,
+        "Drop duplicate rows keyed on 'by', keeping 'keep' ('first' default or "
+        "'last').",
+        requires_field=False,
+        required_params=("by",),
+        optional_params=("keep",),
         field_list_params=("by",),
     ),
     OperationSpec(
