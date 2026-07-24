@@ -1201,25 +1201,23 @@ def run_reconciliation_with_script(
 
 # ── comparison sheet export (read-only) ──────────────────────────────────────
 
-# Business-friendly labels for the five terminal classifications.
+# Business-friendly labels for the four terminal classifications.
 _CLASS_LABELS: dict[str, str] = {
     "match": "Match",
     "mismatch": "Quantity Mismatch",
     "missing_in_source": "Missing in Source",
     "missing_in_target": "Missing in Target",
-    "exception": "Exception",
 }
 _CLASS_REMARKS: dict[str, str] = {
     "match": "Values match within tolerance.",
     "mismatch": "Compared values differ.",
     "missing_in_source": "Business key present in target only.",
     "missing_in_target": "Business key present in source only.",
-    "exception": "Needs manual review (e.g. duplicate business key).",
 }
-_CLASS_ORDER = ["match", "mismatch", "missing_in_source", "missing_in_target", "exception"]
+_CLASS_ORDER = ["match", "mismatch", "missing_in_source", "missing_in_target"]
 
 # ── Export presentation: Status label + row fill per classification ──────────
-# The export collapses the five classifications into user-facing statuses and
+# The export collapses the four classifications into user-facing statuses and
 # colour-codes each row (and the Summary legend) by status. Note that
 # ``missing_in_source`` surfaces as "EXTRA IN TARGET" (a key the target has that
 # the source doesn't).
@@ -1228,19 +1226,17 @@ _STATUS_BY_CLASS: dict[str, str] = {
     "mismatch": "MISMATCH",
     "missing_in_target": "MISSING IN TARGET",
     "missing_in_source": "EXTRA IN TARGET",
-    "exception": "EXCEPTION",
 }
 _STATUS_FILL: dict[str, str] = {
     "MATCH": "C6EFCE",           # green
     "MISMATCH": "FFEB9C",  # amber
     "MISSING IN TARGET": "FFC7CE",  # red
     "EXTRA IN TARGET": "BDD7EE",    # blue
-    "EXCEPTION": "D9D9D9",          # grey
 }
 # Summary "Results" block order (task spec): matches first, then issues.
-_SUMMARY_ORDER = ["match", "mismatch", "missing_in_target", "missing_in_source", "exception"]
+_SUMMARY_ORDER = ["match", "mismatch", "missing_in_target", "missing_in_source"]
 # "All Records" sheet sort order (task spec): issues first, matches last.
-_ALL_RECORDS_ORDER = ["mismatch", "missing_in_target", "missing_in_source", "exception", "match"]
+_ALL_RECORDS_ORDER = ["mismatch", "missing_in_target", "missing_in_source", "match"]
 _HEADER_FILL = "1F4E78"  # dark blue for the All Records header row
 
 # Columns produced by build_enriched_detail that must not be shadowed by a

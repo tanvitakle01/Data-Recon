@@ -14,13 +14,12 @@ def _utcnow() -> datetime:
 
 
 class RecordClass(str, Enum):
-    """The five terminal classifications after the full outer join."""
+    """The four terminal classifications after the full outer join."""
 
     MATCH = "match"
     MISMATCH = "mismatch"
     MISSING_IN_SOURCE = "missing_in_source"
     MISSING_IN_TARGET = "missing_in_target"
-    EXCEPTION = "exception"
 
 
 class ReconciliationSummary(BaseModel):
@@ -31,7 +30,6 @@ class ReconciliationSummary(BaseModel):
     mismatch: int = 0
     missing_in_source: int = 0
     missing_in_target: int = 0
-    exception: int = 0
     # Rows the Value Mapping stage held out before the join ever ran (Material
     # or Plant landed on a MEDIUM/NONE/OUT_OF_SCOPE match, or had no match
     # record at all) — never reconciled, so kept isolated from the five
@@ -47,7 +45,6 @@ class ReconciliationSummary(BaseModel):
             mismatch=counts.get(RecordClass.MISMATCH.value, 0),
             missing_in_source=counts.get(RecordClass.MISSING_IN_SOURCE.value, 0),
             missing_in_target=counts.get(RecordClass.MISSING_IN_TARGET.value, 0),
-            exception=counts.get(RecordClass.EXCEPTION.value, 0),
             total=sum(counts.values()),
         )
 

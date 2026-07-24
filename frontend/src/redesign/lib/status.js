@@ -40,7 +40,6 @@ export const OUTCOME = {
   missing_in_source: { status: "extra",    label: "Missing in Source" },
   missing_in_target: { status: "missing",  label: "Missing in Target" },
   extra_in_target:   { status: "extra",    label: "Extra in Target" },
-  exception:         { status: "missing",  label: "Exception" },
 };
 
 /** Transformation change kind (shadow diff) -> status + label. */

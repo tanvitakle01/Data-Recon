@@ -185,14 +185,13 @@ def test_reconciler_tolerance_and_exception():
     assert result.summary.mismatch == 1  # diff 10 > tolerance
 
 
-def test_reconciler_deduplicates_key_without_exception():
-    # Duplicate business keys are deduplicated per side (keep first), not flagged
-    # as EXCEPTION. The single surviving key reconciles normally.
+def test_reconciler_deduplicates_key():
+    # Duplicate business keys are deduplicated per side (keep first). The single
+    # surviving key reconciles normally — no exception path exists.
     contract = _contract(compare_fields=[])
     shadow = pd.DataFrame({"id": ["A", "A"], "qty": [1, 1]})
     target = pd.DataFrame({"id": ["A"], "qty": [1]})
     result = reconcile(contract, shadow, target)
-    assert result.summary.exception == 0
     assert result.summary.match == 1
     assert result.summary.total == 1
 

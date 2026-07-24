@@ -1,14 +1,15 @@
 """Deterministic reconciler: Shadow_Source FULL OUTER JOIN Raw_Target.
 
 Joins on the contract's business key, applies per-field tolerances via the
-allow-listed compare operations, and classifies every record into one of five
+allow-listed compare operations, and classifies every record into one of four
 terminal buckets:
 
-    match | mismatch | missing_in_source | missing_in_target | exception
+    match | mismatch | missing_in_source | missing_in_target
 
 Each side is first deduplicated independently on the business key (keep first);
-duplicate rows are dropped silently rather than flagged. EXCEPTION is reserved
-for genuine contract/runtime problems (missing compare field, unset tolerance).
+duplicate rows are dropped silently. Records that can't be verified (missing
+compare field, unset tolerance) fall into ``mismatch`` — there is no separate
+exception path.
 
 No LLM is involved at runtime. Behaviour is fully determined by the approved
 contract + the two immutable inputs, so a run is reproducible.
@@ -79,8 +80,6 @@ def reconcile(
     # ── deduplicate each side independently, keeping the first record ─────────
     # If a side carries several rows with the same business key we keep only the
     # first for reconciliation; the remaining duplicates are dropped silently.
-    # They are no longer surfaced as EXCEPTION records. (EXCEPTION is still used
-    # for genuine contract/runtime problems in _compare_row below.)
     shadow_u = shadow.drop_duplicates(subset="__key__", keep="first").set_index("__key__")
     target_u = target.drop_duplicates(subset="__key__", keep="first").set_index("__key__")
 
@@ -199,16 +198,19 @@ def _compare_row(
     field_diffs: list[dict[str, Any]] = []
     for cf in contract.compare_fields:
         if cf.source_field not in s_row.index or cf.target_field not in t_row.index:
-            return (
-                RecordClass.EXCEPTION,
-                f"Compare field missing at runtime: {cf.source_field}/{cf.target_field}.",
-                [],
+            # Field the contract expects is absent at runtime — can't verify it,
+            # so treat as a mismatch rather than a match.
+            mismatches.append(
+                f"Compare field missing at runtime: {cf.source_field}/{cf.target_field}."
             )
+            continue
 
         params: dict[str, Any] = {"options": contract.options}
         if cf.match_type == MatchType.TOLERANCE:
             if cf.tolerance is None:
-                return RecordClass.EXCEPTION, f"Tolerance not set for '{cf.source_field}'.", []
+                # Misconfigured tolerance — unverifiable, so treat as a mismatch.
+                mismatches.append(f"Tolerance not set for '{cf.source_field}'.")
+                continue
             op_name = "tolerance_match"
             params["tolerance"] = cf.tolerance
         else:

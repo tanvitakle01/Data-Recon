@@ -54,8 +54,6 @@ def build_insights_dataframe(run_id: str) -> pd.DataFrame:
             remarks.append(f"❌ MISSING IN TARGET | {detail}")
         elif cls == "missing_in_source":
             remarks.append(f"🔶 EXTRA IN TARGET | {detail}")
-        elif cls == "exception":
-            remarks.append(f"⛔ EXCEPTION | {detail}")
         else:
             remarks.append("✅ MATCH")
 
@@ -191,7 +189,6 @@ _DRILLDOWN_EXCEPTION_PATTERNS = {
     "Missing in Target": "MISSING IN TARGET",
     "Extra in Target": "EXTRA IN TARGET",
     "Quantity Mismatch": "QTY MISMATCH",
-    "Exception": "EXCEPTION",
 }
 
 

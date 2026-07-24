@@ -88,7 +88,7 @@ def test_build_comparison_workbook_is_two_colour_coded_sheets():
     assert flat["Quantity Mismatch"][1] == 1
     assert flat["Missing in Target"][1] == 1
     assert flat["Missing in Source"][1] == 1
-    assert flat["Exception"][1] == 0  # listed even at count 0
+    assert "Exception" not in flat  # exception classification removed
     assert flat["Total"][1] == 4
     # % of Total is present and the category row is colour-filled.
     assert flat["Match"][2] == "25.0%"
