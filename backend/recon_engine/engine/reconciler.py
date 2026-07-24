@@ -6,6 +6,10 @@ terminal buckets:
 
     match | mismatch | missing_in_source | missing_in_target | exception
 
+Each side is first deduplicated independently on the business key (keep first);
+duplicate rows are dropped silently rather than flagged. EXCEPTION is reserved
+for genuine contract/runtime problems (missing compare field, unset tolerance).
+
 No LLM is involved at runtime. Behaviour is fully determined by the approved
 contract + the two immutable inputs, so a run is reproducible.
 """
@@ -72,19 +76,11 @@ def reconcile(
 
     records: list[dict[str, Any]] = []
 
-    # ── duplicate business keys are exceptions ───────────────────────────────
-    for side, frame in (("source", shadow), ("target", target)):
-        dup_mask = frame["__key__"].duplicated(keep="first")
-        for _, row in frame[dup_mask].iterrows():
-            records.append(
-                _record(
-                    RecordClass.EXCEPTION,
-                    key=row["__key__"],
-                    detail=f"Duplicate business key on {side} side.",
-                    lineage=row.get(LINEAGE_COL),
-                )
-            )
-
+    # ── deduplicate each side independently, keeping the first record ─────────
+    # If a side carries several rows with the same business key we keep only the
+    # first for reconciliation; the remaining duplicates are dropped silently.
+    # They are no longer surfaced as EXCEPTION records. (EXCEPTION is still used
+    # for genuine contract/runtime problems in _compare_row below.)
     shadow_u = shadow.drop_duplicates(subset="__key__", keep="first").set_index("__key__")
     target_u = target.drop_duplicates(subset="__key__", keep="first").set_index("__key__")
 
