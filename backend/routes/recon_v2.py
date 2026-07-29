@@ -338,10 +338,12 @@ def date_alignment(req: DateAlignmentRequest) -> dict[str, Any]:
 
 @router.get("/runs/{run_id}/comparison.xlsx")
 def download_comparison(run_id: str) -> Response:
-    """Download the run's colour-coded comparison workbook (.xlsx): two sheets —
-    Summary (run/contract/snapshot metadata + per-category counts and % of
-    total) and All Records (every match/mismatch/missing/extra row stacked into
-    one flat, status-coloured table). Read-only — not re-run."""
+    """Download the run's colour-coded comparison workbook (.xlsx): three
+    sheets — Summary (per-category counts/% of total, trimmed run info, and
+    three pie charts), All Records (every match/mismatch/missing/extra row
+    stacked into one flat, status-coloured table), and Mapping Details (every
+    Material↔PRDID and Plant↔LOCID value-pairing decision). Read-only — not
+    re-run."""
     try:
         content = service.build_comparison_workbook(run_id)
     except KeyError as exc:

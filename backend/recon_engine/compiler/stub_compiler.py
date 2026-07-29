@@ -10,8 +10,8 @@ shape Groq produces — so nothing downstream cares which compiler was used.
 Like ``GroqContractCompiler``, this compiler NEVER decides ``business_key``,
 ``compare_fields``, or ``value_mappings`` — those always come back empty here.
 Field mapping is human-owned (the Rules step's confirmed dropdown selection)
-and identifier value mapping is the deterministic matching engine's job (see
-``recon_engine.matching``); ``service.compile_draft`` sets all three fields
+and identifier value mapping is the value-pairing pipeline's job (see
+``recon_engine.value_pairing``); ``service.compile_draft`` sets all three fields
 onto the draft afterward. ``matching_rules`` and ``filter_rules`` are likewise
 left for Groq's semantic reading — this offline stub preserves them verbatim
 in ``notes`` rather than guessing at compare/filter semantics.

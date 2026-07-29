@@ -1,8 +1,10 @@
 """Coverage for POST /api/recon/value-mapping/run — the thin HTTP wrapper the
-Mapping Review page's "Run Deterministic Mapping" button calls. The matchers
-themselves (recon_engine.matching) are already covered by test_product.py /
-test_location.py / test_matching.py; this only exercises the endpoint's
-request handling (rows-vs-file resolution, column resolution, error paths).
+Mapping Review page's "Run Deterministic Mapping" button calls. The pipeline
+itself (recon_engine.value_pairing) is covered by test_value_pairing.py; this
+only exercises the endpoint's request handling (rows-vs-file resolution,
+column resolution, error paths). No LLM key is configured in these tests, so
+every case here resolves via the identity pre-pass or ends up unpaired —
+never an LLM call.
 """
 
 from __future__ import annotations
@@ -32,11 +34,11 @@ def _rows_body(source_rows, target_rows):
 
 def test_run_value_mapping_returns_product_and_location_mappings(client):
     source_rows = [
-        {"Material": "MAT-1", "MaterialGroup": "FG", "ProductionPlant": "PL01"},
-        {"Material": "RAW-1", "MaterialGroup": "RM", "ProductionPlant": "PL01"},
+        {"Material": "MAT-1", "ProductionPlant": "PL01"},
+        {"Material": "RAW-1", "ProductionPlant": "PL01"},
     ]
     target_rows = [
-        {"PRDID": "MAT-1", "PRODGROUP": "FG", "LOCID": "PL01"},
+        {"PRDID": "MAT-1", "LOCID": "PL01"},
     ]
 
     res = client.post("/api/recon/value-mapping/run", data=_rows_body(source_rows, target_rows))
@@ -47,7 +49,11 @@ def test_run_value_mapping_returns_product_and_location_mappings(client):
     assert body["product"]["target_field"] == "PRDID"
     product_by_value = {m["source_value"]: m for m in body["product"]["matches"]}
     assert product_by_value["MAT-1"]["confidence"] == "very_high"
-    assert product_by_value["RAW-1"]["confidence"] == "out_of_scope"
+    assert product_by_value["MAT-1"]["rule"] == "value_pairing.identity"
+    # No LLM configured and no identity/library hit -> genuinely unpaired,
+    # never guessed and never silently dropped.
+    assert product_by_value["RAW-1"]["confidence"] == "none"
+    assert product_by_value["RAW-1"]["rule"] == "value_pairing.unpaired"
 
     assert body["location"]["source_field"] == "ProductionPlant"
     assert body["location"]["target_field"] == "LOCID"
@@ -58,7 +64,7 @@ def test_run_value_mapping_returns_product_and_location_mappings(client):
 def test_run_value_mapping_is_case_insensitive_on_column_names(client):
     # Real SAP/IBP extracts don't always arrive with exactly-cased headers;
     # the endpoint resolves columns case-insensitively (mirrors
-    # service._resolve_source_name), not the matchers themselves.
+    # service._resolve_source_name), not the pipeline itself.
     source_rows = [{"material": "MAT-1", "productionplant": "PL01"}]
     target_rows = [{"prdid": "MAT-1", "locid": "PL01"}]
 
@@ -84,60 +90,64 @@ def test_run_value_mapping_400s_on_missing_target_data(client):
     assert "target" in res.json()["detail"].lower()
 
 
-# ── MDT Auxiliary Field Recommender surface + evidence-only boundary ─────────
+def test_run_value_mapping_resolves_custom_field_names(client):
+    # An Excel upload's headers won't literally be "Material"/"PRDID" — the
+    # wizard resolves the confirmed field mapping's actual column names and
+    # sends them as source_product_field/target_product_field/etc.
+    source_rows = [{"SKU": "MAT-1", "Plant Code": "PL01"}]
+    target_rows = [{"Product Code": "MAT-1", "Location ID": "PL01"}]
 
-def test_run_value_mapping_returns_auxiliary_field_report(client):
-    source_rows = [{"Material": "MAT-1", "MaterialGroup": "FG", "ProductionPlant": "S101"}]
-    target_rows = [
-        {"PRDID": "P1", "PRODGROUP": "FG", "LOCID": "LOC-1", "LOCNAME": "Distribution S101 UK",
-         "PRODDESC": "Widget", "PRDIDDEM": ""},
-    ]
-    res = client.post("/api/recon/value-mapping/run", data=_rows_body(source_rows, target_rows))
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "source_product_field": "SKU",
+        "target_product_field": "Product Code",
+        "source_location_field": "Plant Code",
+        "target_location_field": "Location ID",
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
     assert res.status_code == 200, res.text
-    aux = res.json()["auxiliary_fields"]
-    assert set(aux) == {"target_product", "target_location", "source_product", "source_plant"}
+    payload = res.json()
 
-    loc = {c["seed_name"]: c for c in aux["target_location"]}
-    # LOCNAME exists + populated + consumed by location Rule 2.
-    assert loc["LOCNAME"]["confirmed_existing"] and loc["LOCNAME"]["confirmed_populated"]
-    assert loc["LOCNAME"]["consumed"] is True
-    # A validation-only attribute is reported but tagged not-consumed.
-    assert loc["LOCATIONTYPE"]["consumed"] is False
+    assert payload["product"]["source_field"] == "SKU"
+    assert payload["product"]["target_field"] == "Product Code"
+    product_by_value = {m["source_value"]: m for m in payload["product"]["matches"]}
+    assert product_by_value["MAT-1"]["confidence"] == "very_high"
 
-    prod = {c["seed_name"]: c for c in aux["target_product"]}
-    # PRDIDDEM present but 0% filled → not recommended, with a real fill rate.
-    assert prod["PRDIDDEM"]["confirmed_existing"] is True
-    assert prod["PRDIDDEM"]["confirmed_populated"] is False
-    assert prod["PRDIDDEM"]["fill_rate"] == 0.0
+    assert payload["location"]["source_field"] == "Plant Code"
+    assert payload["location"]["target_field"] == "Location ID"
+    location_by_value = {m["source_value"]: m for m in payload["location"]["matches"]}
+    assert location_by_value["PL01"]["confidence"] == "very_high"
 
 
-def test_auxiliary_fields_never_leak_into_the_mapping_output(client):
-    # LOCNAME drives a Rule 2 embedded-code match, but it must NEVER become a
-    # mapping field — only Material/PRDID and ProductionPlant/LOCID are fields;
-    # LOCNAME/PRODDESC/etc. may appear ONLY inside evidence text.
-    source_rows = [{"Material": "MAT-1", "MaterialGroup": "FG", "ProductionPlant": "S101"}]
-    target_rows = [
-        {"PRDID": "MAT-1", "PRODGROUP": "FG", "LOCID": "LOC-1", "LOCNAME": "DC S101 hub",
-         "LOCATIONTYPE": "Plant", "PRODDESC": "Widget"},
-    ]
-    body = client.post("/api/recon/value-mapping/run", data=_rows_body(source_rows, target_rows)).json()
+def test_run_value_mapping_400s_on_missing_custom_product_column(client):
+    source_rows = [{"Plant Code": "PL01"}]
+    target_rows = [{"Product Code": "MAT-1", "Location ID": "PL01"}]
 
-    assert body["product"]["source_field"] == "Material"
-    assert body["product"]["target_field"] == "PRDID"
-    assert body["location"]["source_field"] == "ProductionPlant"
-    assert body["location"]["target_field"] == "LOCID"
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "source_product_field": "SKU",
+        "target_product_field": "Product Code",
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
+    assert res.status_code == 400
+    assert "SKU" in res.json()["detail"]
 
-    aux_names = {"LOCNAME", "LOCATIONTYPE", "PRODDESC", "PRODGROUP", "MaterialGroup"}
-    for mapping_key in ("product", "location"):
-        for m in body[mapping_key]["matches"]:
-            # No auxiliary column name is ever a mapped value/field.
-            assert m["source_value"] not in aux_names
-            assert (m["target_value"] or "") not in aux_names
-            # And the ValueMatch shape carries no aux columns as keys.
-            assert not (aux_names & set(m.keys()))
 
-    # The plant matched via the embedded code in LOCNAME (proving LOCNAME was
-    # used as evidence) — but only as evidence text, never as a field.
-    loc_match = next(m for m in body["location"]["matches"] if m["source_value"] == "S101")
-    assert loc_match["rule"] == "location.rule2_embedded_code"
-    assert loc_match["target_value"] == "LOC-1"
+def test_run_value_mapping_accepts_connector_and_mapping_sheet_context(client):
+    # source_connector/target_connector/mapping_sheet are optional — the route
+    # must not choke on them (they key the value-pair library + feed the LLM
+    # prompt when pairing actually runs), and unpaired values still surface.
+    source_rows = [{"Material": "MAT-1", "ProductionPlant": "PL01"}]
+    target_rows = [{"PRDID": "PRD-1", "LOCID": "LOC-1"}]
+
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "source_connector": "s4",
+        "target_connector": "ibp",
+        "mapping_sheet": json.dumps({"rows": [{"note": "Material maps via a fixed prefix"}]}),
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
+    assert res.status_code == 200, res.text
+    product_by_value = {m["source_value"]: m for m in res.json()["product"]["matches"]}
+    assert product_by_value["MAT-1"]["confidence"] == "none"
+    assert product_by_value["MAT-1"]["rule"] == "value_pairing.unpaired"

@@ -119,3 +119,13 @@
   font-size: 0.875rem;
   margin-bottom: 12px;
 }
+
+.section {
+  margin-top: 40px;
+}
+
+.sectionTitle {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 0 0 4px;
+}

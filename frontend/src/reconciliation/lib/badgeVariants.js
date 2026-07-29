@@ -14,12 +14,14 @@ export const TIER_BADGE_VARIANT = {
   out_of_scope: "default",
 };
 
-// Reconciliation outcomes.
+// Reconciliation outcomes. `extra` uses `cyan` so "Extra in Target" stays
+// visually distinct from the blue `info`/aggregated language (preserving the
+// old semantic where Extra ≠ Missing ≠ Informational).
 export const OUTCOME_BADGE_VARIANT = {
   match: "success",
   mismatch: "error",
   missing: "warning",
-  extra: "info",
+  extra: "cyan",
 };
 
 // A confidence fraction (0..1) -> variant, matching the old

@@ -137,8 +137,9 @@ class ContractBody(BaseModel):
     from typed business rules) and ``notes``. It must always leave
     ``business_key``, ``compare_fields``, and ``value_mappings`` empty —
     field mapping is human-owned (the Rules step's confirmed dropdown
-    selections) and value mapping is the deterministic engine's job (see
-    ``recon_engine.matching``); neither is ever inferred or guessed by an LLM.
+    selections) and value mapping is the deterministic-extraction +
+    LLM-pairing + mandatory-verification pipeline's job (see
+    ``recon_engine.value_pairing``); nothing here is ever guessed unverified.
     ``service.compile_draft`` sets those three fields onto the compiler's
     draft afterward, from the caller's confirmed field mapping and the
     deterministic matcher's results. ``DraftContract`` and
@@ -165,13 +166,14 @@ class ContractBody(BaseModel):
     business_key: list[BusinessKeyField] = Field(default_factory=list)
     compare_fields: list[CompareField] = Field(default_factory=list)
 
-    # Deterministic value-level mappings (e.g. Material -> PRDID, Plant -> LOCID)
-    # discovered by recon_engine.matching — never Groq. Auditable and separate
-    # from `operations`: the executor derives the actual `value_mapping` op(s)
-    # from this at build time, applying the confidence policy (auto-apply
-    # VERY_HIGH/HIGH, hold NONE/OUT_OF_SCOPE out of the shadow with a reason,
-    # pass MEDIUM through unchanged flagged for review). See
-    # `models.value_mapping.ValueMapping` and `engine.executor`.
+    # Value-level mappings (e.g. Material -> PRDID, Plant -> LOCID) discovered
+    # by recon_engine.value_pairing — never Groq. Every LLM-derived pair here
+    # was deterministically re-verified before it could reach this field.
+    # Auditable and separate from `operations`: the executor derives the
+    # actual `value_mapping` op(s) from this at build time, applying the
+    # confidence policy (auto-apply VERY_HIGH/HIGH, hold everything else out of
+    # the shadow with a reason). See `models.value_mapping.ValueMapping` and
+    # `engine.executor`.
     value_mappings: list[ValueMapping] = Field(default_factory=list)
 
     # Schemas captured at compile time from the real sources (S/4, IBP, upload)

@@ -5,9 +5,8 @@
 // the (potentially large) data grid isn't rendered until the user asks for it.
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Button } from "@bristlecone/canopy";
+import { Button, Alert, EmptyState } from "@bristlecone/canopy";
 import { useWizard } from "../context/useWizard";
-import AuxiliaryFieldsPanel from "../components/AuxiliaryFieldsPanel";
 import { exportDatasetToCsv } from "../../utils/csvExport";
 
 const DEFAULT_COL_WIDTH = 150;
@@ -61,9 +60,10 @@ function DatasetDetailPreviewPage() {
           <p className="wizard-step__desc">No dataset has been imported for this side yet.</p>
         </header>
         <div className="wizard-step__body">
-          <p className="wizard-field__help">
-            Build and import a dataset first, then open its detailed preview.
-          </p>
+          <EmptyState
+            title="No dataset imported"
+            description="Build and import a dataset first, then open its detailed preview."
+          />
         </div>
         <footer className="wizard-step__footer">
           <Button type="button" variant="outline" onClick={backToConnector}>
@@ -103,7 +103,9 @@ function DatasetDetailPreviewPage() {
               {downloading ? "Preparing…" : "Download Data"}
             </button>
           </header>
-          {downloadError && <p className="ibpw-summary__error">⚠️ {downloadError}</p>}
+          {downloadError && (
+            <Alert variant="error" style={{ marginTop: 8 }}>{downloadError}</Alert>
+          )}
 
           {rows.length > 0 ? (
             <>
@@ -152,8 +154,6 @@ function DatasetDetailPreviewPage() {
             <p className="ibpw-imported__caption">No preview rows available for this dataset.</p>
           )}
         </section>
-
-        <AuxiliaryFieldsPanel auxiliaryFields={dataset.auxiliaryFields} />
       </div>
 
       <footer className="wizard-step__footer">

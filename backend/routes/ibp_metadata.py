@@ -8,7 +8,6 @@ from pydantic import BaseModel
 from backend.API_conn.connectors.ibp_metadata_service import (
     IBPMetadataService,
 )
-from backend.recon_engine.matching import evaluate_side
 
 router = APIRouter(prefix="/api/connectors/ibp")
 
@@ -89,10 +88,6 @@ async def ibp_fetch(payload: IBPFetchRequest):
             "count": len(df),
             "columns": list(df.columns),
             "rows": df.fillna("").to_dict(orient="records"),
-            # MDT auxiliary evidence recommendation for the TARGET side, so the
-            # "Recommended for Deterministic Mapping" panel can render on the
-            # data preview. Evidence-only; never mapping/reconciliation data.
-            "auxiliary_fields": evaluate_side(df, "target"),
         }
     except Exception as exc:
         return _error(exc)

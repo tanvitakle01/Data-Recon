@@ -8,30 +8,13 @@ import DatasetPreviewCard from "../components/DatasetPreviewCard";
 import IbpDatasetWorkspace from "../connectors/IbpDatasetWorkspace";
 import S4DatasetWorkspace from "../connectors/S4DatasetWorkspace";
 import FileUploadCard from "../../components/FileUploadCard";
-
-// `roles` declares which side(s) a connector is available for. Excel is
-// available for both; S/4HANA is a source system, IBP is a target system.
-// Anything with an empty `roles` renders as "Coming soon".
-const CONNECTOR_OPTIONS = [
-  { id: "excel_upload", label: "Excel Upload", category: "File", kind: "excel", roles: ["source", "target"] },
-  { id: "csv_upload", label: "CSV Upload", category: "File", kind: "csv", roles: [] },
-  { id: "sap_s4hana", label: "SAP S/4HANA", category: "SAP", kind: "s4", roles: ["source"] },
-  { id: "sap_ecc", label: "SAP ECC", category: "SAP", kind: "ecc", roles: [] },
-  { id: "sap_bw", label: "SAP BW", category: "SAP", kind: "bw", roles: [] },
-  { id: "sap_ibp", label: "SAP IBP", category: "SAP", kind: "ibp", roles: ["target"] },
-  { id: "custom", label: "Custom Connector", category: "Custom", kind: "custom", roles: [] },
-];
-
-// The single configured Live-Fetch (SAP) connector for a given role. S/4HANA is
-// the only source system, IBP the only target — so Live Fetch resolves
-// deterministically per role even when no mapping sheet was uploaded.
-function liveFetchOptionFor(role) {
-  return CONNECTOR_OPTIONS.find(
-    (o) => o.category === "SAP" && o.roles.includes(role) && (o.kind === "s4" || o.kind === "ibp")
-  );
-}
-
-const EXCEL_OPTION = CONNECTOR_OPTIONS.find((o) => o.id === "excel_upload");
+import {
+  CONNECTOR_OPTIONS,
+  EXCEL_OPTION,
+  liveFetchOptionFor,
+} from "../lib/connectorOptions";
+import { effectiveEntityJoin } from "../lib/entityJoinSpec";
+import { ConfirmDialog, Alert } from "@bristlecone/canopy";
 
 const SAP_STAGE_LABELS = ["Select Connector", "Connect & Load Metadata", "Build Dataset", "Preview"];
 const FILE_STAGE_LABELS = ["Upload Dataset", "Dataset Preview"];
@@ -61,6 +44,9 @@ function ConnectorSelectionStep({ role }) {
   // "choose" → binary Excel/Live-Fetch, "confirm" → Live-Fetch confirmation,
   // "grid" → full legacy connector grid (override target).
   const [preScreen, setPreScreen] = useState("choose");
+  // Change-connector confirmation gate (replaces window.confirm) — only shown
+  // when a dataset was already built, since discarding it is destructive.
+  const [changeConfirmOpen, setChangeConfirmOpen] = useState(false);
 
   const isFileKind = roleState.kind === "excel" || roleState.kind === "csv";
   const isSapKind = roleState.kind === "s4" || roleState.kind === "ibp";
@@ -77,6 +63,16 @@ function ConnectorSelectionStep({ role }) {
   // Fields the sheet says to compare on this side — pre-selected (and
   // validated against live schema) inside the workspace. Toggle-only there.
   const preselectFields = idSide?.fields ?? [];
+
+  // Entities/join for THIS side: the Step-1 free-text instruction if the user
+  // typed one, else whatever the mapping sheet derived (the precedence lives in
+  // effectiveEntityJoin). Already existence-gated server-side against this
+  // side's own connector. It PRE-POPULATES the Join Builder canvas below — the
+  // canvas still owns the join defaults and stays fully editable.
+  const prepopulate = useMemo(
+    () => effectiveEntityJoin(state, role),
+    [state, role]
+  );
 
   const logAssignment = (kind, filename, rowCount) => {
     const isReplacement = Boolean(roleState.dataset);
@@ -100,17 +96,19 @@ function ConnectorSelectionStep({ role }) {
     });
   };
 
-  const handleChangeConnector = () => {
-    if (roleState.dataset) {
-      const proceed = window.confirm(
-        `Changing the connector will discard the ${roleLabel.toLowerCase()} dataset you've already built. Continue?`
-      );
-      if (!proceed) return;
-    }
+  const performChangeConnector = () => {
     setShowUploadAgain(false);
     setSapStage("connect");
     setPreScreen("choose");
     dispatch({ type: WizardActions.RESET_ROLE, role });
+  };
+
+  const handleChangeConnector = () => {
+    if (roleState.dataset) {
+      setChangeConfirmOpen(true);
+      return;
+    }
+    performChangeConnector();
   };
 
   const handleExcelLoaded = (data, file, meta) => {
@@ -141,7 +139,7 @@ function ConnectorSelectionStep({ role }) {
     });
   };
 
-  const handleSapLoaded = ({ columns, preview, rows, rowCount, mdtFields, auxiliaryFields }) => {
+  const handleSapLoaded = ({ columns, preview, rows, rowCount, mdtFields }) => {
     const filename = `${roleState.connectorId === "sap_s4hana" ? "SAP S/4HANA" : "SAP IBP"} live fetch`;
     logAssignment(roleState.kind, filename, rowCount);
     dispatch({
@@ -164,14 +162,30 @@ function ConnectorSelectionStep({ role }) {
         // than chosen directly — excluded from auto-generated mappings
         // downstream, but still present in `columns` for tracking/validation.
         mdtFields: mdtFields ?? [],
-        // MDT auxiliary-evidence recommendation, surfaced on the detailed
-        // preview page. Evidence-only; never mapping/reconciliation data.
-        auxiliaryFields: auxiliaryFields ?? null,
       },
     });
   };
 
   const canContinue = useMemo(() => Boolean(roleState.dataset), [roleState.dataset]);
+
+  // Rendered in the branches that expose "Change Connector"/"Back to
+  // Connectors". Discarding a built dataset is destructive, so it uses the
+  // destructive variant.
+  const changeConnectorDialog = (
+    <ConfirmDialog
+      isOpen={changeConfirmOpen}
+      variant="destructive"
+      title="Change connector?"
+      message={`Changing the connector will discard the ${roleLabel.toLowerCase()} dataset you've already built. Continue?`}
+      confirmText="Discard & change"
+      cancelText="Keep dataset"
+      onConfirm={() => {
+        setChangeConfirmOpen(false);
+        performChangeConnector();
+      }}
+      onCancel={() => setChangeConfirmOpen(false)}
+    />
+  );
 
   // ============ Pre-connector screens (no connector chosen yet) ============
   if (!roleState.connectorId) {
@@ -223,10 +237,10 @@ function ConnectorSelectionStep({ role }) {
               </p>
             )}
             {idSide && !idSide.kind && (
-              <p className="wizard-identify__warn">
-                ⚠️ The mapping sheet didn't clearly identify the {roleLabel.toLowerCase()} system
+              <Alert variant="warning" style={{ marginTop: 8 }}>
+                The mapping sheet didn't clearly identify the {roleLabel.toLowerCase()} system
                 {idSide.evidence ? ` (${idSide.evidence})` : ""} — confirm carefully.
-              </p>
+              </Alert>
             )}
             <div className="wizard-connector-confirm__actions">
               <button
@@ -234,7 +248,7 @@ function ConnectorSelectionStep({ role }) {
                 className="wizard-btn wizard-btn--primary"
                 onClick={() => handleSelectConnector(liveOption)}
               >
-                Confirm &amp; continue
+                Confirm &amp; Continue
               </button>
               <button
                 type="button"
@@ -295,6 +309,7 @@ function ConnectorSelectionStep({ role }) {
     const showPreviewCard = Boolean(roleState.dataset) && !showUploadAgain;
     return (
       <StepShell stepKey={role} canContinue={canContinue}>
+        {changeConnectorDialog}
         <SubStagePills stages={FILE_STAGE_LABELS} activeIndex={showPreviewCard ? 1 : 0} />
         <button type="button" className="wizard-link" onClick={handleChangeConnector}>
           ← Back to Connectors
@@ -323,6 +338,7 @@ function ConnectorSelectionStep({ role }) {
     const activeIndex = roleState.dataset ? 3 : SAP_STAGE_INDEX[sapStage] ?? 1;
     return (
       <StepShell stepKey={role} canContinue={canContinue}>
+        {changeConnectorDialog}
         <SubStagePills stages={SAP_STAGE_LABELS} activeIndex={activeIndex} />
         <button type="button" className="wizard-link" onClick={handleChangeConnector}>
           ← Change Connector
@@ -336,6 +352,7 @@ function ConnectorSelectionStep({ role }) {
             onStageChange={setSapStage}
             onOpenDetailedPreview={openDetailedPreview}
             preselectFields={preselectFields}
+            prepopulate={prepopulate}
           />
         )}
         {roleState.kind === "ibp" && (
@@ -346,6 +363,7 @@ function ConnectorSelectionStep({ role }) {
             onStageChange={setSapStage}
             onOpenDetailedPreview={openDetailedPreview}
             preselectFields={preselectFields}
+            prepopulate={prepopulate}
           />
         )}
       </StepShell>

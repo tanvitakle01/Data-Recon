@@ -1,5 +1,5 @@
 import PreviewTable from "../../components/PreviewTable";
-import { Button, Badge } from "@bristlecone/canopy";
+import { Button, Badge, KPICard } from "@bristlecone/canopy";
 
 // Flow A (Excel/CSV) "Dataset Preview" card — the second and final card of
 // the file-upload path. Purely a presentation of the dataset already sitting
@@ -22,20 +22,9 @@ function DatasetPreviewCard({ dataset, onReplaceFile }) {
       </div>
 
       <div className="wizard-preview-card__stats">
-        <div className="wizard-preview-card__stat">
-          <span className="wizard-preview-card__stat-label">Rows</span>
-          <span className="wizard-preview-card__stat-value">{dataset.rowCount}</span>
-        </div>
-        <div className="wizard-preview-card__stat">
-          <span className="wizard-preview-card__stat-label">Columns</span>
-          <span className="wizard-preview-card__stat-value">{dataset.colCount}</span>
-        </div>
-        <div className="wizard-preview-card__stat">
-          <span className="wizard-preview-card__stat-label">File type</span>
-          <span className="wizard-preview-card__stat-value">
-            {fileTypeFromName(dataset.filename)}
-          </span>
-        </div>
+        <KPICard label="Rows" value={dataset.rowCount} />
+        <KPICard label="Columns" value={dataset.colCount} />
+        <KPICard label="File type" value={fileTypeFromName(dataset.filename)} />
       </div>
 
       <PreviewTable

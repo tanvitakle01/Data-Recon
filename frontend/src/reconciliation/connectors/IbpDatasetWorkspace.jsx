@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../../services/api";
 import {
-  SapConnectPrompt,
   SapConnecting,
   SapConnectError,
   SapConnectedBar,
-  SapConnectedSummary,
 } from "./SapConnectionGate";
+import JoinCanvas from "./JoinCanvas";
 import {
   IBP_TRANSFORMATION_DISCOVERY_FIELDS,
   recommendedFieldsFor,
@@ -18,9 +17,9 @@ import "./ibpWorkspace.css";
 // SAP IBP dataset workspace — a three-pane data-exploration surface used in
 // the wizard's Step 3 (Target) when the IBP connector is selected.
 //
-// Left   : Entity Explorer   — search + recently used + entity list.
-// Center : Column Explorer    (top) and Live Preview grid (bottom).
-// Right  : Dataset Summary    — stats, import readiness, and the import action.
+// The layout is the shared, de-cluttered JoinCanvas (see JoinCanvas.jsx):
+// two collapsible inputs (entity + field), a single entity node card on the
+// canvas (IBP has no joins), and a result-preview grid with a slim import bar.
 //
 // It drives the existing metadata-driven endpoints
 // (`/api/connectors/ibp/...`) unchanged and, once the user imports, hands the
@@ -44,26 +43,27 @@ function IbpDatasetWorkspace({
   onStageChange,
   onOpenDetailedPreview,
   preselectFields = [],
+  prepopulate = null,
 }) {
   // ---- connection stage ----
-  // Metadata is no longer fetched on mount; the user must explicitly connect.
-  // "idle" → connect prompt, "connecting" → skeletons, "error" → retry card,
-  // "connected" → the workspace. A pre-existing dataset (navigating back into
-  // the step) auto-reconnects so the explorer is usable again.
-  // Returning users (a dataset is already in wizard state) start in the
-  // connecting state so they see skeletons, not a flash of the connect prompt,
-  // before the auto-reconnect effect reloads metadata.
-  const [connState, setConnState] = useState(dataset ? "connecting" : "idle");
+  // Metadata is fetched automatically on mount — once the user confirms the
+  // SAP IBP connector there is no separate "Connect & Load Metadata" click.
+  // "connecting" → skeletons, "error" → retry card, "connected" → the
+  // workspace. Everyone (fresh or returning) starts in the connecting state so
+  // they see loading skeletons, never a flash of an empty/prompt screen, while
+  // the connect-on-mount effect discovers entities.
+  const [connState, setConnState] = useState("connecting");
   const [connError, setConnError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // ---- card stage (progressive disclosure within the workspace) ----
-  // "connect" → connected-summary only (Card 2), "build" → the full
-  // entity/column workspace (Card 3). The imported data grid is no longer a
-  // stage here — it lives on a dedicated preview page. Initialized from
-  // `dataset` (not an effect) so a returning user with an already-imported
-  // dataset lands straight on the Build card (with "Open Detailed Preview"
-  // available) rather than the connect prompt.
+  // "connect" → still connecting/loading metadata (drives the sub-stage pill),
+  // "build" → the full entity/column workspace (Card 3). There is no longer a
+  // "Connected → Continue to Build Dataset" stopping point: connect() flips
+  // straight to "build" on success, so a successful connection lands the user
+  // directly in the workspace. The imported data grid is not a stage here — it
+  // lives on a dedicated preview page. A returning user with an already-imported
+  // dataset starts on "build" (with "Open Detailed Preview" available).
   const [stage, setStage] = useState(dataset ? "build" : "connect");
   useEffect(() => {
     onStageChange?.(stage);
@@ -72,10 +72,15 @@ function IbpDatasetWorkspace({
 
   // ---- entities ----
   const [entities, setEntities] = useState([]);
-  const [entitiesLoading, setEntitiesLoading] = useState(false);
+  // Entity (re)load flag — the connect/refresh spinner is surfaced by
+  // SapConnectedBar's `refreshing`, so only the setter is needed here.
+  const [, setEntitiesLoading] = useState(false);
   const [entityFilter, setEntityFilter] = useState("");
   const [selectedEntity, setSelectedEntity] = useState("");
-  const [recent, setRecent] = useState([]);
+
+  // ---- canvas UI (collapsible inputs; purely presentational) ----
+  const [entityListOpen, setEntityListOpen] = useState(false);
+  const [fieldListOpen, setFieldListOpen] = useState(false);
 
   // ---- properties ----
   const [properties, setProperties] = useState([]); // [{name,type,role,label,selectable}]
@@ -87,9 +92,14 @@ function IbpDatasetWorkspace({
   // "Recommended" badge only marks the supporting fields, not the trigger
   // field itself, and clears once a field is deselected.
   const [autoSelected, setAutoSelected] = useState(new Set());
-  // Sheet-proposed fields that don't exist on the chosen entity's live schema —
-  // surfaced (never auto-selected) so the user can locate them manually.
-  const [preselectUnmatched, setPreselectUnmatched] = useState([]);
+  // Sheet-proposed fields that don't exist on the chosen entity's live schema.
+  // Tracking preserved (setter still used); the surfacing note was retired with
+  // the old Columns panel, so only the setter is kept.
+  const [, setPreselectUnmatched] = useState([]);
+
+  // Plain-language note describing what the sheet / Step-1 instruction
+  // pre-placed on the canvas (and anything it named that couldn't be used).
+  const [prepopNote, setPrepopNote] = useState(null);
 
   // ---- preview ----
   const [previewRows, setPreviewRows] = useState([]);
@@ -124,6 +134,9 @@ function IbpDatasetWorkspace({
       }
       setEntities(payload.entities ?? []);
       setConnState("connected");
+      // Metadata loaded — go straight to the Build Dataset workspace. No
+      // intermediate "Continue to Build Dataset" confirmation.
+      setStage("build");
     } catch (err) {
       setConnError(err?.message || String(err));
       setConnState("error");
@@ -133,8 +146,10 @@ function IbpDatasetWorkspace({
     }
   }, []);
 
-  // Reconnect: discard the loaded metadata/selection and return to the
-  // connect prompt for a clean start.
+  // Reconnect: discard the loaded metadata/selection and immediately
+  // re-establish the connection from scratch. connect() drops the workspace
+  // into the connecting (skeleton) state and flips back to "build" on success,
+  // so there is no separate connect prompt to click through.
   const reconnect = useCallback(() => {
     setEntities([]);
     setSelectedEntity("");
@@ -147,21 +162,22 @@ function IbpDatasetWorkspace({
     setPreviewError(null);
     setError(null);
     setConnError(null);
-    setConnState("idle");
     setStage("connect");
-  }, []);
+    connect();
+  }, [connect]);
 
-  // A dataset already in wizard state means the user connected before and is
-  // navigating back — transparently reconnect so the explorer isn't empty.
+  // Connect + discover metadata automatically as soon as the workspace mounts
+  // (i.e. right after the user confirms the SAP IBP connector). Applies to both
+  // a fresh selection and a returning user navigating back into the step —
+  // either way the explorer is never left empty and no manual connect click is
+  // required.
   const didInit = useRef(false);
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
-    // Run-once fetch-on-mount for the returning-user case; connect() sets the
-    // connecting state before awaiting the metadata request.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (dataset) connect();
-  }, [dataset, connect]);
+    // Run-once fetch-on-mount; connect() already set the connecting state.
+    connect();
+  }, [connect]);
 
   const filteredEntities = useMemo(() => {
     const q = entityFilter.trim().toLowerCase();
@@ -196,7 +212,6 @@ function IbpDatasetWorkspace({
 
     if (!entityName) return;
 
-    setRecent((prev) => [entityName, ...prev.filter((n) => n !== entityName)].slice(0, 5));
     setEntityLoading(true);
     try {
       const res = await api.get(
@@ -241,16 +256,49 @@ function IbpDatasetWorkspace({
     }
   }, [preselectFields]);
 
-  // ---- Step 3: column selection ----
-  const filteredProps = useMemo(() => {
-    const q = propFilter.trim().toLowerCase();
-    if (!q) return selectableProps;
-    return selectableProps.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        (p.label || "").toLowerCase().includes(q)
-    );
-  }, [selectableProps, propFilter]);
+  // ---- Canvas pre-population (mapping sheet / Step-1 instruction) ----
+  // IBP is single-entity here, so this only ever selects the primary entity —
+  // the backend gate already reduced an IBP side to one entity and dropped any
+  // join details. Pre-population only: the entity and its column selection stay
+  // fully editable, and nothing is fetched until the user imports.
+  const prepopRef = useRef(null);
+  const prepopKey = prepopulate ? JSON.stringify(prepopulate) : null;
+  useEffect(() => {
+    if (!prepopKey || connState !== "connected" || entities.length === 0) return undefined;
+    // Already-imported dataset → don't reset the user's built side.
+    if (dataset) return undefined;
+    // Apply any one instruction exactly once, so clearing the pre-placed entity
+    // doesn't fight this effect and get it re-selected.
+    if (prepopRef.current === prepopKey) return undefined;
+    prepopRef.current = prepopKey;
+
+    let cancelled = false;
+    (async () => {
+      const { entities: wanted, unresolved, origin } = prepopulate;
+      const from = origin === "freeText" ? "your entity/join instruction" : "your mapping sheet";
+      const missing =
+        unresolved.length > 0
+          ? ` ${unresolved.join(", ")} ${unresolved.length > 1 ? "aren't" : "isn't"} available in this connector — pick the entity yourself.`
+          : "";
+
+      if (wanted.length === 0) {
+        if (missing && !cancelled) {
+          setPrepopNote(`Nothing could be pre-placed from ${from}.${missing}`);
+        }
+        return;
+      }
+      if (cancelled) return;
+      setPrepopNote(
+        `Pre-placed ${wanted[0]} from ${from}.${missing} Review and adjust anything below before importing.`
+      );
+      await chooseEntity(wanted[0]);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prepopKey, connState, entities.length, dataset]);
 
   // Any change to the selection invalidates a prior import, so the readiness
   // and summary reflect that the wizard's stored dataset is now stale.
@@ -409,7 +457,6 @@ function IbpDatasetWorkspace({
       }
       const rows = payload.rows ?? [];
       const columns = payload.columns ?? orderedSelected;
-      const auxiliaryFields = payload.auxiliary_fields ?? null;
       setImported(true);
       setImportedCount(rows.length);
       // Stay on the Build card after import; the full data grid now lives on a
@@ -417,15 +464,14 @@ function IbpDatasetWorkspace({
       // Fields auto-checked by a Transformation Discovery rule (MDT/recommended
       // fields) — carried along so downstream mapping generation can exclude
       // them while they remain selectable here for tracking/validation. The
-      // dataset (rows, preview, columns, auxiliaryFields) is persisted to wizard
-      // state, which is what the detailed-preview page reads.
+      // dataset (rows, preview, columns) is persisted to wizard state, which is
+      // what the detailed-preview page reads.
       onLoaded?.({
         columns,
         preview: rows.slice(0, 10),
         rows,
         rowCount: rows.length,
         mdtFields: Array.from(autoSelected),
-        auxiliaryFields,
       });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
@@ -440,24 +486,35 @@ function IbpDatasetWorkspace({
       ? { cls: "ready", icon: "◆", text: "Ready to import" }
       : { cls: "wait", icon: "○", text: "Select columns to import" };
 
-  const previewStatus = previewLoading
-    ? { cls: "amber", text: "Loading…" }
-    : previewError
-      ? { cls: "red", text: "Preview error" }
-      : previewRows.length > 0
-        ? { cls: "accent", text: `Live · ${previewRows.length} rows` }
-        : null;
+  // ---- Canvas view-model: IBP is single-entity (no joins), so the canvas
+  // holds exactly one node card. Field checkboxes, KF (measure) tags, and the
+  // recommended tag map straight from the existing selection state; no field
+  // reads a ref, so the handlers wire through unchanged. ----
+  const canvasNodes = selectedEntity
+    ? [
+        {
+          entity: selectedEntity,
+          role: "primary",
+          fields: selectableProps.map((p) => ({
+            name: p.name,
+            type: p.type,
+            isKey: false,
+            checked: selected.includes(p.name),
+            recommended: autoSelected.has(p.name),
+            measure: p.role === "measure",
+          })),
+          onToggleField: (name) => toggleProp(name),
+          onSelectAll: selectAll,
+          onClear: deselectAll,
+          removable: false,
+        },
+      ]
+    : [];
 
-  // ---- Connection gate: don't render the explorer until metadata loads ----
-  if (connState === "idle") {
-    return (
-      <SapConnectPrompt
-        serviceName="SAP IBP"
-        description="Connect to your SAP IBP service to discover planning entities and available attributes/key figures."
-        onConnect={() => connect()}
-      />
-    );
-  }
+  // ---- Connection gate: show loading/error surfaces until metadata loads ----
+  // Metadata loads automatically on mount, so there is no idle "Connect" prompt
+  // and no "Connected → Continue to Build Dataset" confirmation. A successful
+  // connect() flips straight to the Build Dataset workspace below.
   if (connState === "connecting") {
     return <SapConnecting serviceName="SAP IBP" />;
   }
@@ -471,21 +528,7 @@ function IbpDatasetWorkspace({
     );
   }
 
-  // ---- Card 2: connected, not yet building — no entity browser yet ----
-  if (stage === "connect") {
-    return (
-      <SapConnectedSummary
-        serviceName="SAP IBP"
-        entitiesCount={entities.length}
-        onRefresh={() => connect({ refresh: true })}
-        onReconnect={reconnect}
-        onContinue={() => setStage("build")}
-        refreshing={refreshing}
-      />
-    );
-  }
-
-  // ---- Card 3: Build Dataset — entity/column workspace ----
+  // ---- Build Dataset — entity/column workspace ----
   return (
     <div className="ibpw-root">
     <SapConnectedBar
@@ -496,374 +539,57 @@ function IbpDatasetWorkspace({
       refreshing={refreshing}
       showImport={false}
     />
-    <div className="ibpw">
-      {/* ---------------- LEFT: Entity Explorer ---------------- */}
-      <div className="ibpw__col ibpw__col--left">
-        <section className="ibpw-panel">
-          <header className="ibpw-panel__head">
-            <h4 className="ibpw-panel__title">Entities</h4>
-            <span className="ibpw-spacer" />
-            {!entitiesLoading && (
-              <span className="ibpw-badge ibpw-badge--count">{entities.length}</span>
-            )}
-          </header>
-
-          <div className="ibpw-panel__body" style={{ paddingBottom: 6 }}>
-            <div className="ibpw-search">
-              <span className="ibpw-search__icon">⌕</span>
-              <input
-                className="ibpw-input"
-                type="text"
-                placeholder="Search entities…"
-                value={entityFilter}
-                onChange={(e) => setEntityFilter(e.target.value)}
-                disabled={entitiesLoading || entities.length === 0}
-              />
-            </div>
-          </div>
-
-          {recent.length > 0 && (
-            <div className="ibpw-recent">
-              <p className="ibpw-recent__label">Recently used</p>
-              <div className="ibpw-recent__row">
-                {recent.map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    className="ibpw-recent__chip"
-                    title={name}
-                    onClick={() => chooseEntity(name)}
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {entitiesLoading ? (
-            <div className="ibpw-skel-list">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="ibpw-skel ibpw-skel-row" />
-              ))}
-            </div>
-          ) : filteredEntities.length === 0 ? (
-            <p className="ibpw-empty-note">No entities match “{entityFilter}”.</p>
-          ) : (
-            <ul className="ibpw-entity-list">
-              {filteredEntities.map((e) => (
-                <li key={e.name}>
-                  <button
-                    type="button"
-                    className={`ibpw-entity ${selectedEntity === e.name ? "is-selected" : ""}`}
-                    onClick={() => chooseEntity(e.name)}
-                  >
-                    <span className="ibpw-entity__name">{e.name}</span>
-                    {e.entity_type && (
-                      <span className="ibpw-entity__type">{e.entity_type}</span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </div>
-
-      {/* ---------------- CENTER: Columns + Live Preview ---------------- */}
-      <div className="ibpw__col ibpw__col--center">
-        {/* Column explorer */}
-        <section className="ibpw-panel">
-          <header className="ibpw-panel__head">
-            <h4 className="ibpw-panel__title">Columns</h4>
-            {selectableProps.length > 0 && (
-              <span className="ibpw-badge ibpw-badge--accent">
-                {orderedSelected.length} / {selectableProps.length}
-              </span>
-            )}
-            <span className="ibpw-spacer" />
-            <button
-              type="button"
-              className="ibpw-chip-btn"
-              onClick={selectAll}
-              disabled={selectableProps.length === 0}
-            >
-              Select all
-            </button>
-            <button
-              type="button"
-              className="ibpw-chip-btn"
-              onClick={deselectAll}
-              disabled={orderedSelected.length === 0}
-            >
-              Clear
-            </button>
-          </header>
-
-          {!selectedEntity ? (
-            <div className="ibpw-state">
-              <span className="ibpw-state__icon">🗂️</span>
-              <span className="ibpw-state__title">No entity selected</span>
-              <span className="ibpw-state__desc">
-                Pick an entity from the explorer to browse its columns.
-              </span>
-            </div>
-          ) : entityLoading ? (
-            <div className="ibpw-skel-list">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="ibpw-skel ibpw-skel-row" />
-              ))}
-            </div>
-          ) : (
-            <>
-              {preselectUnmatched.length > 0 && (
-                <p className="ibpw-preselect-note">
-                  From the mapping sheet, these fields weren't found on this entity — select them
-                  manually if needed: {preselectUnmatched.join(", ")}
-                </p>
-              )}
-              <div className="ibpw-fields__toolbar">
-                <div className="ibpw-search">
-                  <span className="ibpw-search__icon">⌕</span>
-                  <input
-                    className="ibpw-input"
-                    type="text"
-                    placeholder="Search columns…"
-                    value={propFilter}
-                    onChange={(e) => setPropFilter(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="ibpw-fields__grid">
-                {filteredProps.map((p) => {
-                  const checked = selected.includes(p.name);
-                  return (
-                    <label
-                      key={p.name}
-                      className={`ibpw-field ${checked ? "is-checked" : ""}`}
-                      title={p.label || p.name}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleProp(p.name)}
-                        style={{ display: "none" }}
-                      />
-                      <span className="ibpw-field__box">{checked ? "✓" : ""}</span>
-                      <span className="ibpw-field__main">
-                        <span className="ibpw-field__name">{p.name}</span>
-                        <span className="ibpw-field__meta">
-                          {p.role === "measure" && (
-                            <span className="ibpw-badge ibpw-badge--kf">KF</span>
-                          )}
-                          {autoSelected.has(p.name) && (
-                            <span
-                              className="ibpw-badge ibpw-badge--accent"
-                              title="Recommended for Transformation Discovery"
-                            >
-                              Recommended
-                            </span>
-                          )}
-                          <span className="ibpw-type">
-                            {String(p.type || "").replace(/^Edm\./, "")}
-                          </span>
-                        </span>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </section>
-
-        {/* Live preview grid */}
-        <section className="ibpw-panel">
-          <header className="ibpw-panel__head">
-            <h4 className="ibpw-panel__title">Live Preview</h4>
-            <span className="ibpw-spacer" />
-            {previewStatus && (
-              <span className={`ibpw-badge ibpw-badge--${previewStatus.cls}`}>
-                <span className="ibpw-badge__dot" />
-                {previewStatus.text}
-              </span>
-            )}
-          </header>
-
-          {previewLoading ? (
-            <div className="ibpw-skel-grid">
-              {Array.from({ length: 7 }).map((_, i) => (
-                <div key={i} className="ibpw-skel ibpw-skel-grid__line" />
-              ))}
-            </div>
-          ) : previewError ? (
-            <div className="ibpw-state ibpw-state--error">
-              <span className="ibpw-state__icon">⚠️</span>
-              <span className="ibpw-state__title">Preview couldn’t load</span>
-              <span className="ibpw-state__desc">{previewError}</span>
-            </div>
-          ) : !selectedEntity ? (
-            <div className="ibpw-state">
-              <span className="ibpw-state__icon">📊</span>
-              <span className="ibpw-state__title">Nothing to preview yet</span>
-              <span className="ibpw-state__desc">
-                Select an entity and a few columns to see the first 10 rows.
-              </span>
-            </div>
-          ) : orderedSelected.length === 0 ? (
-            <div className="ibpw-state">
-              <span className="ibpw-state__icon">✅</span>
-              <span className="ibpw-state__title">Select at least one column</span>
-              <span className="ibpw-state__desc">
-                Choose columns above and the preview updates automatically.
-              </span>
-            </div>
-          ) : previewRows.length === 0 ? (
-            <div className="ibpw-state">
-              <span className="ibpw-state__icon">🈳</span>
-              <span className="ibpw-state__title">No rows returned</span>
-              <span className="ibpw-state__desc">
-                This selection returned no sample rows.
-              </span>
-            </div>
-          ) : (
-            <div className="ibpw-grid-wrap">
-              <table className="ibpw-grid">
-                <colgroup>
-                  {previewCols.map((c) => (
-                    <col key={c} style={{ width: colWidths[c] ?? DEFAULT_COL_WIDTH }} />
-                  ))}
-                </colgroup>
-                <thead>
-                  <tr>
-                    {previewCols.map((c) => {
-                      const active = sort.col === c;
-                      return (
-                        <th key={c} style={{ position: "sticky" }}>
-                          <div className="ibpw-grid__th-inner" onClick={() => toggleSort(c)}>
-                            <span className="ibpw-grid__th-label" title={c}>
-                              {c}
-                            </span>
-                            <span
-                              className={`ibpw-grid__sort ${active ? "" : "ibpw-grid__sort--idle"}`}
-                            >
-                              {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
-                            </span>
-                          </div>
-                          <span
-                            className="ibpw-grid__resize"
-                            onPointerDown={(e) => startResize(e, c)}
-                          />
-                        </th>
-                      );
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedRows.map((row, idx) => (
-                    <tr key={idx}>
-                      {previewCols.map((c) => (
-                        <td
-                          key={c}
-                          className={looksNumeric(row[c]) ? "ibpw-grid__num" : ""}
-                          title={row[c] != null ? String(row[c]) : ""}
-                        >
-                          {row[c] != null ? String(row[c]) : ""}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-
-      {/* ---------------- RIGHT: Dataset Summary ---------------- */}
-      <div className="ibpw__col ibpw__col--right">
-        <section className="ibpw-panel">
-          <header className="ibpw-panel__head">
-            <h4 className="ibpw-panel__title">Dataset Summary</h4>
-          </header>
-          <div className="ibpw-panel__body">
-            <div className="ibpw-summary__stats">
-              <div className="ibpw-stat">
-                <span className="ibpw-stat__label">Entity</span>
-                <span
-                  className={`ibpw-stat__value ${selectedEntity ? "" : "ibpw-stat__value--muted"}`}
-                  title={selectedEntity || undefined}
-                >
-                  {selectedEntity || "—"}
-                </span>
-              </div>
-              <div className="ibpw-stat">
-                <span className="ibpw-stat__label">Available columns</span>
-                <span className="ibpw-stat__value">
-                  {selectableProps.length || "—"}
-                </span>
-              </div>
-              <div className="ibpw-stat">
-                <span className="ibpw-stat__label">Selected columns</span>
-                <span className="ibpw-stat__value">{orderedSelected.length || 0}</span>
-              </div>
-              <div className="ibpw-stat">
-                <span className="ibpw-stat__label">Preview rows</span>
-                <span className="ibpw-stat__value">
-                  {previewRows.length || (selectedEntity ? 0 : "—")}
-                </span>
-              </div>
-              <div className="ibpw-stat">
-                <span className="ibpw-stat__label">Imported rows</span>
-                <span
-                  className={`ibpw-stat__value ${imported ? "" : "ibpw-stat__value--muted"}`}
-                >
-                  {imported ? importedCount?.toLocaleString?.() ?? importedCount : "Not yet"}
-                </span>
-              </div>
-            </div>
-
-            <div className={`ibpw-readiness ibpw-readiness--${readiness.cls}`}>
-              <span className="ibpw-readiness__icon">{readiness.icon}</span>
-              <span>{readiness.text}</span>
-            </div>
-
-            <button
-              type="button"
-              className="ibpw-btn"
-              onClick={importDataset}
-              disabled={fetching || orderedSelected.length === 0}
-            >
-              {fetching && <span className="ibpw-btn__spin" />}
-              {fetching
-                ? "Importing…"
-                : imported
-                  ? "Re-import dataset"
-                  : "Import dataset"}
-            </button>
-
-            {imported && !fetching && (
-              <button
-                type="button"
-                className="ibpw-btn ibpw-btn--ghost"
-                onClick={() => onOpenDetailedPreview?.()}
-              >
-                Open Detailed Preview
-              </button>
-            )}
-
-            {imported && !fetching && (
-              <p className="ibpw-summary__hint">
-                Dataset ready — open the detailed preview to inspect rows, or use{" "}
-                <strong>Continue</strong> below to proceed.
-              </p>
-            )}
-
-            {error && <p className="ibpw-summary__error">⚠️ {String(error)}</p>}
-          </div>
-        </section>
-      </div>
-    </div>
+      {prepopNote && (
+        <p className="ibpw-prepop-note">
+          ✨ {prepopNote}
+          <button type="button" className="ibpw-prepop-note__dismiss" onClick={() => setPrepopNote(null)}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      <JoinCanvas
+        serviceName="SAP IBP"
+        joinsEnabled={false}
+        entities={filteredEntities}
+        activeEntity={selectedEntity}
+        entityFilter={entityFilter}
+        onEntityFilterChange={setEntityFilter}
+        entityListOpen={entityListOpen}
+        onToggleEntityList={() => setEntityListOpen((o) => !o)}
+        onAddEntity={(name) => {
+          setEntityListOpen(false);
+          setEntityFilter("");
+          chooseEntity(name);
+        }}
+        fieldFilter={propFilter}
+        onFieldFilterChange={setPropFilter}
+        fieldListOpen={fieldListOpen}
+        onToggleFieldList={() => setFieldListOpen((o) => !o)}
+        nodes={canvasNodes}
+        nodesLoading={entityLoading}
+        preview={{
+          rows: sortedRows,
+          cols: previewCols,
+          loading: previewLoading,
+          error: previewError,
+          colWidths,
+          sort,
+          onToggleSort: toggleSort,
+          onStartResize: startResize,
+          defaultColWidth: DEFAULT_COL_WIDTH,
+        }}
+        readiness={readiness}
+        canImport={Boolean(selectedEntity) && orderedSelected.length > 0}
+        importing={fetching}
+        imported={imported}
+        onImport={importDataset}
+        onOpenDetailedPreview={onOpenDetailedPreview}
+      />
+      {error && (
+        <p className="ibpw-summary__error" style={{ marginTop: 12 }}>
+          ⚠️ {String(error)}
+        </p>
+      )}
     </div>
   );
 }

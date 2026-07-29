@@ -74,6 +74,57 @@ def test_sum_aggregate():
     assert result == {"x": 3, "y": 3}
 
 
+def test_aggregate_group_matches_group_by_and_aggregate_example():
+    # PRD example: group by Material/Plant/Date, sum Quantity.
+    df = pd.DataFrame({
+        "Material": ["A", "A", "A"],
+        "Plant": ["P1", "P1", "P2"],
+        "Date": ["2024-01-01", "2024-01-01", "2024-01-01"],
+        "Quantity": [10, 15, 5],
+    })
+    out = ops.aggregate_group(
+        df, None,
+        {"by": ["Material", "Plant", "Date"], "aggregations": [{"field": "Quantity", "func": "sum"}]},
+    )
+    result = {(r.Material, r.Plant, r.Date): r.Quantity for r in out.itertuples()}
+    assert result == {("A", "P1", "2024-01-01"): 25, ("A", "P2", "2024-01-01"): 5}
+
+
+def test_aggregate_group_multiple_aggregations_multiple_fields():
+    df = pd.DataFrame({"k": ["x", "x", "y"], "v": [1, 2, 3], "w": [10, 20, 30]})
+    out = ops.aggregate_group(
+        df, None,
+        {
+            "by": ["k"],
+            "aggregations": [
+                {"field": "v", "func": "sum"},
+                {"field": "w", "func": "average"},
+            ],
+        },
+    )
+    by_k = {r.k: (r.v, r.w) for r in out.itertuples()}
+    assert by_k == {"x": (3, 15.0), "y": (3, 30.0)}
+
+
+def test_aggregate_group_count_and_min_max():
+    df = pd.DataFrame({"k": ["x", "x", "x"], "v": [5, 1, 9]})
+    out = ops.aggregate_group(
+        df, None,
+        {
+            "by": ["k"],
+            "aggregations": [
+                {"field": "v", "func": "count"},
+            ],
+        },
+    )
+    assert out["v"].iloc[0] == 3
+
+    out_min = ops.aggregate_group(df, None, {"by": ["k"], "aggregations": [{"field": "v", "func": "min"}]})
+    assert out_min["v"].iloc[0] == 1
+    out_max = ops.aggregate_group(df, None, {"by": ["k"], "aggregations": [{"field": "v", "func": "max"}]})
+    assert out_max["v"].iloc[0] == 9
+
+
 def test_exact_match_numeric_and_string():
     src = pd.Series(["10", "abc", "5"])
     tgt = pd.Series(["10.0", "ABC", "6"])
@@ -115,6 +166,26 @@ def test_remove_leading_zeros():
     df = pd.DataFrame({"a": ["005006", "0", "000", "12"]})
     out = ops.remove_leading_zeros(df, "a", {})
     assert out["a"].tolist() == ["5006", "0", "0", "12"]
+
+
+def test_remove_leading_zeros_strips_the_embedded_numeric_run_not_the_whole_string():
+    # A naive str.lstrip("0") never fires here because the string doesn't
+    # START with a digit — the numeric run is embedded after an alpha prefix.
+    df = pd.DataFrame({"a": ["FG0006", "FG800"]})
+    out = ops.remove_leading_zeros(df, "a", {})
+    assert out["a"].tolist() == ["FG6", "FG800"]
+
+
+def test_remove_leading_zeros_min_width_stops_short_of_bare_digits():
+    df = pd.DataFrame({"a": ["FG0006", "FG0007", "0006"]})
+    out = ops.remove_leading_zeros(df, "a", {"min_width": 2})
+    assert out["a"].tolist() == ["FG06", "FG07", "06"]
+
+
+def test_remove_leading_zeros_min_width_all_zero_run():
+    df = pd.DataFrame({"a": ["FG000"]})
+    out = ops.remove_leading_zeros(df, "a", {"min_width": 2})
+    assert out["a"].tolist() == ["FG00"]
 
 
 def test_replace_value_is_literal_substring():

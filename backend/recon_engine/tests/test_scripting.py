@@ -222,10 +222,9 @@ def test_lifecycle_preview_approve_and_production_run():
         actor="tester",
     )
     summary = out["summary"]
-    assert summary["match"] == 1        # 123/1000 QTY 5
-    assert summary["mismatch"] == 1     # 456/2000 QTY 7 vs 8
-    assert summary["missing_in_target"] == 1  # 999/3000
-    assert summary["missing_in_source"] == 1  # 777/4000
+    assert summary["match"] == 1            # 123/1000 QTY 5
+    assert summary["quantity_mismatch"] == 1  # 456/2000 QTY 7 vs 8
+    assert summary["mismatch"] == 2          # 999/3000 + 777/4000 (one-sided keys)
     assert out["transformation"]["script_id"] == script.script_id
     assert out["transformation"]["generated_by"] == "fallback"
 

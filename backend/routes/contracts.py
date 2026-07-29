@@ -14,6 +14,7 @@ import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from backend.API_conn.connectors import registry
 from backend.recon_engine import service
 from backend.recon_engine.compiler import ContractCompilerError
 from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome
@@ -23,6 +24,9 @@ from backend.recon_engine.models.contract import DraftContract
 from backend.recon_engine.models.rules import BusinessRule, BusinessRules
 from backend.recon_engine.operations import list_operations
 from backend.recon_engine.storage import contract_store
+# The live entity lists the entity/join gating needs, loaded exactly once in one
+# place so this route and /entity-join/parse can never diverge on what "live" means.
+from backend.routes.entity_join import live_entity_catalog
 
 router = APIRouter(prefix="/api/recon", tags=["recon-contracts"])
 
@@ -123,12 +127,19 @@ async def parse_mapping_sheet(
 class IdentifyRequest(BaseModel):
     # The parsed-sheet payload from /mapping-sheet/parse (dict), or plain rows.
     mapping_sheet: dict[str, Any] | list[dict[str, Any]] = Field(default_factory=dict)
+    # Also identify which ENTITIES to fetch per side and how to join them. Opt-in
+    # because it costs a live $metadata read per configured connector: the
+    # entities must be gated against each connector's live-discovered list, so
+    # the lists have to be loaded. The wizard always asks for it; callers that
+    # only want connector/field identification can leave it off and pay nothing.
+    include_entities: bool = False
 
 
 @router.post("/mapping-sheet/identify")
 def identify_mapping_sheet(req: IdentifyRequest) -> dict[str, Any]:
-    """Infer which source/target connectors + candidate fields a parsed sheet
-    describes, constrained to the configured connector allow-list.
+    """Infer which source/target connectors, candidate fields, and (opt-in)
+    entities + join a parsed sheet describes, constrained to the configured
+    connector allow-list.
 
     The connector the LLM may pick is limited to configured & enabled
     connectors; anything else is returned as evidence-bearing ``unidentified``
@@ -136,9 +147,23 @@ def identify_mapping_sheet(req: IdentifyRequest) -> dict[str, Any]:
     result on any LLM failure rather than raising — the human then selects the
     connector manually. Field validation against live schema happens on the
     frontend once a side's connector has loaded its schema.
+
+    With ``include_entities``, the same single LLM call also returns each side's
+    entities/join, gated against that side's connector's live entity list. It
+    pre-populates the Join Builder canvas — it never bypasses it.
     """
     reset_llm_outcome()  # clear any prior provider outcome for this request
-    return _identify_systems(req.mapping_sheet)
+
+    catalog: dict[str, list[str]] | None = None
+    catalog_warnings: list[str] = []
+    if req.include_entities:
+        kinds = [c["kind"] for c in registry.get_configured_connectors()]
+        catalog, catalog_warnings = live_entity_catalog(kinds)
+
+    result = _identify_systems(req.mapping_sheet, catalog)
+    if catalog_warnings:
+        result["warnings"] = [*result.get("warnings", []), *catalog_warnings]
+    return result
 
 
 @router.post("/contracts/compile")

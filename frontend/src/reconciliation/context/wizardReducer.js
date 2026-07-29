@@ -10,6 +10,10 @@ export const WizardActions = {
   SET_COMPARISON_TYPE: "SET_COMPARISON_TYPE",
   SET_SHEET_IDENTIFICATION: "SET_SHEET_IDENTIFICATION",
   CLEAR_SHEET_IDENTIFICATION: "CLEAR_SHEET_IDENTIFICATION",
+  SET_ENTITY_JOIN_TEXT: "SET_ENTITY_JOIN_TEXT",
+  SET_ENTITY_JOIN_PARSED: "SET_ENTITY_JOIN_PARSED",
+  SET_ENTITY_JOIN_AREA: "SET_ENTITY_JOIN_AREA",
+  CLEAR_ENTITY_JOIN: "CLEAR_ENTITY_JOIN",
   CLEAR_FIELD_CHANGE_NOTICE: "CLEAR_FIELD_CHANGE_NOTICE",
   SET_MAPPING_MODE: "SET_MAPPING_MODE",
   SET_MAPPING_SHEET: "SET_MAPPING_SHEET",
@@ -118,6 +122,21 @@ export function createInitialWizardState() {
     // until a sheet is uploaded and identified; independent of the Step 4
     // mapping-sheet upload (which is preserved unchanged).
     sheetIdentification: null,
+    // Free-text entity/join fallback, authored per side on Step 1 for when the
+    // mapping sheet doesn't say which entities to fetch or how to join them.
+    // `text` is what the user typed; `parsed` is the validated spec from
+    // /api/recon/entity-join/parse. Kept per side and never merged, so one
+    // side's entities can't leak into the other's. A present `parsed` OVERRIDES
+    // the sheet-derived entities/join — typing it is a deliberate override.
+    // `planningArea` is the manual SAP IBP planning-area choice, used when
+    // neither the sheet nor the instruction names one. It matters because every
+    // planning area exposes the same planning levels under the same field
+    // names, so without it the right entity can't be told from the same entity
+    // in another area — and the wizard must never pick one on the user's behalf.
+    entityJoin: {
+      source: { text: "", parsed: null, planningArea: "" },
+      target: { text: "", parsed: null, planningArea: "" },
+    },
     transformationSpec: createInitialTransformationSpec(),
     reconciliation: null,
   };
@@ -271,7 +290,59 @@ export function wizardReducer(state, action) {
       return { ...state, sheetIdentification: action.identification };
 
     case WizardActions.CLEAR_SHEET_IDENTIFICATION:
+      // Only the sheet's own result is dropped. A typed entity/join instruction
+      // is the user's own input, independent of the sheet — it survives.
       return { ...state, sheetIdentification: null };
+
+    case WizardActions.SET_ENTITY_JOIN_TEXT: {
+      const { role, text } = action;
+      // Editing the text invalidates the spec parsed from the previous text —
+      // the canvas must never be pre-populated from a stale instruction. The
+      // planning area is a separate, deliberate choice and survives.
+      return {
+        ...state,
+        entityJoin: {
+          ...state.entityJoin,
+          [role]: { ...state.entityJoin?.[role], text, parsed: null },
+        },
+      };
+    }
+
+    case WizardActions.SET_ENTITY_JOIN_AREA: {
+      const { role, planningArea } = action;
+      // Changing the area changes which entity the instruction resolves to, so
+      // the previously parsed spec is stale — it must be re-resolved.
+      return {
+        ...state,
+        entityJoin: {
+          ...state.entityJoin,
+          [role]: { text: "", ...state.entityJoin?.[role], planningArea, parsed: null },
+        },
+      };
+    }
+
+    case WizardActions.SET_ENTITY_JOIN_PARSED: {
+      const { role, parsed } = action;
+      return {
+        ...state,
+        entityJoin: {
+          ...state.entityJoin,
+          [role]: { text: "", ...state.entityJoin?.[role], parsed },
+        },
+      };
+    }
+
+    case WizardActions.CLEAR_ENTITY_JOIN: {
+      const { role } = action;
+      // Clearing hands the side back to whatever the sheet derived (if any).
+      return {
+        ...state,
+        entityJoin: {
+          ...state.entityJoin,
+          [role]: { text: "", parsed: null, planningArea: "" },
+        },
+      };
+    }
 
     case WizardActions.CLEAR_FIELD_CHANGE_NOTICE:
       return {

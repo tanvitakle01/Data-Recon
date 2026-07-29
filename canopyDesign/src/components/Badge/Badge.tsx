@@ -14,6 +14,7 @@ const badgeVariants = cva(
         default: "bg-[var(--bcone-gray)]/15 text-[var(--bcone-charcoal)] border border-[var(--bcone-gray)]/30",
         teal: "bg-[var(--bcone-teal)]/15 text-[var(--bcone-teal)] border border-[var(--bcone-teal)]/30",
         purple: "bg-[var(--bcone-purple)]/15 text-[var(--bcone-purple)] border border-[var(--bcone-purple)]/30",
+        cyan: "bg-[var(--bcone-cyan)]/15 text-[var(--bcone-cyan)] border border-[var(--bcone-cyan)]/30",
       },
     },
     defaultVariants: {

@@ -18,11 +18,15 @@ exposes no update/delete; snapshot tables are append-only by construction.
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
 from backend.recon_engine.config import get_settings
+
+logger = logging.getLogger("recon.storage.db")
 
 # ── DDL ───────────────────────────────────────────────────────────────────────
 
@@ -156,6 +160,30 @@ CREATE TABLE IF NOT EXISTS attribute_mappings (
     UNIQUE (source_connector, target_connector, comparison_type,
             source_columns_key, target_columns_key)
 );
+
+-- Value-pair library: an approved source_value -> target_value pairing for one
+-- Key field pair (e.g. Material -> PRDID), discovered by the LLM-pairing
+-- pipeline and deterministically verified before it ever reaches PENDING here.
+-- Only APPROVED rows are consulted by the pipeline's library-first lookup;
+-- PENDING/REJECTED rows are audit trail only. Field mapping never lives here.
+CREATE TABLE IF NOT EXISTS value_pair_library (
+    id                  TEXT PRIMARY KEY,
+    source_connector    TEXT NOT NULL,
+    target_connector    TEXT NOT NULL,
+    source_field        TEXT NOT NULL,
+    target_field        TEXT NOT NULL,
+    source_value        TEXT NOT NULL,
+    target_value        TEXT NOT NULL,
+    ops_json            TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    evidence_json       TEXT NOT NULL,
+    added_by            TEXT NOT NULL,
+    added_on            TEXT NOT NULL,
+    reviewed_by         TEXT,
+    reviewed_on         TEXT,
+    version             INTEGER NOT NULL,
+    UNIQUE (source_connector, target_connector, source_field, target_field, source_value)
+);
 """
 
 _SHADOW_SCHEMA = """
@@ -181,6 +209,55 @@ def _connect(path) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_value_pair_library(conn: sqlite3.Connection) -> None:
+    """One-time migration for a database predating the single-op -> ordered-
+    chain refactor.
+
+    The value-pairing pipeline used to store one ``op`` + ``params_json`` per
+    row; it now stores an ORDERED CHAIN as a single ``ops_json`` array (see
+    ``storage.value_pair_store``). ``CREATE TABLE IF NOT EXISTS`` never alters
+    an existing table, so a store created before this change keeps its old
+    columns and lacks ``ops_json`` forever — every insert then fails with
+    "table value_pair_library has no column named ops_json". Rebuilds the
+    table (works on any SQLite version, unlike ``ALTER TABLE ... DROP
+    COLUMN``) rather than just adding ``ops_json`` alongside the legacy
+    columns, which would leave their NOT NULL constraints in place and break
+    every future insert (the current INSERT never populates them).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(value_pair_library)")}
+    if not cols or "ops_json" in cols:
+        return  # table doesn't exist yet, or already on the current schema
+    if "op" not in cols or "params_json" not in cols:
+        return  # unrecognized shape - nothing safe to migrate automatically
+
+    conn.execute("ALTER TABLE value_pair_library RENAME TO value_pair_library_old")
+    conn.executescript(_MAIN_SCHEMA)  # recreates value_pair_library on the current DDL
+
+    rows = conn.execute("SELECT * FROM value_pair_library_old").fetchall()
+    for row in rows:
+        params = json.loads(row["params_json"]) if row["params_json"] else {}
+        ops_json = json.dumps([{"op": row["op"], "params": params}])
+        conn.execute(
+            """INSERT INTO value_pair_library
+               (id, source_connector, target_connector, source_field, target_field,
+                source_value, target_value, ops_json, status, evidence_json,
+                added_by, added_on, reviewed_by, reviewed_on, version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["id"], row["source_connector"], row["target_connector"],
+                row["source_field"], row["target_field"], row["source_value"],
+                row["target_value"], ops_json, row["status"], row["evidence_json"],
+                row["added_by"], row["added_on"], row["reviewed_by"], row["reviewed_on"],
+                row["version"],
+            ),
+        )
+    conn.execute("DROP TABLE value_pair_library_old")
+    logger.info(
+        "Migrated value_pair_library: %d row(s) moved from legacy (op, params_json) to ops_json.",
+        len(rows),
+    )
+
+
 def init_storage() -> None:
     """Create store directories and both databases with their schemas.
 
@@ -191,6 +268,7 @@ def init_storage() -> None:
 
     with _connect(settings.main_db_path) as conn:
         conn.executescript(_MAIN_SCHEMA)
+        _migrate_value_pair_library(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

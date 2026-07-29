@@ -20,8 +20,9 @@ import BeforeAfterCurtain from "./BeforeAfterCurtain";
 import {
   PHASES,
   addStep,
-  groupByPhase,
   operationsToSteps,
+  orderedSteps,
+  phaseIndexForKind,
   removeStep,
   reorderWithinPhase,
   serializeOperations,
@@ -61,7 +62,12 @@ const PARAM_META = {
     options: ["non_empty", "numeric", "non_numeric", "matches"],
   },
   keep: { type: "select", label: "Keep", options: ["first", "last"] },
+  aggregations: { type: "aggregations", label: "Aggregations (field + function)" },
 };
+
+// aggregate_group's per-row aggregation function choices — the same
+// sum/count/average/min/max vocabulary the backend's AggregationType enum uses.
+const AGG_FUNCS = ["sum", "count", "average", "min", "max"];
 
 function MultiColumnSelect({ columns, value, onChange }) {
   const selected = Array.isArray(value) ? value : [];
@@ -117,6 +123,54 @@ function KvEditor({ value, onChange }) {
   );
 }
 
+// aggregate_group's "aggregations" param: one or more {field, func} rows —
+// the Aggregate half of "Aggregate & Group" (Group By is just the existing
+// `by` param, rendered by MultiColumnSelect above).
+function AggregationSpecEditor({ columns, value, onChange }) {
+  const rows = Array.isArray(value) ? value : [];
+  const setRow = (i, patch) =>
+    onChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const add = () => onChange([...rows, { field: "", func: "sum" }]);
+  const remove = (i) => onChange(rows.filter((_, idx) => idx !== i));
+  return (
+    <div>
+      {rows.map((row, i) => (
+        <div key={i} className={styles.kvRow}>
+          <select
+            className={styles.select}
+            value={row.field ?? ""}
+            onChange={(e) => setRow(i, { field: e.target.value })}
+          >
+            <option value="">— select column —</option>
+            {columns.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <select
+            className={styles.select}
+            value={row.func ?? "sum"}
+            onChange={(e) => setRow(i, { func: e.target.value })}
+          >
+            {AGG_FUNCS.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+          <button type="button" className={styles.iconBtn} onClick={() => remove(i)} title="Remove">
+            ✕
+          </button>
+        </div>
+      ))}
+      <Button type="button" variant="outline" size="sm" onClick={add}>
+        + Add aggregation
+      </Button>
+    </div>
+  );
+}
+
 function ParamField({ name, value, columns, onChange }) {
   const meta = PARAM_META[name] ?? { type: "text", label: name };
   const set = (v) => onChange(name, v);
@@ -134,6 +188,14 @@ function ParamField({ name, value, columns, onChange }) {
       <div className={styles.field}>
         <label className={styles.fieldLabel}>{meta.label}</label>
         <KvEditor value={value} onChange={set} />
+      </div>
+    );
+  }
+  if (meta.type === "aggregations") {
+    return (
+      <div className={styles.field}>
+        <label className={styles.fieldLabel}>{meta.label}</label>
+        <AggregationSpecEditor columns={columns} value={value} onChange={set} />
       </div>
     );
   }
@@ -205,6 +267,10 @@ export default function RecipeEditor({
   const [pulse, setPulse] = useState(false);
   const [draftDesc, setDraftDesc] = useState("");
   const [drafting, setDrafting] = useState(false);
+  // The manual operation palette starts collapsed so the ~20 ops don't confront
+  // the user up front — Draft Steps (AI) is the primary entry point, and the
+  // library is opened on demand (its toggle or "+ Add Step").
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const dragRef = useRef(null); // { id, phaseKey, index }
   const prevFpRef = useRef(null);
   const timerRef = useRef(null);
@@ -226,7 +292,18 @@ export default function RecipeEditor({
   }, []);
 
   const byName = useMemo(() => new Map(catalogue.map((c) => [c.name, c])), [catalogue]);
-  const groups = useMemo(() => groupByPhase(steps), [steps]);
+  // Flat, execution-ordered recipe with each step's phase + within-phase index
+  // attached — the list is displayed 1..N, but drag-reorder still scopes to the
+  // step's own phase (cross-phase drops snap back).
+  const orderedList = useMemo(() => {
+    const counters = {};
+    return orderedSteps(steps).map((step) => {
+      const phaseKey = PHASES[phaseIndexForKind(step.kind)]?.key ?? "transform";
+      const phaseIdx = counters[phaseKey] ?? 0;
+      counters[phaseKey] = phaseIdx + 1;
+      return { step, phaseKey, phaseIdx };
+    });
+  }, [steps]);
   const selected = steps.find((s) => s.id === selectedId) ?? null;
   const selectedEntry = selected ? byName.get(selected.op) : null;
 
@@ -331,96 +408,18 @@ export default function RecipeEditor({
 
   return (
     <div className={styles.editor}>
-      {/* ── Left column (40%): step list + palette, full height, scrollable ── */}
+      {/* ── Left column (40%): draft (primary) · library · ordered recipe ── */}
       <div className={[styles.pane, styles.paneSteps].join(" ")}>
-        <p className={styles.paneTitle}>Recipe</p>
-        {PHASES.map((phase) => (
-          <div key={phase.key} className={styles.phase}>
-            <div className={styles.phaseHead}>
-              <span className={styles.phaseLabel}>{phase.label}</span>
-              <span className={styles.phaseHint}>{phase.hint}</span>
-            </div>
-            {groups[phase.key].length === 0 && (
-              <p className={styles.emptyPhase}>No steps — add one below.</p>
-            )}
-            {groups[phase.key].map((step, idx) => (
-              <div
-                key={step.id}
-                className={[
-                  styles.step,
-                  selectedId === step.id ? styles.stepSelected : "",
-                  step.enabled ? "" : styles.stepDisabled,
-                ].join(" ")}
-                draggable
-                onDragStart={() => onDragStart(step.id, phase.key, idx)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => onDrop(phase.key, idx)}
-                onClick={() => setSelectedId(step.id)}
-              >
-                <span className={styles.grip} title="Drag to reorder within this phase">
-                  ⠿
-                </span>
-                <div className={styles.stepBody}>
-                  <div className={styles.stepName}>{step.op}</div>
-                  <div className={styles.stepMeta}>
-                    {step.field ? step.field : "—"}
-                    {step.params && Object.keys(step.params).length
-                      ? ` · ${Object.keys(step.params).length} param(s)`
-                      : ""}
-                  </div>
-                </div>
-                <div className={styles.stepActions}>
-                  <button
-                    type="button"
-                    className={styles.iconBtn}
-                    title={step.enabled ? "Disable step" : "Enable step"}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSteps(toggleStep(steps, step.id));
-                    }}
-                  >
-                    {step.enabled ? "◉" : "○"}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.iconBtn}
-                    title="Remove step"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRemove(step.id);
-                    }}
-                  >
-                    🗑
-                  </button>
-                </div>
-              </div>
-            ))}
-            {/* palette for this phase's kind */}
-            <div className={styles.palette}>
-              {catalogue
-                .filter((c) => c.kind === phase.kind)
-                .map((entry) => (
-                  <button
-                    key={entry.name}
-                    type="button"
-                    className={styles.paletteChip}
-                    title={entry.description}
-                    onClick={() => handleAdd(entry)}
-                  >
-                    + {entry.name}
-                  </button>
-                ))}
-            </div>
-          </div>
-        ))}
+        <p className={styles.paneTitle}>Transformation Recipe</p>
 
+        {/* Primary entry point — always visible. */}
         {onDraftSteps && (
-          <div className={styles.field} style={{ marginTop: 12 }}>
-            <label className={styles.fieldLabel}>Draft steps from a description (optional AI)</label>
+          <div className={styles.field}>
+            <label className={styles.fieldLabel}>Draft Steps (Optional AI)</label>
             <input
               className={styles.input}
               value={draftDesc}
-              placeholder="e.g. remove leading zeros from Plant, then prefix PL"
+              placeholder="e.g. Remove leading zeros from Plant, then prefix PL"
               onChange={(e) => setDraftDesc(e.target.value)}
             />
             <div style={{ marginTop: 6 }}>
@@ -431,12 +430,126 @@ export default function RecipeEditor({
                 onClick={runDraftSteps}
                 disabled={drafting || !draftDesc.trim()}
               >
-                {drafting ? "Drafting…" : "Draft steps"}
+                {drafting ? "Drafting…" : "Draft Steps"}
               </Button>
             </div>
             <p className={styles.hint}>Drafted steps are added below for you to edit — nothing is auto-applied.</p>
           </div>
         )}
+
+        {/* Collapsible manual palette — all ops live here, grouped by phase. */}
+        <div className={styles.library}>
+          <button
+            type="button"
+            className={styles.libraryToggle}
+            aria-expanded={libraryOpen}
+            onClick={() => setLibraryOpen((v) => !v)}
+          >
+            <span className={styles.caret}>{libraryOpen ? "▼" : "▶"}</span>
+            Select from Transformation Library
+          </button>
+          {libraryOpen && (
+            <div className={styles.libraryBody}>
+              {PHASES.map((phase) => {
+                const entries = catalogue.filter((c) => c.kind === phase.kind);
+                if (!entries.length) return null;
+                return (
+                  <div key={phase.key} className={styles.phase}>
+                    <div className={styles.phaseHead}>
+                      <span className={styles.phaseLabel}>{phase.label}</span>
+                      <span className={styles.phaseHint}>{phase.hint}</span>
+                    </div>
+                    <div className={styles.palette}>
+                      {entries.map((entry) => (
+                        <button
+                          key={entry.name}
+                          type="button"
+                          className={styles.paletteChip}
+                          title={entry.description}
+                          onClick={() => handleAdd(entry)}
+                        >
+                          + {entry.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Current recipe: single ordered list — execution order, no phase split. */}
+        <div className={styles.recipe}>
+          <div className={styles.phaseHead}>
+            <span className={styles.phaseLabel}>Current Recipe</span>
+          </div>
+          {orderedList.length === 0 && (
+            <p className={styles.emptyPhase}>
+              No steps yet — draft from a description or add from the library.
+            </p>
+          )}
+          {orderedList.map(({ step, phaseKey, phaseIdx }, n) => (
+            <div
+              key={step.id}
+              className={[
+                styles.step,
+                selectedId === step.id ? styles.stepSelected : "",
+                step.enabled ? "" : styles.stepDisabled,
+              ].join(" ")}
+              draggable
+              onDragStart={() => onDragStart(step.id, phaseKey, phaseIdx)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => onDrop(phaseKey, phaseIdx)}
+              onClick={() => setSelectedId(step.id)}
+            >
+              <span className={styles.stepNum}>{n + 1}</span>
+              <span className={styles.grip} title="Drag to reorder (within its phase)">
+                ⠿
+              </span>
+              <div className={styles.stepBody}>
+                <div className={styles.stepName}>{step.op}</div>
+                <div className={styles.stepMeta}>
+                  {step.field ? step.field : "—"}
+                  {step.params && Object.keys(step.params).length
+                    ? ` · ${Object.keys(step.params).length} param(s)`
+                    : ""}
+                </div>
+              </div>
+              <div className={styles.stepActions}>
+                <button
+                  type="button"
+                  className={styles.iconBtn}
+                  title={step.enabled ? "Disable step" : "Enable step"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSteps(toggleStep(steps, step.id));
+                  }}
+                >
+                  {step.enabled ? "◉" : "○"}
+                </button>
+                <button
+                  type="button"
+                  className={styles.iconBtn}
+                  title="Remove step"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRemove(step.id);
+                  }}
+                >
+                  🗑
+                </button>
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            className={styles.addStepBtn}
+            onClick={() => setLibraryOpen(true)}
+          >
+            + Add Step
+          </button>
+        </div>
       </div>
 
       {/* ── Right column (60%): config (top) stacked over preview (bottom) ── */}
@@ -444,7 +557,7 @@ export default function RecipeEditor({
       {/* Top panel: selected-step configuration */}
       <div className={[styles.pane, styles.paneConfig].join(" ")}>
         <p className={styles.paneTitle}>Step Configuration</p>
-        {!selected && <p className={styles.hint}>Select a step to configure it.</p>}
+        {!selected && <p className={styles.hint}>Select a step to configure.</p>}
         {selected && selectedEntry && (
           <div>
             <div className={styles.field}>
@@ -495,14 +608,18 @@ export default function RecipeEditor({
       <div className={[styles.pane, styles.panePreview, pulse ? styles.previewPulse : ""].join(" ")}>
         <p className={styles.paneTitle}>
           Live Preview
-          {selected ? " (up to selected step)" : ""}
+          {selected && steps.length ? " (up to selected step)" : ""}
         </p>
-        {!sourceSample.length && (
-          <p className={styles.hint}>Load source data to preview the recipe.</p>
+        {steps.length === 0 ? (
+          <p className={styles.hint}>Preview will appear after adding your first transformation.</p>
+        ) : (
+          !sourceSample.length && (
+            <p className={styles.hint}>Load source data to preview the recipe.</p>
+          )
         )}
-        {previewLoading && <p className={styles.hint}>Building preview…</p>}
-        {previewError && <p className={styles.exprError}>⚠️ {previewError}</p>}
-        {preview && !previewError && (
+        {steps.length > 0 && previewLoading && <p className={styles.hint}>Building preview…</p>}
+        {steps.length > 0 && previewError && <p className={styles.exprError}>⚠️ {previewError}</p>}
+        {steps.length > 0 && preview && !previewError && (
           <>
             <div className={styles.previewMeta}>
               {preview.shadow?.total_rows ?? 0} shadow rows

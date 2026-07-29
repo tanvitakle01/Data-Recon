@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../../services/api";
 import {
-  SapConnectPrompt,
   SapConnecting,
   SapConnectError,
   SapConnectedBar,
-  SapConnectedSummary,
 } from "./SapConnectionGate";
+import JoinCanvas from "./JoinCanvas";
 import {
   S4_TRANSFORMATION_DISCOVERY_FIELDS,
   recommendedFieldsFor,
@@ -35,7 +34,27 @@ function looksNumeric(v) {
   return s !== "" && !Number.isNaN(Number(s));
 }
 
-const shortName = (e) => (e && e.startsWith("A_") ? e.slice(2) : e);
+// Keep only key pairs whose fields exist on both entities' live schemas. Used
+// for join keys that came from a mapping sheet / typed instruction: the entity
+// names were existence-gated server-side, and the key fields get the same
+// treatment here, where the live property lists are known.
+function validateKeyPairs(pairs, leftMeta, rightMeta) {
+  if (!Array.isArray(pairs) || pairs.length === 0) return { valid: [], dropped: [] };
+  const leftNames = new Set((leftMeta?.properties || []).map((p) => p.name));
+  const rightNames = new Set((rightMeta?.properties || []).map((p) => p.name));
+  const valid = [];
+  const dropped = [];
+  for (const pair of pairs) {
+    const left = String(pair?.left ?? "").trim();
+    const right = String(pair?.right ?? "").trim();
+    if (left && right && leftNames.has(left) && rightNames.has(right)) {
+      valid.push({ left, right });
+    } else if (left || right) {
+      dropped.push(left === right ? left : `${left || "?"} = ${right || "?"}`);
+    }
+  }
+  return { valid, dropped };
+}
 
 function S4DatasetWorkspace({
   onLoaded,
@@ -43,25 +62,27 @@ function S4DatasetWorkspace({
   onStageChange,
   onOpenDetailedPreview,
   preselectFields = [],
+  prepopulate = null,
 }) {
   // ---- connection stage ----
-  // Metadata is no longer fetched on mount; the user must explicitly connect.
-  // "idle" → connect prompt, "connecting" → skeletons, "error" → retry card,
-  // "connected" → the workspace. A pre-existing dataset (navigating back into
-  // the step) auto-reconnects so the explorer is usable again.
-  // Returning users (a dataset is already in wizard state) start in the
-  // connecting state so they see skeletons, not a flash of the connect prompt,
-  // before the auto-reconnect effect reloads metadata.
-  const [connState, setConnState] = useState(dataset ? "connecting" : "idle");
+  // Metadata is fetched automatically on mount — once the user confirms the
+  // SAP S/4HANA connector there is no separate "Connect & Load Metadata" click.
+  // "connecting" → skeletons, "error" → retry card, "connected" → the
+  // workspace. Everyone (fresh or returning) starts in the connecting state so
+  // they see loading skeletons, never a flash of an empty/prompt screen, while
+  // the connect-on-mount effect discovers entities and relationships.
+  const [connState, setConnState] = useState("connecting");
   const [connError, setConnError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // ---- card stage (progressive disclosure within the workspace) ----
-  // "connect" → connected-summary only (Card 2), "build" → the full
-  // entity/join/column workspace (Card 3). The imported data grid is no longer
-  // a stage here — it lives on a dedicated preview page. Initialized from
-  // `dataset` (not an effect) so a returning user with an already-imported
-  // dataset lands on the Build card (with "Open Detailed Preview" available).
+  // "connect" → still connecting/loading metadata (drives the sub-stage pill),
+  // "build" → the full entity/join/column workspace (Card 3). There is no
+  // longer a "Connected → Continue to Build Dataset" stopping point: connect()
+  // flips straight to "build" on success, so a successful connection lands the
+  // user directly in the Join Builder. The imported data grid is not a stage
+  // here — it lives on a dedicated preview page. A returning user with an
+  // already-imported dataset starts on "build" (with "Open Detailed Preview").
   const [stage, setStage] = useState(dataset ? "build" : "connect");
   useEffect(() => {
     onStageChange?.(stage);
@@ -70,9 +91,14 @@ function S4DatasetWorkspace({
 
   // ---- entities ----
   const [entities, setEntities] = useState([]);
-  const [entitiesLoading, setEntitiesLoading] = useState(false);
+  // Entity (re)load flag — the connect/refresh spinner is surfaced by
+  // SapConnectedBar's `refreshing`, so only the setter is needed here.
+  const [, setEntitiesLoading] = useState(false);
   const [entityFilter, setEntityFilter] = useState("");
-  const [recent, setRecent] = useState([]);
+
+  // ---- canvas UI (collapsible inputs; purely presentational) ----
+  const [entityListOpen, setEntityListOpen] = useState(false);
+  const [fieldListOpen, setFieldListOpen] = useState(false);
 
   // ---- primary + joins ----
   const [primaryEntity, setPrimaryEntity] = useState("");
@@ -86,12 +112,24 @@ function S4DatasetWorkspace({
   // separately so the "Recommended" badge only marks the supporting fields,
   // not the trigger field itself, and clears once a field is deselected.
   const [autoSelectedByEntity, setAutoSelectedByEntity] = useState({});
+  // entity -> Set(propName) currently designated a KEY (shown with a KEY tag
+  // and excluded from the dataset by default). Seeded from the entity's own
+  // OData keys + this join's predicate keys when the entity/join is added,
+  // but from then on it's fully user-owned — the KEY tag is a toggle button,
+  // so any field can be marked/unmarked as a key regardless of its SAP
+  // metadata origin.
+  const [keyFieldsByEntity, setKeyFieldsByEntity] = useState({});
   const [propFilter, setPropFilter] = useState("");
   // Proposals already auto-selected by a match scan — so a join-driven re-scan
   // only auto-selects fields it NEWLY resolved, and never re-adds a field the
   // user has since manually deselected. (preselectUnmatched itself is derived
   // below, not stored.)
   const matchScanRef = useRef(new Set());
+
+  // Plain-language note describing what the sheet / Step-1 instruction
+  // pre-placed on the canvas (and anything it named that couldn't be used), so
+  // the pre-population is visible rather than silent.
+  const [prepopNote, setPrepopNote] = useState(null);
 
   // ---- preview ----
   const [previewRows, setPreviewRows] = useState([]);
@@ -128,6 +166,9 @@ function S4DatasetWorkspace({
       }
       setEntities(p.entities ?? []);
       setConnState("connected");
+      // Metadata loaded — go straight to the Build Dataset (Join Builder)
+      // screen. No intermediate "Continue to Build Dataset" confirmation.
+      setStage("build");
     } catch (err) {
       setConnError(err?.message || String(err));
       setConnState("error");
@@ -137,8 +178,10 @@ function S4DatasetWorkspace({
     }
   }, []);
 
-  // Reconnect: discard the loaded metadata/join spec and return to the
-  // connect prompt for a clean start.
+  // Reconnect: discard the loaded metadata/join spec and immediately
+  // re-establish the connection from scratch. connect() drops the workspace
+  // into the connecting (skeleton) state and flips back to "build" on success,
+  // so there is no separate connect prompt to click through.
   const reconnect = useCallback(() => {
     setEntities([]);
     setPrimaryEntity("");
@@ -153,21 +196,22 @@ function S4DatasetWorkspace({
     setPreviewError(null);
     setError(null);
     setConnError(null);
-    setConnState("idle");
     setStage("connect");
-  }, []);
+    connect();
+  }, [connect]);
 
-  // A dataset already in wizard state means the user connected before and is
-  // navigating back — transparently reconnect so the explorer isn't empty.
+  // Connect + discover metadata automatically as soon as the workspace mounts
+  // (i.e. right after the user confirms the SAP S/4HANA connector). Applies to
+  // both a fresh selection and a returning user navigating back into the step —
+  // either way the explorer is never left empty and no manual connect click is
+  // required.
   const didInit = useRef(false);
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
-    // Run-once fetch-on-mount for the returning-user case; connect() sets the
-    // connecting state before awaiting the metadata request.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (dataset) connect();
-  }, [dataset, connect]);
+    // Run-once fetch-on-mount; connect() already set the connecting state.
+    connect();
+  }, [connect]);
 
   const filteredEntities = useMemo(() => {
     const q = entityFilter.trim().toLowerCase();
@@ -189,11 +233,16 @@ function S4DatasetWorkspace({
   };
 
   // ---- choose primary entity ----
+  // Returns `{ meta, relationships }` for the chosen entity so a caller that
+  // needs to act on them immediately (canvas pre-population, which adds joins
+  // right after) can use the freshly-loaded values instead of the state it just
+  // set, which isn't readable until the next render.
   const choosePrimary = async (entity) => {
     setPrimaryEntity(entity);
     setJoins([]);
     setSelectedByEntity({});
     setAutoSelectedByEntity({});
+    setKeyFieldsByEntity({});
     setRelationships([]);
     setPreviewRows([]);
     setPreviewCols([]);
@@ -202,9 +251,8 @@ function S4DatasetWorkspace({
     setColWidths({});
     setImported(false);
     setError(null);
-    if (!entity) return;
+    if (!entity) return { meta: null, relationships: [] };
 
-    setRecent((prev) => [entity, ...prev.filter((n) => n !== entity)].slice(0, 5));
     setPrimaryLoading(true);
     try {
       const [meta, relRes] = await Promise.all([
@@ -217,8 +265,10 @@ function S4DatasetWorkspace({
       // that proposed nothing matching this entity, nothing is auto-selected and
       // the user picks columns explicitly. (S/4 TABLE-FIELD forms like VBAP-MATNR
       // frequently won't match OData semantic names; unmatched proposals are
-      // surfaced rather than guessed.) Entity keys are NEVER seeded here (they're
-      // join plumbing, added to the fetch by the backend on its own).
+      // surfaced rather than guessed.) Entity keys are NEVER seeded into the
+      // dataset selection here — they're join plumbing, not reconciliation
+      // data, so they default to excluded (Fix 1). They're still tagged KEY
+      // and individually toggleable, in or out, like any other field.
       const propNames = meta.properties.map((p) => p.name);
       let primarySelection = [];
       if (preselectFields.length > 0) {
@@ -231,10 +281,12 @@ function S4DatasetWorkspace({
         matchScanRef.current = new Set();
       }
       // Drop any structural key (entity key) that slipped into the base
-      // selection — keys are excluded from data columns generally (Fix 1).
+      // selection, and seed this entity's KEY tags from its own OData keys
+      // (join-predicate keys are added later, per join, in addJoin).
       const keyNames = new Set(meta.properties.filter((p) => p.is_key).map((p) => p.name));
       for (const k of meta.keys || []) keyNames.add(k);
       primarySelection = primarySelection.filter((n) => !keyNames.has(n));
+      setKeyFieldsByEntity({ [entity]: keyNames });
 
       // Widen with MDT auxiliary evidence fields: for each trigger field present
       // (Material / ProductionPlant), auto-add its supporting attributes that
@@ -249,9 +301,12 @@ function S4DatasetWorkspace({
       setSelectedByEntity({ [entity]: selection });
       setAutoSelectedByEntity({ [entity]: autoAdded });
       const rp = relRes.data ?? {};
-      setRelationships(rp.success ? rp.relationships ?? [] : []);
+      const rels = rp.success ? rp.relationships ?? [] : [];
+      setRelationships(rels);
+      return { meta, relationships: rels };
     } catch (err) {
       setError(`Failed to load entity metadata: ${err?.message || err}`);
+      return { meta: null, relationships: [] };
     } finally {
       setPrimaryLoading(false);
     }
@@ -260,61 +315,87 @@ function S4DatasetWorkspace({
   // ---- joins ----
   const joinedEntities = useMemo(() => joins.map((j) => j.entity), [joins]);
 
-  // A field is a STRUCTURAL key — excluded from the selectable data-column list
-  // AND never auto-selected as a data column — when it is EITHER:
-  //   (a) an entity KEY (`is_key`, the metadata's own key tag, distinct from
-  //       the business Key/Compare roles), on ANY entity; or
-  //   (b) used as a join predicate (`joins[].keys[].left/right`) — the primary
-  //       side contributes its `.left` keys, each joined entity its `.right`.
-  // This is a GENERAL rule (no hardcoded per-entity list): entity keys such as
-  // SalesOrder/SalesOrderItem are join plumbing, not data a user reconciles.
-  // The keys stay in `entityMeta`, so the Join Builder dropdowns (which read
-  // entityMeta directly) still see them.
-  const structuralKeyNamesByEntity = useMemo(() => {
-    const map = {};
-    const add = (entity, name) => {
-      if (!entity || !name) return;
-      (map[entity] ??= new Set()).add(name);
-    };
-    // (a) entity keys, for every entity whose metadata is loaded.
-    for (const [entity, meta] of Object.entries(entityMeta)) {
-      for (const p of meta.properties || []) if (p.is_key) add(entity, p.name);
-      for (const k of meta.keys || []) add(entity, k);
-    }
-    // (b) join-predicate fields.
-    for (const j of joins) {
-      for (const k of j.keys || []) {
-        add(j.entity, k.right);
-        add(primaryEntity, k.left);
-      }
-    }
-    return map;
-  }, [joins, primaryEntity, entityMeta]);
-
+  // Every selectable DATA column for this entity — i.e. every property that
+  // isn't currently tagged KEY (`keyFieldsByEntity`). Keys default out of the
+  // dataset (they're join plumbing, not reconciliation data), but the KEY tag
+  // itself is a user toggle (see `toggleKeyField`), so this set — and
+  // therefore what "Select All"/"Clear All" cover — changes as the user
+  // marks/unmarks fields as keys.
   const dataFieldNames = useCallback(
     (entity) => {
-      const excluded = structuralKeyNamesByEntity[entity] ?? new Set();
+      const excluded = keyFieldsByEntity[entity] ?? new Set();
       return (entityMeta[entity]?.properties || [])
         .map((p) => p.name)
         .filter((n) => !excluded.has(n));
     },
-    [structuralKeyNamesByEntity, entityMeta]
+    [keyFieldsByEntity, entityMeta]
   );
 
-  const addJoin = async (rel) => {
-    if (rel.target_entity === primaryEntity || joinedEntities.includes(rel.target_entity)) return;
+  // Mark/unmark a field as a KEY. Marking a field as key also removes it from
+  // the dataset selection — keys aren't included in the output by default,
+  // even if the user had it checked in as a plain data column a moment ago.
+  // Unmarking has no side effect on selection (a demoted field just becomes
+  // an ordinary field, defaulting to whatever it already was).
+  const toggleKeyField = (entity, name) => {
+    invalidate();
+    setKeyFieldsByEntity((prev) => {
+      const cur = new Set(prev[entity] || []);
+      if (cur.has(name)) {
+        cur.delete(name);
+      } else {
+        cur.add(name);
+        setSelectedByEntity((selPrev) => {
+          const selCur = selPrev[entity] || [];
+          if (!selCur.includes(name)) return selPrev;
+          return { ...selPrev, [entity]: selCur.filter((n) => n !== name) };
+        });
+      }
+      return { ...prev, [entity]: cur };
+    });
+  };
+
+  // `overrides` lets a sheet-derived / typed instruction pre-place a join
+  // (see the pre-population effect). It changes ONLY what was actually stated:
+  // an unstated type or key set falls through to this function's existing
+  // default — left join, keys mirrored from the relationship's suggested keys —
+  // so there is exactly one default policy, and it lives here.
+  // `primary`/`primaryMeta` let a caller pass the primary it just chose, whose
+  // state isn't readable yet on this tick.
+  const addJoin = async (rel, { type, keys, primary, primaryMeta } = {}) => {
+    const primaryName = primary ?? primaryEntity;
+    if (!rel?.target_entity || rel.target_entity === primaryName) return;
+    if (joinedEntities.includes(rel.target_entity)) return;
     invalidate();
     try {
       const meta = await loadEntityMeta(rel.target_entity);
-      const suggestedKeys = new Set(rel.suggested_keys || []);
-      setJoins((prev) => [
-        ...prev,
-        {
-          entity: rel.target_entity,
-          type: "left",
-          keys: (rel.suggested_keys || []).map((k) => ({ left: k, right: k })),
-        },
-      ]);
+      const leftMeta = primaryMeta ?? entityMeta[primaryName];
+      const defaultKeys = (rel.suggested_keys || []).map((k) => ({ left: k, right: k }));
+      // Stated keys must name fields that actually exist on both entities —
+      // same "validate, never invent" rule the entity names went through. Any
+      // that don't are dropped (and reported), and if nothing survives we fall
+      // back to the canvas default rather than inventing a predicate.
+      const { valid, dropped } = validateKeyPairs(keys, leftMeta, meta);
+      if (dropped.length > 0) {
+        setPrepopNote((prev) =>
+          [prev, `Ignored join key${dropped.length > 1 ? "s" : ""} ${dropped.join(", ")} — not a field on both entities.`]
+            .filter(Boolean)
+            .join(" ")
+        );
+      }
+      const joinKeys = valid.length > 0 ? valid : defaultKeys;
+      const suggestedKeys = new Set(joinKeys.map((k) => k.right));
+      setJoins((prev) =>
+        prev.some((j) => j.entity === rel.target_entity)
+          ? prev
+          : [
+              ...prev,
+              {
+                entity: rel.target_entity,
+                type: type ?? "left",
+                keys: joinKeys,
+              },
+            ]
+      );
 
       // A3: re-scan the sheet's proposed fields against this newly-joined
       // entity's schema (excluding the join-key fields, A1). Any proposal that
@@ -331,6 +412,20 @@ function S4DatasetWorkspace({
       setSelectedByEntity((prev) => ({
         ...prev,
         [rel.target_entity]: newly,
+      }));
+
+      // Seed this entity's KEY tags from its own OData keys + this join's
+      // right-side predicate keys; extend the primary's KEY tags with this
+      // join's left-side predicate keys (a plain FK column on the primary may
+      // not itself be a declared entity key). None of this touches the
+      // dataset selection above — keys default to excluded either way.
+      const targetKeyNames = new Set(meta.properties.filter((p) => p.is_key).map((p) => p.name));
+      for (const k of meta.keys || []) targetKeyNames.add(k);
+      for (const k of suggestedKeys) targetKeyNames.add(k);
+      setKeyFieldsByEntity((prev) => ({
+        ...prev,
+        [rel.target_entity]: targetKeyNames,
+        [primaryName]: new Set([...(prev[primaryName] || []), ...joinKeys.map((k) => k.left)]),
       }));
     } catch (err) {
       setError(`Failed to add join: ${err?.message || err}`);
@@ -352,6 +447,11 @@ function S4DatasetWorkspace({
       return next;
     });
     setAutoSelectedByEntity((prev) => {
+      const next = { ...prev };
+      delete next[entity];
+      return next;
+    });
+    setKeyFieldsByEntity((prev) => {
       const next = { ...prev };
       delete next[entity];
       return next;
@@ -379,6 +479,79 @@ function S4DatasetWorkspace({
     const j = joins.find((x) => x.entity === entity);
     patchJoin(entity, { keys: j.keys.filter((_, i) => i !== idx) });
   };
+
+  // ---- Canvas pre-population (mapping sheet / Step-1 instruction) ----
+  // Places the entities that side's instruction named, and the join between
+  // them, so the user reviews a filled-in canvas instead of an empty one. This
+  // PRE-POPULATES, it does not bypass: everything placed here is ordinary
+  // canvas state — editable, removable, and nothing is fetched until the user
+  // imports. Entity names arrive already existence-gated server-side; join
+  // type/keys are only ever overrides, with addJoin's default filling the rest.
+  const prepopRef = useRef(null);
+  const prepopKey = prepopulate ? JSON.stringify(prepopulate) : null;
+  useEffect(() => {
+    if (!prepopKey || connState !== "connected" || entities.length === 0) return undefined;
+    // A dataset is already imported → the user has built this side. Re-placing
+    // entities would silently reset their import.
+    if (dataset) return undefined;
+    // Apply any one instruction exactly once, so removing a pre-placed entity
+    // doesn't fight this effect and get it re-added.
+    if (prepopRef.current === prepopKey) return undefined;
+    prepopRef.current = prepopKey;
+
+    let cancelled = false;
+    (async () => {
+      const { entities: wanted, joinType, keys, unresolved, origin } = prepopulate;
+      const from = origin === "freeText" ? "your entity/join instruction" : "your mapping sheet";
+      const missing =
+        unresolved.length > 0
+          ? ` ${unresolved.join(", ")} ${unresolved.length > 1 ? "aren't" : "isn't"} available in this connector — add ${unresolved.length > 1 ? "them" : "it"} yourself.`
+          : "";
+
+      if (wanted.length === 0) {
+        if (missing) setPrepopNote(`Nothing could be pre-placed from ${from}.${missing}`);
+        return;
+      }
+
+      const joined = wanted.slice(1);
+      const note = [
+        `Pre-placed ${wanted.join(" + ")} from ${from}.`,
+        joined.length > 0
+          ? `Join type: ${joinType ?? "left (this canvas's default)"}.`
+          : "",
+        missing,
+        "Review and adjust anything below before importing.",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      setPrepopNote(note);
+
+      const { meta, relationships: rels } = await choosePrimary(wanted[0]);
+      if (cancelled || !meta) return;
+
+      // Stated keys describe ONE join predicate, so they're only applied when a
+      // single entity is being joined; with several, each join takes its own
+      // relationship's suggested keys (the canvas default) instead of having one
+      // stated pair mis-assigned to all of them.
+      const keysFor = joined.length === 1 ? keys : null;
+      for (const name of joined) {
+        if (cancelled) return;
+        const rel =
+          rels.find((r) => r.target_entity === name) ?? { target_entity: name, suggested_keys: [] };
+        await addJoin(rel, {
+          type: joinType ?? undefined,
+          keys: keysFor,
+          primary: wanted[0],
+          primaryMeta: meta,
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prepopKey, connState, entities.length, dataset]);
 
   // ---- column selection ----
   // Checking a Transformation Discovery trigger field (e.g. Material,
@@ -416,7 +589,7 @@ function S4DatasetWorkspace({
   };
   const selectGroup = (entity, all) => {
     invalidate();
-    // "All" selects only real data fields — join keys are excluded (A1).
+    // "All" selects only real data fields — keys are excluded (Fix 1).
     setSelectedByEntity((prev) => ({
       ...prev,
       [entity]: all ? dataFieldNames(entity) : [],
@@ -438,16 +611,6 @@ function S4DatasetWorkspace({
     [entitiesInPlay, dataFieldNames]
   );
 
-  // A3: sheet-proposed fields still not found on ANY in-play entity's schema
-  // (join keys excluded). Derived — so it automatically re-scans across joined
-  // entities as the join set changes, resolving proposals a wider join brings
-  // in. Surfaced as "select manually" hints; auto-selection of newly-resolved
-  // proposals happens in addJoin (the event that actually widens the schema).
-  const preselectUnmatched = useMemo(() => {
-    if (!primaryEntity || preselectFields.length === 0) return [];
-    const allAvailable = entitiesInPlay.flatMap((e) => (entityMeta[e] ? dataFieldNames(e) : []));
-    return matchProposedToSchema(preselectFields, allAvailable).unmatched;
-  }, [primaryEntity, preselectFields, entitiesInPlay, entityMeta, dataFieldNames]);
 
   const joinsValid = useMemo(
     () => joins.every((j) => j.keys.length > 0 && j.keys.every((k) => k.left && k.right)),
@@ -554,7 +717,6 @@ function S4DatasetWorkspace({
       if (!p.success) return setError(p.error || "Failed to fetch dataset");
       const rows = p.rows ?? [];
       const columns = p.columns ?? previewCols;
-      const auxiliaryFields = p.auxiliary_fields ?? null;
       setImported(true);
       setImportedCount(rows.length);
       // Stay on the Build card after import; the full data grid now lives on a
@@ -563,8 +725,8 @@ function S4DatasetWorkspace({
       // fields), flattened across every entity in play — carried along so
       // downstream mapping generation can exclude them while they remain
       // selectable here for tracking/validation. The dataset (rows, preview,
-      // columns, auxiliaryFields) is persisted to wizard state, which is what
-      // the detailed-preview page reads.
+      // columns) is persisted to wizard state, which is what the
+      // detailed-preview page reads.
       const mdtFields = Array.from(
         new Set(entitiesInPlay.flatMap((e) => Array.from(autoSelectedByEntity[e] || [])))
       );
@@ -574,7 +736,6 @@ function S4DatasetWorkspace({
         rows,
         rowCount: rows.length,
         mdtFields,
-        auxiliaryFields,
       });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
@@ -593,28 +754,70 @@ function S4DatasetWorkspace({
           ? { cls: "wait", icon: "○", text: "Select columns to import" }
           : { cls: "ready", icon: "◆", text: "Ready to import" };
 
-  const previewStatus = previewLoading
-    ? { cls: "amber", text: "Loading…" }
-    : previewError
-      ? { cls: "red", text: "Preview error" }
-      : previewRows.length > 0
-        ? { cls: "accent", text: `Live · ${previewRows.length} rows` }
-        : null;
-
   const availableRelationships = relationships.filter(
     (r) => r.target_entity !== primaryEntity && !joinedEntities.includes(r.target_entity)
   );
 
-  // ---- Connection gate: don't render the explorer until metadata loads ----
-  if (connState === "idle") {
-    return (
-      <SapConnectPrompt
-        serviceName="SAP S/4HANA"
-        description="Connect to your SAP S/4HANA service to discover entities, relationships, and available fields."
-        onConnect={() => connect()}
-      />
-    );
-  }
+  // ---- Canvas view-model (presentational mapping of existing state) ----
+  // Node cards: primary + each joined entity. Fields tagged KEY default out of
+  // the dataset selection; the tag itself is a toggle button (onToggleKey), so
+  // any field can be marked/unmarked as a key regardless of its SAP metadata
+  // origin, independent of its checkbox (data-selection) state.
+  const canvasNodes = (primaryEntity ? [primaryEntity, ...joinedEntities] : []).map(
+    (entity, i) => {
+      const role = i === 0 ? "primary" : "joined";
+      const meta = entityMeta[entity];
+      const keySet = keyFieldsByEntity[entity] ?? new Set();
+      const sel = selectedByEntity[entity] || [];
+      const auto = autoSelectedByEntity[entity];
+      const fields = (meta?.properties || []).map((p) => ({
+        name: p.name,
+        type: p.type,
+        isKey: keySet.has(p.name),
+        checked: sel.includes(p.name),
+        recommended: auto?.has(p.name) || false,
+      }));
+      return {
+        entity,
+        role,
+        fields,
+        onToggleField: (name) => toggleProp(entity, name),
+        onToggleKey: (name) => toggleKeyField(entity, name),
+        onSelectAll: () => selectGroup(entity, true),
+        onClear: () => selectGroup(entity, false),
+        removable: role === "joined",
+        // JoinCanvas invokes this only from an event handler (onRemove(entity));
+        // removeJoin reads matchScanRef there, never during render.
+        // eslint-disable-next-line react-hooks/refs
+        onRemove: removeJoin,
+      };
+    }
+  );
+
+  // Join connectors: each joined entity's type/keys/cardinality, wired to the
+  // existing join-config handlers (patchJoin / setKeyPair / add / remove).
+  const canvasJoins = joins.map((j) => {
+    const rel = relationships.find((r) => r.target_entity === j.entity);
+    return {
+      toEntity: j.entity,
+      type: j.type,
+      keys: j.keys,
+      cardinality: rel?.cardinality,
+      leftOptions: entityMeta[primaryEntity]?.properties.map((p) => p.name) || [],
+      rightOptions: entityMeta[j.entity]?.properties.map((p) => p.name) || [],
+      onSetType: (t) => patchJoin(j.entity, { type: t }),
+      onSetKey: (idx, side, value) => setKeyPair(j.entity, idx, side, value),
+      onAddKey: () => addKeyPair(j.entity),
+      onRemoveKey: (idx) => removeKeyPair(j.entity, idx),
+      // Bare reference; JoinCanvas invokes it as onRemove(toEntity).
+      onRemove: removeJoin,
+    };
+  });
+
+  // ---- Connection gate: show loading/error surfaces until metadata loads ----
+  // Metadata loads automatically on mount, so there is no idle "Connect" prompt
+  // and no "Connected → Continue to Build Dataset" confirmation. A successful
+  // connect() flips straight to the Build Dataset workspace below.
   if (connState === "connecting") {
     return <SapConnecting serviceName="SAP S/4HANA" />;
   }
@@ -628,21 +831,7 @@ function S4DatasetWorkspace({
     );
   }
 
-  // ---- Card 2: connected, not yet building — no entity browser yet ----
-  if (stage === "connect") {
-    return (
-      <SapConnectedSummary
-        serviceName="SAP S/4HANA"
-        entitiesCount={entities.length}
-        onRefresh={() => connect({ refresh: true })}
-        onReconnect={reconnect}
-        onContinue={() => setStage("build")}
-        refreshing={refreshing}
-      />
-    );
-  }
-
-  // ---- Card 3: Build Dataset — entity/join/column workspace ----
+  // ---- Build Dataset — entity/join/column workspace ----
   return (
     <div className="ibpw-root">
       <SapConnectedBar
@@ -653,436 +842,60 @@ function S4DatasetWorkspace({
         refreshing={refreshing}
         showImport={false}
       />
-      <div className="ibpw">
-        {/* ---------------- LEFT: Entity + Relationship Explorer ---------------- */}
-        <div className="ibpw__col ibpw__col--left">
-          <section className="ibpw-panel">
-            <header className="ibpw-panel__head">
-              <h4 className="ibpw-panel__title">Entities</h4>
-              <span className="ibpw-spacer" />
-              {!entitiesLoading && <span className="ibpw-badge ibpw-badge--count">{entities.length}</span>}
-            </header>
-
-            <div className="ibpw-panel__body" style={{ paddingBottom: 6 }}>
-              <div className="ibpw-search">
-                <span className="ibpw-search__icon">⌕</span>
-                <input
-                  className="ibpw-input"
-                  type="text"
-                  placeholder="Search entities…"
-                  value={entityFilter}
-                  onChange={(e) => setEntityFilter(e.target.value)}
-                  disabled={entitiesLoading || entities.length === 0}
-                />
-              </div>
-            </div>
-
-            {recent.length > 0 && (
-              <div className="ibpw-recent">
-                <p className="ibpw-recent__label">Recently used</p>
-                <div className="ibpw-recent__row">
-                  {recent.map((n) => (
-                    <button key={n} type="button" className="ibpw-recent__chip" title={n} onClick={() => choosePrimary(n)}>
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {entitiesLoading ? (
-              <div className="ibpw-skel-list">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="ibpw-skel ibpw-skel-row" />
-                ))}
-              </div>
-            ) : (
-              <ul className="ibpw-entity-list">
-                {filteredEntities.map((e) => (
-                  <li key={e.name}>
-                    <button
-                      type="button"
-                      className={`ibpw-entity ${primaryEntity === e.name ? "is-selected" : ""}`}
-                      onClick={() => choosePrimary(e.name)}
-                    >
-                      <span className="ibpw-entity__name">{e.name}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {/* Related entities → add as joins */}
-            {primaryEntity && !primaryLoading && availableRelationships.length > 0 && (
-              <div className="s4j-related">
-                <p className="s4j-related__label">Related entities</p>
-                {availableRelationships.map((r) => (
-                  <button
-                    key={r.nav}
-                    type="button"
-                    className="s4j-related__item"
-                    onClick={() => addJoin(r)}
-                    title={`Join keys: ${r.suggested_keys.join(", ") || "none — set manually"}`}
-                  >
-                    <span className="s4j-related__main">
-                      <span className="s4j-related__name">{r.target_entity}</span>
-                      <span className="s4j-related__keys">
-                        {r.suggested_keys.join(" · ") || "set keys manually"}
-                      </span>
-                    </span>
-                    <span className="ibpw-badge ibpw-badge--count">{r.cardinality}</span>
-                    <span className="s4j-related__add">+</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-
-        {/* ---------------- CENTER: Join Builder + Columns + Preview ---------------- */}
-        <div className="ibpw__col ibpw__col--center">
-          {/* Join builder */}
-          <section className="ibpw-panel">
-            <header className="ibpw-panel__head">
-              <h4 className="ibpw-panel__title">Join Builder</h4>
-              <span className="ibpw-spacer" />
-              {joins.length > 0 && (
-                <span className="ibpw-badge ibpw-badge--accent">{joins.length} join{joins.length > 1 ? "s" : ""}</span>
-              )}
-            </header>
-
-            {!primaryEntity ? (
-              <div className="ibpw-state">
-                <span className="ibpw-state__icon">🧩</span>
-                <span className="ibpw-state__title">No primary entity</span>
-                <span className="ibpw-state__desc">Pick a primary entity, then add related entities to join.</span>
-              </div>
-            ) : primaryLoading ? (
-              <div className="ibpw-skel-list">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="ibpw-skel ibpw-skel-row" />
-                ))}
-              </div>
-            ) : (
-              <div className="s4j-builder">
-                <div className="s4j-primary">
-                  <span>Primary</span>
-                  <span className="s4j-primary__chip">{primaryEntity}</span>
-                </div>
-
-                {joins.map((j) => {
-                  const leftOpts = entityMeta[primaryEntity]?.properties.map((p) => p.name) || [];
-                  const rightOpts = entityMeta[j.entity]?.properties.map((p) => p.name) || [];
-                  return (
-                    <div key={j.entity} className="s4j-join">
-                      <div className="s4j-join__head">
-                        <span className="s4j-join__name">{j.entity}</span>
-                        <div className="s4j-toggle">
-                          {["left", "inner"].map((t) => (
-                            <button
-                              key={t}
-                              type="button"
-                              className={`s4j-toggle__opt ${j.type === t ? "is-active" : ""}`}
-                              onClick={() => patchJoin(j.entity, { type: t })}
-                            >
-                              {t === "left" ? "Left" : "Inner"}
-                            </button>
-                          ))}
-                        </div>
-                        <span className="ibpw-spacer" />
-                        <button type="button" className="s4j-join__remove" title="Remove join" onClick={() => removeJoin(j.entity)}>
-                          ✕
-                        </button>
-                      </div>
-
-                      <div className="s4j-keys">
-                        <span className="s4j-keys__label">Join keys (primary = {shortName(j.entity)})</span>
-                        {j.keys.map((k, idx) => (
-                          <div key={idx} className="s4j-keypair">
-                            <select
-                              className="s4j-select"
-                              value={k.left}
-                              onChange={(e) => setKeyPair(j.entity, idx, "left", e.target.value)}
-                            >
-                              <option value="">— primary key —</option>
-                              {leftOpts.map((o) => (
-                                <option key={o} value={o}>{o}</option>
-                              ))}
-                            </select>
-                            <span className="s4j-keypair__eq">=</span>
-                            <select
-                              className="s4j-select"
-                              value={k.right}
-                              onChange={(e) => setKeyPair(j.entity, idx, "right", e.target.value)}
-                            >
-                              <option value="">— joined key —</option>
-                              {rightOpts.map((o) => (
-                                <option key={o} value={o}>{o}</option>
-                              ))}
-                            </select>
-                            <button type="button" className="s4j-keypair__rm" title="Remove key" onClick={() => removeKeyPair(j.entity, idx)}>
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                        <button type="button" className="s4j-keyadd" onClick={() => addKeyPair(j.entity)}>
-                          + Add key
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {joins.length === 0 && (
-                  <p className="ibpw-summary__hint" style={{ textAlign: "left", margin: 0 }}>
-                    Add related entities from the left to build joins, or import the primary entity on its own.
-                  </p>
-                )}
-              </div>
-            )}
-          </section>
-
-          {/* Column explorer (grouped by entity) */}
-          {primaryEntity && !primaryLoading && (
-            <section className="ibpw-panel">
-              <header className="ibpw-panel__head">
-                <h4 className="ibpw-panel__title">Columns</h4>
-                <span className="ibpw-badge ibpw-badge--accent">{totalSelected} / {totalAvailable}</span>
-                <span className="ibpw-spacer" />
-                <div className="ibpw-search" style={{ maxWidth: 220 }}>
-                  <span className="ibpw-search__icon">⌕</span>
-                  <input
-                    className="ibpw-input"
-                    type="text"
-                    placeholder="Search columns…"
-                    value={propFilter}
-                    onChange={(e) => setPropFilter(e.target.value)}
-                  />
-                </div>
-              </header>
-
-              {preselectUnmatched.length > 0 && (
-                <p className="ibpw-preselect-note">
-                  From the mapping sheet, these fields weren't matched to this entity's schema —
-                  select them manually if needed: {preselectUnmatched.join(", ")}
-                </p>
-              )}
-
-              <div style={{ maxHeight: 260, overflowY: "auto" }}>
-                {entitiesInPlay.map((entity) => {
-                  const meta = entityMeta[entity];
-                  if (!meta) return null;
-                  // Hide structural keys (entity keys + join predicates) from
-                  // the selectable list — they're join plumbing, not data.
-                  const excluded = structuralKeyNamesByEntity[entity] ?? new Set();
-                  const dataProps = meta.properties.filter((p) => !excluded.has(p.name));
-                  const q = propFilter.trim().toLowerCase();
-                  const props = q
-                    ? dataProps.filter((p) => p.name.toLowerCase().includes(q))
-                    : dataProps;
-                  const sel = selectedByEntity[entity] || [];
-                  return (
-                    <div key={entity} className="s4j-group">
-                      <div className="s4j-group__head">
-                        <span className="s4j-group__name">{entity}</span>
-                        <span className="s4j-group__role">{entity === primaryEntity ? "primary" : "joined"}</span>
-                        <span className="ibpw-badge ibpw-badge--count">{sel.length}/{dataProps.length}</span>
-                        <span className="ibpw-spacer" />
-                        <button type="button" className="ibpw-chip-btn" onClick={() => selectGroup(entity, true)}>All</button>
-                        <button type="button" className="ibpw-chip-btn" onClick={() => selectGroup(entity, false)}>None</button>
-                      </div>
-                      <div className="ibpw-fields__grid" style={{ maxHeight: "none" }}>
-                        {props.map((p) => {
-                          const checked = sel.includes(p.name);
-                          return (
-                            <label key={p.name} className={`ibpw-field ${checked ? "is-checked" : ""}`} title={p.name}>
-                              <input type="checkbox" checked={checked} onChange={() => toggleProp(entity, p.name)} style={{ display: "none" }} />
-                              <span className="ibpw-field__box">{checked ? "✓" : ""}</span>
-                              <span className="ibpw-field__main">
-                                <span className="ibpw-field__name">{p.name}</span>
-                                <span className="ibpw-field__meta">
-                                  {p.is_key && <span className="ibpw-badge ibpw-badge--kf">KEY</span>}
-                                  {autoSelectedByEntity[entity]?.has(p.name) && (
-                                    <span
-                                      className="ibpw-badge ibpw-badge--accent"
-                                      title="Recommended for Transformation Discovery"
-                                    >
-                                      Recommended
-                                    </span>
-                                  )}
-                                  <span className="ibpw-type">{String(p.type || "").replace(/^Edm\./, "")}</span>
-                                </span>
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-
-          {/* Live joined preview */}
-          {primaryEntity && !primaryLoading && (
-            <section className="ibpw-panel">
-              <header className="ibpw-panel__head">
-                <h4 className="ibpw-panel__title">Live Joined Preview</h4>
-                <span className="ibpw-spacer" />
-                {previewStatus && (
-                  <span className={`ibpw-badge ibpw-badge--${previewStatus.cls}`}>
-                    <span className="ibpw-badge__dot" />
-                    {previewStatus.text}
-                  </span>
-                )}
-              </header>
-
-              {previewLoading ? (
-                <div className="ibpw-skel-grid">
-                  {Array.from({ length: 7 }).map((_, i) => (
-                    <div key={i} className="ibpw-skel ibpw-skel-grid__line" />
-                  ))}
-                </div>
-              ) : previewError ? (
-                <div className="ibpw-state ibpw-state--error">
-                  <span className="ibpw-state__icon">⚠️</span>
-                  <span className="ibpw-state__title">Preview couldn’t load</span>
-                  <span className="ibpw-state__desc">{previewError}</span>
-                </div>
-              ) : !canQuery ? (
-                <div className="ibpw-state">
-                  <span className="ibpw-state__icon">📊</span>
-                  <span className="ibpw-state__title">Nothing to preview yet</span>
-                  <span className="ibpw-state__desc">Select columns (and complete any join keys) to preview joined rows.</span>
-                </div>
-              ) : previewRows.length === 0 ? (
-                <div className="ibpw-state">
-                  <span className="ibpw-state__icon">🈳</span>
-                  <span className="ibpw-state__title">No joined rows</span>
-                  <span className="ibpw-state__desc">The sampled rows didn’t match on the join keys. Try Left join or different keys.</span>
-                </div>
-              ) : (
-                <div className="ibpw-grid-wrap">
-                  <table className="ibpw-grid">
-                    <colgroup>
-                      {previewCols.map((c) => (
-                        <col key={c} style={{ width: colWidths[c] ?? DEFAULT_COL_WIDTH }} />
-                      ))}
-                    </colgroup>
-                    <thead>
-                      <tr>
-                        {previewCols.map((c) => {
-                          const active = sort.col === c;
-                          return (
-                            <th key={c} style={{ position: "sticky" }}>
-                              <div className="ibpw-grid__th-inner" onClick={() => toggleSort(c)}>
-                                <span className="ibpw-grid__th-label" title={c}>{c}</span>
-                                <span className={`ibpw-grid__sort ${active ? "" : "ibpw-grid__sort--idle"}`}>
-                                  {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
-                                </span>
-                              </div>
-                              <span className="ibpw-grid__resize" onPointerDown={(e) => startResize(e, c)} />
-                            </th>
-                          );
-                        })}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sortedRows.map((row, idx) => (
-                        <tr key={idx}>
-                          {previewCols.map((c) => (
-                            <td key={c} className={looksNumeric(row[c]) ? "ibpw-grid__num" : ""} title={row[c] != null ? String(row[c]) : ""}>
-                              {row[c] != null ? String(row[c]) : ""}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-          )}
-        </div>
-
-        {/* ---------------- RIGHT: Dataset Summary ---------------- */}
-        <div className="ibpw__col ibpw__col--right">
-          <section className="ibpw-panel">
-            <header className="ibpw-panel__head">
-              <h4 className="ibpw-panel__title">Dataset Summary</h4>
-            </header>
-            <div className="ibpw-panel__body">
-              <div className="ibpw-summary__stats">
-                <div className="ibpw-stat">
-                  <span className="ibpw-stat__label">Entities</span>
-                  <span className={`ibpw-stat__value ${primaryEntity ? "" : "ibpw-stat__value--muted"}`}>
-                    {entitiesInPlay.length || "—"}
-                  </span>
-                </div>
-                <div className="ibpw-stat">
-                  <span className="ibpw-stat__label">Primary</span>
-                  <span className={`ibpw-stat__value ${primaryEntity ? "" : "ibpw-stat__value--muted"}`} title={primaryEntity || undefined}>
-                    {primaryEntity || "—"}
-                  </span>
-                </div>
-                <div className="ibpw-stat">
-                  <span className="ibpw-stat__label">Joins</span>
-                  <span className="ibpw-stat__value">
-                    {joins.length ? joins.map((j) => `${j.type}`).join(", ") : "none"}
-                  </span>
-                </div>
-                <div className="ibpw-stat">
-                  <span className="ibpw-stat__label">Available columns</span>
-                  <span className="ibpw-stat__value">{totalAvailable || "—"}</span>
-                </div>
-                <div className="ibpw-stat">
-                  <span className="ibpw-stat__label">Selected columns</span>
-                  <span className="ibpw-stat__value">{totalSelected || 0}</span>
-                </div>
-                <div className="ibpw-stat">
-                  <span className="ibpw-stat__label">Preview rows</span>
-                  <span className="ibpw-stat__value">{previewRows.length || (canQuery ? 0 : "—")}</span>
-                </div>
-                <div className="ibpw-stat">
-                  <span className="ibpw-stat__label">Imported rows</span>
-                  <span className={`ibpw-stat__value ${imported ? "" : "ibpw-stat__value--muted"}`}>
-                    {imported ? importedCount?.toLocaleString?.() ?? importedCount : "Not yet"}
-                  </span>
-                </div>
-              </div>
-
-              <div className={`ibpw-readiness ibpw-readiness--${readiness.cls}`}>
-                <span className="ibpw-readiness__icon">{readiness.icon}</span>
-                <span>{readiness.text}</span>
-              </div>
-
-              <button type="button" className="ibpw-btn" onClick={importDataset} disabled={fetching || !canQuery}>
-                {fetching && <span className="ibpw-btn__spin" />}
-                {fetching ? "Importing…" : imported ? "Re-import dataset" : "Import dataset"}
-              </button>
-
-              {imported && !fetching && (
-                <button
-                  type="button"
-                  className="ibpw-btn ibpw-btn--ghost"
-                  onClick={() => onOpenDetailedPreview?.()}
-                >
-                  Open Detailed Preview
-                </button>
-              )}
-
-              {imported && !fetching && (
-                <p className="ibpw-summary__hint">
-                  Dataset ready — open the detailed preview to inspect rows, or use{" "}
-                  <strong>Continue</strong> below to proceed.
-                </p>
-              )}
-              {error && <p className="ibpw-summary__error">⚠️ {String(error)}</p>}
-            </div>
-          </section>
-        </div>
-      </div>
+      {prepopNote && (
+        <p className="ibpw-prepop-note">
+          ✨ {prepopNote}
+          <button type="button" className="ibpw-prepop-note__dismiss" onClick={() => setPrepopNote(null)}>
+            Dismiss
+          </button>
+        </p>
+      )}
+      <JoinCanvas
+        serviceName="SAP S/4HANA"
+        joinsEnabled
+        entities={filteredEntities}
+        activeEntity={primaryEntity}
+        entityFilter={entityFilter}
+        onEntityFilterChange={setEntityFilter}
+        entityListOpen={entityListOpen}
+        onToggleEntityList={() => setEntityListOpen((o) => !o)}
+        onAddEntity={(name) => {
+          setEntityListOpen(false);
+          setEntityFilter("");
+          choosePrimary(name);
+        }}
+        fieldFilter={propFilter}
+        onFieldFilterChange={setPropFilter}
+        fieldListOpen={fieldListOpen}
+        onToggleFieldList={() => setFieldListOpen((o) => !o)}
+        nodes={canvasNodes}
+        nodesLoading={primaryLoading}
+        joins={canvasJoins}
+        relationships={availableRelationships}
+        onAddJoin={addJoin}
+        preview={{
+          rows: sortedRows,
+          cols: previewCols,
+          loading: previewLoading,
+          error: previewError,
+          colWidths,
+          sort,
+          onToggleSort: toggleSort,
+          onStartResize: startResize,
+          defaultColWidth: DEFAULT_COL_WIDTH,
+        }}
+        readiness={readiness}
+        canImport={canQuery}
+        importing={fetching}
+        imported={imported}
+        onImport={importDataset}
+        onOpenDetailedPreview={onOpenDetailedPreview}
+      />
+      {error && (
+        <p className="ibpw-summary__error" style={{ marginTop: 12 }}>
+          ⚠️ {String(error)}
+        </p>
+      )}
     </div>
   );
 }

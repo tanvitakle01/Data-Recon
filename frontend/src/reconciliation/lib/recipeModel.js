@@ -66,6 +66,17 @@ export function operationsToSteps(operations, catalogue) {
   return steps;
 }
 
+// Steps in execution order as a single flat list — the order the executor
+// runs (Filters → Transforms → Aggregations), preserving within-phase order.
+// The editor shows this as one numbered "Current Recipe" list; the phase split
+// is enforced by the stable sort, not surfaced to the user. Stable because
+// Array.prototype.sort is stable and the comparator only orders across phases.
+export function orderedSteps(steps) {
+  return [...steps].sort(
+    (a, b) => phaseIndexForKind(a.kind) - phaseIndexForKind(b.kind),
+  );
+}
+
 // Steps grouped by phase, preserving each phase's authored order.
 export function groupByPhase(steps) {
   const groups = {};

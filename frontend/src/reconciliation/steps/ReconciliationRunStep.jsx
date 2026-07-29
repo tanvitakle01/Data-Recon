@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
-import { appendDatasetSide, cleanBusinessRules } from "../lib/payload";
+import { appendDatasetSide, buildMappingSheetPayload, cleanBusinessRules } from "../lib/payload";
 import {
   createBothSnapshots,
   createSnapshot,
@@ -12,10 +12,9 @@ import {
 } from "../lib/reconRun";
 import StepShell from "../components/StepShell";
 import ContractRunResults from "../components/ContractRunResults";
-import DateAlignmentDiagnostic from "../components/DateAlignmentDiagnostic";
 import SummaryCards from "../../components/SummaryCards";
 import ReconciliationResults from "../../components/ReconciliationResults";
-import { Button } from "@bristlecone/canopy";
+import { Button, Alert } from "@bristlecone/canopy";
 
 // Derives business_key / compare_fields for the script-flow production run
 // from the same (possibly hand-edited) field mapping the contract flow uses.
@@ -49,30 +48,47 @@ function ReconciliationRunStep() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [phase, setPhase] = useState(null); // "snapshots" | "run" | null
-  const [alignment, setAlignment] = useState(null);
 
-  // Pre-run date-overlap diagnostic (spec Step 7). Runs once the immutable
-  // snapshots reviewed in Review Changes exist; read-only, never blocks the run.
-  const srcSnapshotId = transformationSpec.sourceSnapshotId;
-  const tgtSnapshotId = transformationSpec.targetSnapshotId;
-  useEffect(() => {
-    if (!srcSnapshotId || !tgtSnapshotId) return undefined;
-    let cancelled = false;
-    api
-      .post("/api/recon/date-alignment", {
-        source_snapshot_id: srcSnapshotId,
-        target_snapshot_id: tgtSnapshotId,
-      })
-      .then((res) => {
-        if (!cancelled) setAlignment(res.data?.alignment ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setAlignment(null);
-      });
-    return () => {
-      cancelled = true;
+  // Deterministic Mapping has no separate approval step on the Mapping page —
+  // the auto-assembled zero-operation contract (business_key/compare_fields
+  // from the confirmed field mapping + the VERY_HIGH/HIGH value mappings) is
+  // compiled and approved here, the first time this step actually runs.
+  const compileAndApproveDeterministicContract = async () => {
+    const { mapping, valueMappings } = transformationSpec;
+    const payload = {
+      mapping_sheet: buildMappingSheetPayload(null, mapping),
+      rules: "",
+      transformation_rules: [],
+      matching_rules: [],
+      filter_rules: [],
+      aggregation_rules: [],
+      business_key: (mapping?.mapping?.key_fields ?? []).map((f) => ({
+        source_field: f.source_col,
+        target_field: f.target_col,
+      })),
+      compare_fields: (mapping?.mapping?.compare_fields ?? []).map((f) => ({
+        source_field: f.source_col,
+        target_field: f.target_col,
+      })),
+      value_mappings: [valueMappings?.product, valueMappings?.location].filter(Boolean),
+      source_schema: source.dataset?.columns ?? [],
+      target_schema: target.dataset?.columns ?? [],
+      comparison_type: comparisonType?.id ?? "custom",
+      source_type: source.kind ?? "excel",
+      target_type: target.kind ?? "excel",
+      actor: "wizard-user",
     };
-  }, [srcSnapshotId, tgtSnapshotId]);
+
+    const compileRes = await api.post("/api/recon/contracts/compile", payload);
+    const draft = compileRes.data?.draft;
+    const approveRes = await api.post("/api/recon/contracts/approve", {
+      draft,
+      approved_by: "wizard-user",
+    });
+    const detContract = approveRes.data?.contract;
+    dispatch({ type: WizardActions.SET_DETERMINISTIC_CONTRACT, contract: detContract });
+    return detContract;
+  };
 
   // Contract runtime path: immutable snapshots -> deterministic engine
   // (Raw_Source + approved contract -> Shadow_Source vs Raw_Target). Reuses the
@@ -80,7 +96,7 @@ function ReconciliationRunStep() {
   // fingerprint so the engine verifies the reconciled shadow is the reviewed
   // one (409 -> the review must be redone). Falls back to fresh snapshots only
   // if the review state is somehow absent.
-  const runContractReconciliationStep = async () => {
+  const runContractReconciliationStep = async (contract = approvedContract) => {
     let srcId = transformationSpec.sourceSnapshotId;
     let tgtId = transformationSpec.targetSnapshotId;
     if (!srcId || !tgtId) {
@@ -96,7 +112,7 @@ function ReconciliationRunStep() {
 
     setPhase("run");
     const result = await runContractReconciliation({
-      contract: approvedContract,
+      contract,
       sourceSnapshotId: srcId,
       targetSnapshotId: tgtId,
       // Deterministic runs have no reviewed shadow to pin; Manual runs verify
@@ -191,6 +207,15 @@ function ReconciliationRunStep() {
         );
       }
 
+      // Deterministic Mapping has no contract yet the first time this step
+      // runs (Continue on the Mapping page just advances here) — compile and
+      // approve it now, then run against it.
+      if (isDeterministic && !approvedContract) {
+        const detContract = await compileAndApproveDeterministicContract();
+        await runContractReconciliationStep(detContract);
+        return;
+      }
+
       // With an approved contract or an approved transformation preview,
       // reconciliation runs through the matching runtime (never Raw_Source vs
       // Raw_Target directly). The legacy /reconcile path below only applies
@@ -277,6 +302,7 @@ function ReconciliationRunStep() {
           variant="primary"
           size="lg"
           onClick={runReconciliation}
+          loading={loading}
           disabled={loading}
         >
           {loading ? loadingLabel : reconciliation ? "Re-run Reconciliation" : "Run Reconciliation"}
@@ -288,16 +314,14 @@ function ReconciliationRunStep() {
             ? ` · Transformation Rules ${approvedContract.contract_id} v${approvedContract.contract_version}`
             : scriptApproval
               ? ` · Approved transformation (${scriptApproval.approval_id})`
-              : " · no transformation rules (direct comparison)"}
+              : isDeterministic
+                ? " · Deterministic value mapping (VERY_HIGH/HIGH applied)"
+                : " · no transformation rules (direct comparison)"}
         </span>
       </div>
 
-      {error && <p className="wizard-step__error">⚠️ {error}</p>}
-
-      {alignment && (
-        <div className="recon-run__section">
-          <DateAlignmentDiagnostic alignment={alignment} />
-        </div>
+      {error && (
+        <Alert variant="error" style={{ marginTop: 12 }}>{error}</Alert>
       )}
 
       {isContractResult ? (

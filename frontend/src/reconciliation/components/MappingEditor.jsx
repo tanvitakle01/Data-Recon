@@ -1,8 +1,18 @@
 import { isKeyRole, isUserRow, rebuildMapping } from "../lib/payload";
-import { Button, Select, Badge } from "@bristlecone/canopy";
+import { FIELD_ROLES, fieldRoleLabel, detectFieldRole } from "../lib/fieldRoleAliases";
+import { Button, Select, Badge, Alert, Skeleton, EmptyState } from "@bristlecone/canopy";
 
 const KEY_ROLE = "🔑 Key";
 const COMPARE_ROLE = "📊 Compare";
+
+// "Business Field" dropdown options — the canonical role Deterministic
+// Mapping resolves by (see resolveValueMappingFields), not the row's literal
+// column names. "— none —" means this pairing doesn't feed Deterministic
+// Mapping (still fine for Manual Mapping's contract).
+const BUSINESS_FIELD_OPTIONS = [
+  { value: "", label: "— none —" },
+  ...Object.values(FIELD_ROLES).map((role) => ({ value: role, label: fieldRoleLabel(role) })),
+];
 
 // Per-row origin badge (the "Origin" column). Library/Groq/OpenAI are the
 // generated tiers; user-added/user-edited are the manual tier.
@@ -39,11 +49,19 @@ function MappingEditor({
 
   // Editing a row's source/target/role flips a generated row to "user-edited"
   // so a later Regenerate preserves it; a "user-added" row keeps its origin.
+  // Renaming the source or target column re-detects the Business Field from
+  // the new name (e.g. fixing a typo'd header) UNLESS the edit itself already
+  // sets field_role explicitly (the Business Field dropdown) — that always
+  // wins, and a rename that matches no alias keeps whatever tag was there.
   const updateRow = (index, patch) => {
     const nextDisplay = display.map((row, i) => {
       if (i !== index) return row;
       const provenance = row.provenance === "user-added" ? "user-added" : "user-edited";
-      return { ...row, ...patch, provenance };
+      const next = { ...row, ...patch, provenance };
+      if (patch.field_role === undefined && ("source_col" in patch || "target_col" in patch)) {
+        next.field_role = detectFieldRole(next.source_col, next.target_col) ?? next.field_role ?? null;
+      }
+      return next;
     });
     commit(nextDisplay);
   };
@@ -54,7 +72,15 @@ function MappingEditor({
   const addRow = () => {
     commit([
       ...display,
-      { logical: "", source_col: "", target_col: "", role: KEY_ROLE, reason: "", provenance: "user-added" },
+      {
+        logical: "",
+        source_col: "",
+        target_col: "",
+        role: KEY_ROLE,
+        reason: "",
+        provenance: "user-added",
+        field_role: null,
+      },
     ]);
   };
 
@@ -66,7 +92,8 @@ function MappingEditor({
         <div>
           <p className="wizard-field__help">
             Confirm the source-to-target field mapping. Adjust the target column or role for any row,
-            or add a row for a missing pairing.
+            or add a row for a missing pairing. "Business Field" is auto-detected from the column names
+            for Deterministic Mapping — retag it if a required field wasn't recognized.
           </p>
         </div>
         <div className="mapping-editor__head-actions">
@@ -79,14 +106,20 @@ function MappingEditor({
         </div>
       </div>
 
-      {error && <p className="wizard-step__error">{error}</p>}
-      {notice && !error && <p className="wizard-step__hint">{notice}</p>}
-      {loading && !display.length && <p className="wizard-step__hint">Inferring column mapping…</p>}
+      {error && <Alert variant="error" style={{ marginTop: 8 }}>{error}</Alert>}
+      {notice && !error && <Alert variant="info" style={{ marginTop: 8 }}>{notice}</Alert>}
+      {loading && !display.length && (
+        <div style={{ display: "grid", gap: 8, marginTop: 8 }} aria-label="Inferring column mapping…">
+          <Skeleton style={{ height: 32 }} />
+          <Skeleton style={{ height: 32 }} />
+          <Skeleton style={{ height: 32 }} />
+        </div>
+      )}
       {!loading && !display.length && !error && (
-        <p className="wizard-field__help">
-          No field mapping could be generated. Regenerate once the data is available, or use “Add
-          mapping row” to build the field mapping manually.
-        </p>
+        <EmptyState
+          title="No field mapping yet"
+          description="No field mapping could be generated. Regenerate once the data is available, or use “Add mapping row” to build the field mapping manually."
+        />
       )}
 
       {display.length > 0 && (
@@ -94,10 +127,10 @@ function MappingEditor({
           <table className="table-elevated mapping-editor__table">
             <thead>
               <tr>
-                <th>Logical Field</th>
                 <th>Source Field</th>
                 <th>Target Field</th>
                 <th>Mapping Type</th>
+                <th>Business Field</th>
                 <th>Origin</th>
                 <th aria-label="Row actions"></th>
               </tr>
@@ -107,7 +140,6 @@ function MappingEditor({
                 const origin = ORIGIN_BADGE[row.provenance] ?? ORIGIN_BADGE.generated;
                 return (
                   <tr key={`${row.source_col || "new"}-${index}`}>
-                    <td className="mapping-editor__logical">{row.logical}</td>
                     <td>
                       {row.provenance === "user-added" ? (
                         <Select
@@ -145,6 +177,14 @@ function MappingEditor({
                           { value: "key", label: "🔑 Key" },
                           { value: "compare", label: "📊 Compare" },
                         ]}
+                      />
+                    </td>
+                    <td>
+                      <Select
+                        className="h-8 text-xs"
+                        value={row.field_role ?? ""}
+                        onChange={(e) => updateRow(index, { field_role: e.target.value || null })}
+                        options={BUSINESS_FIELD_OPTIONS}
                       />
                     </td>
                     <td>

@@ -3,8 +3,10 @@
 A ``ValueMapping`` is the auditable record of how every distinct source value
 of one mapped Key field (e.g. every distinct ``Material``) was resolved
 against the target's distinct values (e.g. every distinct ``PRDID``) by the
-deterministic tiered matcher in ``recon_engine.matching``. Never guessed, never
-touches an LLM — every entry carries a reproducible rule id and a
+value-pairing pipeline in ``recon_engine.value_pairing``. An LLM may HYPOTHESIZE
+a pairing, but every entry here is either an exact identity match or a claim
+that was deterministically re-executed and reproduced the target value exactly
+— nothing is guessed. Every entry carries a reproducible rule id and a
 human-readable evidence string.
 
 This is deliberately a *contract-level* fact, separate from the executable
@@ -63,12 +65,27 @@ class ValueMatch(BaseModel):
     rule: str = Field(..., description="Stable rule id, e.g. 'product.rule2_exact_id'.")
     evidence: str = Field(..., description="Human-readable reason a person can audit.")
     row_count: int = Field(0, description="How many source rows carry this value.")
-    # Populated only for an ambiguous match (e.g. a description bridge landing on
-    # more than one PRDID): every candidate target value, so a human reviewer can
-    # pick one. When set, `target_value` is left `None` — nothing is guessed.
-    # Confidence is always MEDIUM here, so the executor never auto-applies it
-    # regardless of this field; it exists purely to inform the reviewer.
+    # Populated whenever this source value has more than one verified candidate
+    # target (e.g. both an identity match and a real transform match) — every
+    # sibling candidate target value, INCLUDING this match's own `target_value`,
+    # so a reviewer can see what else this value could also map to. Every
+    # candidate is independently accepted (see `value_pairing.pipeline` module
+    # docstring) rather than forced to a single winner — reconciliation's
+    # per-record date + quantity compare is the real arbiter. `None` when there
+    # was only one candidate.
     candidates: list[str] | None = None
+    # The date-overlap corroboration signal for THIS candidate specifically —
+    # True (dates overlap, a positive signal), False (checked, no overlap), or
+    # None (no signal: a sole candidate never computes this, or neither side
+    # had parseable dates). A ranking/labeling hint for the reviewer only —
+    # never a filter that suppresses a candidate.
+    corroboration: bool | None = None
+    # Set only when this match came from a freshly-verified LLM pairing that was
+    # written to the `value_pair_library` store as PENDING (see
+    # `recon_engine.value_pairing.pipeline`). Lets the review UI call the
+    # approve/reject endpoints for exactly this row. `None` for identity
+    # pre-pass hits, library-approved reuse, or anything already final.
+    library_id: str | None = None
 
 
 class ValueMapping(BaseModel):

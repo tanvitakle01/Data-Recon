@@ -47,7 +47,10 @@ Mapping Sheet ─┐ │                                                        
 ```
 
 Terminal classifications: **match · mismatch · missing_in_source ·
-missing_in_target · exception**.
+missing_in_target**, presented to users as three categories — **Match ·
+Quantity Mismatch · Mismatch** — with the two one-sided classifications
+(business key present on only one side) unified into the single Mismatch
+category.
 
 ---
 

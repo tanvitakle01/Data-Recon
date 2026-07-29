@@ -4,7 +4,7 @@ export const WIZARD_STEPS = [
     path: "comparison-type",
     number: 1,
     label: "Dataset Type",
-    description: "Choose the business process being reconciled.",
+    description: "Choose the dataset being reconciled.",
   },
   {
     key: "source",
@@ -26,14 +26,14 @@ export const WIZARD_STEPS = [
     number: 4,
     label: "Mapping",
     description:
-      "Choose Manual or Deterministic mapping, confirm the source-to-target field mapping, and prepare the data for reconciliation.",
+      "Choose Manual or Deterministic mapping and prepare the data for reconciliation.",
   },
   {
     key: "reconciliation",
     path: "reconciliation",
     number: 5,
     label: "Results",
-    description: "Run the comparison, review the results, and open insights.",
+    description: "Run the comparison, review the results, and view insights.",
   },
 ];
 

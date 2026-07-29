@@ -9,7 +9,7 @@
 // more <RuleSection>, so the set stays easy to extend without touching the
 // shared row/table rendering below.
 
-import { Button, Select } from "@bristlecone/canopy";
+import { Button, Select, EmptyState } from "@bristlecone/canopy";
 
 function RuleRow({ rule, fieldOptions, onChange, onRemove, removeLabel }) {
   const touched = Boolean(rule.field) || Boolean(rule.instruction);
@@ -105,7 +105,7 @@ function RuleSection({
           </table>
         </div>
       ) : (
-        <p className="wizard-step__hint">No {title.toLowerCase()} defined yet.</p>
+        <EmptyState title={`No ${title.toLowerCase()} defined yet.`} />
       )}
     </div>
   );

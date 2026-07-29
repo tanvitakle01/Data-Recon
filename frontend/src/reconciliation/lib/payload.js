@@ -1,3 +1,5 @@
+import { fieldRoleLabel } from "./fieldRoleAliases";
+
 // Appends one reconciliation side (source or target) to a FormData in the
 // shape /automap and /reconcile expect: an uploaded Excel file
 // (`<role>_file` + optional `sheet_name_<role>`) for Excel datasets, or a
@@ -28,41 +30,87 @@ export function appendDatasetSide(formData, role, roleState, excludeFields) {
   return false;
 }
 
+// Resolves the confirmed field mapping's rows into the canonical roles
+// Deterministic Mapping needs (product/location/date/quantity) — by
+// `row.field_role` (auto-detected from the header text, or manually tagged in
+// MappingEditor's "Business Field" column) rather than by literal column
+// name. This is what lets an Excel header like "SKU" or "Plant Code" serve
+// the exact same role "Material"/"ProductionPlant" serve for Live Fetch.
+// Returns only fully-paired rows (both a source and target column set).
+export function resolveValueMappingFields(display) {
+  const rows = display ?? [];
+  const byRole = {};
+  for (const row of rows) {
+    if (!row.field_role || byRole[row.field_role]) continue;
+    if (!row.source_col || !row.target_col) continue;
+    byRole[row.field_role] = { source: row.source_col, target: row.target_col };
+  }
+  return byRole;
+}
+
 // FormData for POST /api/recon/value-mapping/run: the full current source +
-// target datasets (no field exclusions — the matchers read columns, e.g.
-// MaterialGroup/PRODGROUP, that aren't part of the confirmed field mapping at
-// all), in the same file-or-rows shape /automap and /reconcile use. Returns
-// null if either side has no usable payload (e.g. after a refresh dropped the
-// in-memory file/rows).
-export function buildValueMappingFormData(source, target) {
+// target datasets (no field exclusions — the pipeline may read columns that
+// aren't part of the confirmed field mapping at all), in the same
+// file-or-rows shape /automap and /reconcile use, plus the connector kinds
+// (key the value-pair library so approved pairs are only reused between the
+// same connector pair), the parsed mapping sheet (optional STM context for
+// the LLM pairing step — a hint only, never load-bearing), and the resolved
+// product/location/date column names (see resolveValueMappingFields) so the
+// backend pairs whichever columns the confirmed mapping says play those
+// roles, on either side. Returns null if either side has no usable payload
+// (e.g. after a refresh dropped the in-memory file/rows).
+export function buildValueMappingFormData(source, target, mappingSheetContext, mappingDisplay) {
   const formData = new FormData();
   const okSource = appendDatasetSide(formData, "source", source);
   const okTarget = appendDatasetSide(formData, "target", target);
-  return okSource && okTarget ? formData : null;
+  if (!okSource || !okTarget) return null;
+  if (source?.kind) formData.append("source_connector", source.kind);
+  if (target?.kind) formData.append("target_connector", target.kind);
+  if (mappingSheetContext) formData.append("mapping_sheet", JSON.stringify(mappingSheetContext));
+
+  const resolved = resolveValueMappingFields(mappingDisplay);
+  if (resolved.product) {
+    formData.append("source_product_field", resolved.product.source);
+    formData.append("target_product_field", resolved.product.target);
+  }
+  if (resolved.location) {
+    formData.append("source_location_field", resolved.location.source);
+    formData.append("target_location_field", resolved.location.target);
+  }
+  if (resolved.date) {
+    formData.append("source_date_field", resolved.date.source);
+    formData.append("target_date_field", resolved.date.target);
+  }
+  return formData;
 }
 
-// The field-mapping rows required before "Run Deterministic Mapping" can
-// fire: each names the source field, the required target field, and whether
-// it must be confirmed as a Key or Compare mapping.
-export const REQUIRED_VALUE_MAPPING_FIELDS = [
-  { source: "Material", target: "PRDID", role: "key" },
-  { source: "ProductionPlant", target: "LOCID", role: "key" },
-  { source: "RequestedDeliveryDate", target: "PERIODID0_TSTAMP", role: "key" },
-  { source: "RequestedQuantity", target: "SALESORDERREQUEST", role: "compare" },
+// The canonical business-field roles required before "Run Deterministic
+// Mapping" can fire, and whether each must be confirmed as a Key or Compare
+// mapping. Which actual column plays a role is resolved by `field_role` (see
+// resolveValueMappingFields), not by a literal expected name.
+export const VALUE_MAPPING_ROLE_REQUIREMENTS = [
+  { role: "product", requiredRowRole: "key" },
+  { role: "location", requiredRowRole: "key" },
+  { role: "date", requiredRowRole: "key" },
+  { role: "quantity", requiredRowRole: "compare" },
 ];
 
-// Which of the rows above are still missing/unconfirmed in the current field
+// Which of the roles above are still missing/unconfirmed in the current field
 // mapping — surfaced on the button's disabled tooltip so the user knows
 // exactly what to fix, rather than letting it fire against an incomplete map.
 export function missingValueMappingRequirements(display) {
   const rows = display ?? [];
-  return REQUIRED_VALUE_MAPPING_FIELDS.filter(
-    (req) =>
+  return VALUE_MAPPING_ROLE_REQUIREMENTS.filter(
+    ({ role, requiredRowRole }) =>
       !rows.some((row) => {
-        if (row.source_col !== req.source || row.target_col !== req.target) return false;
-        return req.role === "key" ? isKeyRole(row.role) : !isKeyRole(row.role);
+        if (row.field_role !== role || !row.source_col || !row.target_col) return false;
+        return requiredRowRole === "key" ? isKeyRole(row.role) : !isKeyRole(row.role);
       }),
-  );
+  ).map(({ role, requiredRowRole }) => ({
+    role,
+    label: fieldRoleLabel(role),
+    requiredRowRole,
+  }));
 }
 
 function omitFields(rows, fields) {

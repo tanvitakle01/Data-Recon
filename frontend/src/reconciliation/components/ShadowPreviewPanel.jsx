@@ -21,7 +21,7 @@ import {
   runContractReconciliation,
 } from "../lib/reconRun";
 import BeforeAfterCurtain from "./BeforeAfterCurtain";
-import { Button, Badge } from "@bristlecone/canopy";
+import { Button, Badge, Alert, Skeleton } from "@bristlecone/canopy";
 
 function dedupe(list) {
   return Array.from(new Set(list.filter(Boolean)));
@@ -297,8 +297,13 @@ function ShadowPreviewPanel() {
         </p>
       )}
 
-      {error && <p className="wizard-step__error">⚠️ {error}</p>}
-      {loading && <p className="wizard-step__hint">{loadingLabel}</p>}
+      {error && <Alert variant="error" style={{ marginTop: 8 }}>{error}</Alert>}
+      {loading && (
+        <div style={{ display: "grid", gap: 8, marginTop: 8 }} aria-label={loadingLabel}>
+          <Skeleton style={{ height: 120 }} />
+          <Skeleton style={{ height: 32, width: "40%" }} />
+        </div>
+      )}
 
       {!loading && shadowPreview && (
         <>
@@ -350,16 +355,17 @@ function ShadowPreviewPanel() {
 
           {shadowApproved && (
             <>
-              <p className="wizard-step__hint">
+              <Alert variant="success" style={{ marginTop: 8 }}>
                 Mapping done, shadow approved (fingerprint {String(shadowApproved).slice(0, 12)}…).
                 You can now run reconciliation.
-              </p>
+              </Alert>
               <div className="contract-actions">
                 <Button
                   type="button"
                   variant="primary"
                   size="lg"
                   onClick={runReconciliation}
+                  loading={running}
                   disabled={running}
                 >
                   {running ? "Reconciling…" : "Run Reconciliation"}

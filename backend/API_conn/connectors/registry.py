@@ -41,6 +41,12 @@ class ConnectorSpec:
     label: str             # human-facing name
     ui_connector_id: str   # the frontend CONNECTOR_OPTIONS id
     table_prefix_hint: str # naming-convention hint surfaced to the LLM
+    # Whether this connector partitions its entity sets by SAP IBP planning
+    # area. Where true, the same planning level is exposed once per area under
+    # identical field names, so the area must be established before an entity
+    # can be identified. Declared here rather than guessed from entity names, so
+    # a connector without planning areas is never offered a choice it doesn't have.
+    has_planning_areas: bool = False
 
 
 # The registered connectors. This is the ONLY place new live connectors get
@@ -73,6 +79,7 @@ CONNECTOR_SPECS: tuple[ConnectorSpec, ...] = (
             "SALESORDERREQUEST, and PERIODID0_TSTAMP. When identifying candidate "
             "target fields, prefer these technical field names over business labels "
             "such as Product ID or Location ID.",
+        has_planning_areas=True,
     ),
 )
 

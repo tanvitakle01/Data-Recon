@@ -1,0 +1,8 @@
+Target: IBP,,Source: S4,,,,
+Target fields,Technical fields,Source Table/Field,Description,Transformation,Join Condition,Filter
+Product ID,PRDID,VBAP-MATNR,Material,,1. Inner Join between VBAP and VBEP on VBAP-MATNR and VBEP-MATNR AND VBAP.POSNR = VBEP.POSNR,
+Location ID,LOCID,VBAP-WERKS,Production Plant,,,
+SALESORDERREQUEST,SALESORDERREQUEST,VBAP-KWMENG,Requested Quantity,,,
+Requested Delivery Date ,PERIODID0_TSTAMP,VBEP-EDATU,Requested Delivery Date,,,
+,,A_SalesOrderItem ,,,A_SalesOrderScheduleLine,
+ZOBP2508,,,,,,

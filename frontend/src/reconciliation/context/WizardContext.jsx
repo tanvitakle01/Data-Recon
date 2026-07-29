@@ -5,7 +5,12 @@ import { loadWizardDraft, saveWizardDraft } from "./wizardPersistence";
 
 function initWizardState() {
   const draft = loadWizardDraft();
-  return draft ?? createInitialWizardState();
+  if (!draft) return createInitialWizardState();
+  // Layer the draft over the current initial shape rather than trusting it
+  // wholesale: a draft saved before a new top-level slice existed would
+  // otherwise rehydrate without it, and the first component to read that slice
+  // crashes. The draft still wins for everything it does carry.
+  return { ...createInitialWizardState(), ...draft };
 }
 
 export function WizardProvider({ children }) {

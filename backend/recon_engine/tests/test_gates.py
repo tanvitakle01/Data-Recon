@@ -64,6 +64,44 @@ def test_gate1_rejects_bad_params():
     assert any("source_format" in e for e in report.errors)
 
 
+def test_gate1_accepts_valid_aggregate_group():
+    draft = _valid_draft().model_dump()
+    draft["operations"] = [
+        {
+            "op": "aggregate_group",
+            "params": {"by": ["id"], "aggregations": [{"field": "qty", "func": "sum"}]},
+        }
+    ]
+    report = validate_structural(draft, SRC_COLS, TGT_COLS)
+    assert report.ok, report.errors
+
+
+def test_gate1_rejects_aggregate_group_unknown_func():
+    draft = _valid_draft().model_dump()
+    draft["operations"] = [
+        {
+            "op": "aggregate_group",
+            "params": {"by": ["id"], "aggregations": [{"field": "qty", "func": "bogus"}]},
+        }
+    ]
+    report = validate_structural(draft, SRC_COLS, TGT_COLS)
+    assert not report.ok
+    assert any("unknown func" in e for e in report.errors)
+
+
+def test_gate1_rejects_aggregate_group_unknown_field():
+    draft = _valid_draft().model_dump()
+    draft["operations"] = [
+        {
+            "op": "aggregate_group",
+            "params": {"by": ["ghost"], "aggregations": [{"field": "qty", "func": "sum"}]},
+        }
+    ]
+    report = validate_structural(draft, SRC_COLS, TGT_COLS)
+    assert not report.ok
+    assert any("ghost" in e for e in report.errors)
+
+
 def test_gate1_tracks_rename_for_later_ops():
     draft = _valid_draft().model_dump()
     draft["operations"] = [

@@ -18,11 +18,11 @@
      states.
        --sb-bg    #143D4A  Teal (solid sidebar background)
        --sb-main  #EDE7E1  main nav items, icons, logo
-       --sb-sub   #BBB9AB  Reconciliation Engine substeps + their icons
+       --sb-sub   #FFFFFF  Reconciliation Engine substeps + their icons
        --sb-hover #1E1E1E  Basalt Black hover glow/highlight */
   --sb-bg: #143d4a;
   --sb-main: #ede7e1;
-  --sb-sub: #bbb9ab;
+  --sb-sub: #ffffff;
   --sb-hover: #1e1e1e;
   --sb-hairline: rgba(237, 231, 225, 0.14);
   --sb-hover-bg: rgba(30, 30, 30, 0.32);

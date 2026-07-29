@@ -2,7 +2,7 @@
 // Each row is { field, aggregation } and compiles to the contract's
 // aggregation_rules, applied deterministically in the shadow Aggregation stage.
 
-import { Button, Select } from "@bristlecone/canopy";
+import { Button, Select, EmptyState } from "@bristlecone/canopy";
 
 const AGGREGATION_OPTIONS = [
   { value: "sum", label: "Sum" },
@@ -92,7 +92,7 @@ function AggregationRulesBuilder({ fieldOptions, rules, onChange }) {
           </table>
         </div>
       ) : (
-        <p className="wizard-step__hint">No aggregation rules defined yet.</p>
+        <EmptyState title="No aggregation rules defined yet." />
       )}
     </div>
   );

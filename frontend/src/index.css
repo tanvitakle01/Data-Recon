@@ -5,7 +5,7 @@
    Tailwind v3, but because its components resolve colors through CSS custom
    properties rather than the v3 named-color preset, wiring reduces to this
    @source + the --bcone-* variables defined in :root below. */
-@source "../../design docs/canopy-design-system/src";
+@source "../../canopyDesign/src";
 
 /* ============================================================================
    DESIGN TOKENS — single source of truth for the whole app.

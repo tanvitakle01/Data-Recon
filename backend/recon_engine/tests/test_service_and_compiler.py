@@ -216,14 +216,13 @@ def test_full_pipeline_with_value_transformations_reconciles():
     )
     # The transformed shadow keys align with the target -> exact match.
     assert out["summary"]["match"] == 1, out["summary"]
-    assert out["summary"].get("missing_in_target", 0) == 0
-    assert out["summary"].get("missing_in_source", 0) == 0
+    assert out["summary"].get("mismatch", 0) == 0
 
 
 def test_run_reconciliation_excludes_unmapped_material_and_plant():
     """End-to-end: only VERY_HIGH/HIGH Material+Plant rows reach the join;
     MEDIUM/NONE rows are excluded entirely and counted separately, never as
-    missing_in_target. Also proves the excluded counts are deterministic
+    a mismatch. Also proves the excluded counts are deterministic
     across repeated runs of the same approved contract + snapshots."""
     source_df = pd.DataFrame({
         "Material": ["MAT-A", "MAT-B", "MAT-A"],
@@ -299,9 +298,8 @@ def test_run_reconciliation_excludes_unmapped_material_and_plant():
         )
         summary = out["summary"]
         assert summary["match"] == 1
-        assert summary["mismatch"] == 0
-        assert summary["missing_in_target"] == 0  # held-out rows never counted here
-        assert summary["missing_in_source"] == 0
+        assert summary["quantity_mismatch"] == 0
+        assert summary["mismatch"] == 0  # held-out rows never counted here
         assert summary["excluded_material_unmapped"] == 1  # MAT-B, MEDIUM
         assert summary["excluded_plant_unmapped"] == 1  # PL99, NONE
 
@@ -336,9 +334,8 @@ def test_full_compile_validate_approve_reconcile():
     )
     summary = out["summary"]
     assert summary["match"] == 1
-    assert summary["mismatch"] == 1
-    assert summary["missing_in_target"] == 1
-    assert summary["missing_in_source"] == 1
+    assert summary["quantity_mismatch"] == 1
+    assert summary["mismatch"] == 2
 
 
 def test_cannot_run_unapproved_contract():

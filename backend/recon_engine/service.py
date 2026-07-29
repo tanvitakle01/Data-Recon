@@ -14,9 +14,10 @@ it only orchestrates the deterministic engine and the stores.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
 
@@ -1201,12 +1202,15 @@ def run_reconciliation_with_script(
 
 # ── comparison sheet export (read-only) ──────────────────────────────────────
 
-# Business-friendly labels for the four terminal classifications.
+# Business-friendly labels for the four per-record classifications. The two
+# one-sided join outcomes (business key present on only one side) both
+# collapse onto the same "Mismatch" category — only three categories are ever
+# shown to a user: Match, Quantity Mismatch, Mismatch.
 _CLASS_LABELS: dict[str, str] = {
     "match": "Match",
     "mismatch": "Quantity Mismatch",
-    "missing_in_source": "Missing in Source",
-    "missing_in_target": "Missing in Target",
+    "missing_in_source": "Mismatch",
+    "missing_in_target": "Mismatch",
 }
 _CLASS_REMARKS: dict[str, str] = {
     "match": "Values match within tolerance.",
@@ -1217,26 +1221,31 @@ _CLASS_REMARKS: dict[str, str] = {
 _CLASS_ORDER = ["match", "mismatch", "missing_in_source", "missing_in_target"]
 
 # ── Export presentation: Status label + row fill per classification ──────────
-# The export collapses the four classifications into user-facing statuses and
-# colour-codes each row (and the Summary legend) by status. Note that
-# ``missing_in_source`` surfaces as "EXTRA IN TARGET" (a key the target has that
-# the source doesn't).
+# The export collapses the four per-record classifications into the same
+# three user-facing statuses as `_CLASS_LABELS` and colour-codes each row (and
+# the Summary legend) by status.
 _STATUS_BY_CLASS: dict[str, str] = {
     "match": "MATCH",
-    "mismatch": "MISMATCH",
-    "missing_in_target": "MISSING IN TARGET",
-    "missing_in_source": "EXTRA IN TARGET",
+    "mismatch": "QUANTITY MISMATCH",
+    "missing_in_target": "MISMATCH",
+    "missing_in_source": "MISMATCH",
 }
 _STATUS_FILL: dict[str, str] = {
     "MATCH": "C6EFCE",           # green
-    "MISMATCH": "FFEB9C",  # amber
-    "MISSING IN TARGET": "FFC7CE",  # red
-    "EXTRA IN TARGET": "BDD7EE",    # blue
+    "QUANTITY MISMATCH": "FFEB9C",  # amber
+    "MISMATCH": "FFC7CE",  # red
 }
-# Summary "Results" block order (task spec): matches first, then issues.
-_SUMMARY_ORDER = ["match", "mismatch", "missing_in_target", "missing_in_source"]
+# Summary "Results" block (task spec): one row per ReconciliationSummary field,
+# matches first, then issues.
+_SUMMARY_ORDER = ["match", "quantity_mismatch", "mismatch"]
+# Summary field -> (display label, status key, per-record classifications it rolls up).
+_SUMMARY_BUCKETS: dict[str, tuple[str, str, list[str]]] = {
+    "match": ("Match", "MATCH", ["match"]),
+    "quantity_mismatch": ("Quantity Mismatch", "QUANTITY MISMATCH", ["mismatch"]),
+    "mismatch": ("Mismatch", "MISMATCH", ["missing_in_target", "missing_in_source"]),
+}
 # "All Records" sheet sort order (task spec): issues first, matches last.
-_ALL_RECORDS_ORDER = ["mismatch", "missing_in_target", "missing_in_source", "match"]
+_ALL_RECORDS_ORDER = ["quantity_mismatch", "mismatch", "match"]
 _HEADER_FILL = "1F4E78"  # dark blue for the All Records header row
 
 # Columns produced by build_enriched_detail that must not be shadowed by a
@@ -1244,26 +1253,98 @@ _HEADER_FILL = "1F4E78"  # dark blue for the All Records header row
 _RESERVED_DETAIL_COLS = {
     "business_key", "classification", "classification_label", "remark", "detail",
     "field_diffs", "source_values", "target_values",
+    "OriginalMaterial", "OriginalPRDID", "OriginalPlant", "OriginalLOCID",
+    "Date", "Status", "ReqQty", "SalesOrderRequest", "Delta",
 }
 
 
-def _ordered_source_fields(contract: Any) -> list[str]:
-    """Source-side business key + compare field names, in configured order.
+# "All Records" sheet columns (task spec): both sides' paired identifiers
+# side by side, then the shared Date/Status, then the compared quantities and
+# their signed Delta — replaces the old source-only, one-column-per-field
+# layout that made a Material/Plant mismatch diagnosis require manual
+# side-by-side lookups against the value-mapping library.
+_EXPORT_COLUMNS = [
+    "OriginalMaterial", "OriginalPRDID", "OriginalPlant", "OriginalLOCID",
+    "Date", "Status", "ReqQty", "SalesOrderRequest", "Delta",
+]
 
-    Mirrors the column set build_enriched_detail attaches per row (one column
-    per natural field name), so the detail export can list them as real
-    columns instead of a concatenated string.
+_FieldPair = tuple[str, str]
+
+
+def _export_field_roles(
+    contract: Any,
+) -> tuple[_FieldPair | None, _FieldPair | None, _FieldPair | None, _FieldPair | None]:
+    """Identify this app's fixed business-key/compare-field roles — Material/
+    PRDID, Plant/LOCID, the date key, and the single quantity compare field —
+    from a contract's ``business_key``/``compare_fields``.
+
+    Matches on the TARGET field name (stable across the S4/IBP/Excel connector
+    variants this app supports), the same convention
+    ``models.results.excluded_unmapped_counts`` already relies on. Returns
+    ``(source_field, target_field)`` per role, or ``None`` when the contract
+    has no field in that role.
     """
-    bk_src = [k.source_field for k in contract.business_key] if contract else []
-    cf_src = [c.source_field for c in contract.compare_fields] if contract else []
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for f in (*bk_src, *cf_src):
-        if f in _RESERVED_DETAIL_COLS or f in seen:
-            continue
-        seen.add(f)
-        ordered.append(f)
-    return ordered
+    if contract is None:
+        return None, None, None, None
+    material = next(
+        ((k.source_field, k.target_field) for k in contract.business_key if k.target_field == "PRDID"),
+        None,
+    )
+    plant = next(
+        ((k.source_field, k.target_field) for k in contract.business_key if k.target_field == "LOCID"),
+        None,
+    )
+    used_targets = {p[1] for p in (material, plant) if p}
+    date = next(
+        (
+            (k.source_field, k.target_field)
+            for k in contract.business_key
+            if k.target_field not in used_targets
+        ),
+        None,
+    )
+    qty = (
+        (contract.compare_fields[0].source_field, contract.compare_fields[0].target_field)
+        if contract.compare_fields
+        else None
+    )
+    return material, plant, date, qty
+
+
+def _to_number(value: Any) -> float | None:
+    """Best-effort numeric coercion for the Delta calculation.
+
+    Missing/non-numeric values become ``None`` — never a silent 0, which would
+    corrupt the Delta convention for the one-sided Missing/Extra cases.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _signed_delta(req_qty: Any, sales_order_request: Any) -> float | None:
+    """``ReqQty - SalesOrderRequest``, signed, for every row.
+
+    Convention for the one-sided Missing/Extra cases (the app's five
+    reconciliation record classes, none of which will ever populate both
+    columns' underlying source AND target rows for those statuses): the
+    absent side is treated as 0 — a Missing-in-Target row (source only) gets
+    ``Delta = ReqQty``, an Extra-in-Target row (target only) gets
+    ``Delta = -SalesOrderRequest``. ``None`` only when BOTH sides are absent.
+    """
+    req = _to_number(req_qty)
+    sor = _to_number(sales_order_request)
+    if req is None and sor is None:
+        return None
+    return (req or 0.0) - (sor or 0.0)
 
 
 def build_enriched_detail(run_id: str) -> pd.DataFrame:
@@ -1278,10 +1359,16 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     Per row the frame carries: ``business_key``, ``classification`` (raw enum
     value), ``classification_label`` / ``remark`` (business-friendly),
     ``detail``, ``field_diffs`` (list), ``source_values`` / ``target_values``
-    (joined ``field=value`` strings), and one natural-named column per business
-    key / compare field (unified across sides) so downstream dimension detection
-    works. The shadow may have expired (TTL) — source values are then blank but
-    every record is still listed.
+    (joined ``field=value`` strings), one natural-named column per business
+    key / compare field (unified across sides) so downstream dimension
+    detection works, and the fixed debuggability columns the comparison
+    workbook's "All Records" sheet renders — ``OriginalMaterial`` /
+    ``OriginalPlant`` (the RAW pre-value-mapping source values, resolved via
+    the shadow row's lineage back to Raw_Source), ``OriginalPRDID`` /
+    ``OriginalLOCID`` (the paired target-side values actually used for the
+    join), ``Date``, ``Status``, ``ReqQty``, ``SalesOrderRequest``, and signed
+    ``Delta`` (see :func:`_signed_delta`). The shadow may have expired (TTL) —
+    source-derived values are then blank but every record is still listed.
     """
     from backend.recon_engine.engine.reconciler import _build_key
 
@@ -1300,6 +1387,7 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     cf_src = [c.source_field for c in contract.compare_fields] if contract else []
     cf_tgt = [c.target_field for c in contract.compare_fields] if contract else []
     field_pairs = list(zip(bk_src, bk_tgt)) + list(zip(cf_src, cf_tgt))
+    material_pair, plant_pair, date_pair, qty_pair = _export_field_roles(contract)
 
     detail = result_store.load_result_frame(result.result_id)
     has_field_diffs = "field_diffs" in detail.columns
@@ -1320,6 +1408,12 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     except Exception:  # noqa: BLE001
         logger.warning("Enriched detail: target frame unavailable for run %s", run_id)
 
+    raw_source_df: pd.DataFrame | None = None
+    try:
+        raw_source_df = snapshot_store.load_snapshot_frame(run.source_snapshot_id)
+    except Exception:  # noqa: BLE001 - non-fatal; original-value columns are then blank
+        logger.warning("Enriched detail: raw source frame unavailable for run %s", run_id)
+
     def _vals(row: pd.Series | None, fields: list[str]) -> str:
         if row is None:
             return ""
@@ -1334,6 +1428,27 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             return _jsonable(t_row[tf])
         return None
 
+    def _original_raw_value(s_row: pd.Series | None, field: str | None) -> Any:
+        """The pre-value-mapping raw source value for ``field``, resolved via
+        the shadow row's lineage back to Raw_Source. The shadow's own column
+        already holds the POST-mapping (target-paired) value, so this must go
+        back to the raw snapshot rather than reading the shadow row directly.
+        """
+        if s_row is None or field is None or raw_source_df is None:
+            return None
+        if LINEAGE_COL not in s_row.index:
+            return None
+        try:
+            row_ids = json.loads(s_row[LINEAGE_COL] or "[]")
+        except (TypeError, ValueError):
+            return None
+        if not row_ids:
+            return None
+        row_id = row_ids[0]
+        if not (0 <= row_id < len(raw_source_df)) or field not in raw_source_df.columns:
+            return None
+        return _jsonable(raw_source_df.iloc[row_id][field])
+
     rows: list[dict[str, Any]] = []
     for _, d in detail.iterrows():
         key = d.get("business_key")
@@ -1343,6 +1458,12 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
         diffs = d["field_diffs"] if has_field_diffs else []
         if not isinstance(diffs, list):
             diffs = []
+
+        req_qty = s_row[qty_pair[0]] if qty_pair and s_row is not None and qty_pair[0] in s_row.index else None
+        sales_order_request = (
+            t_row[qty_pair[1]] if qty_pair and t_row is not None and qty_pair[1] in t_row.index else None
+        )
+
         record: dict[str, Any] = {
             "business_key": key,
             "classification": cls,
@@ -1352,6 +1473,15 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             "field_diffs": diffs,
             "source_values": _vals(s_row, [*bk_src, *cf_src]),
             "target_values": _vals(t_row, [*bk_tgt, *cf_tgt]),
+            "OriginalMaterial": _original_raw_value(s_row, material_pair[0] if material_pair else None),
+            "OriginalPRDID": _unified(s_row, t_row, *material_pair) if material_pair else None,
+            "OriginalPlant": _original_raw_value(s_row, plant_pair[0] if plant_pair else None),
+            "OriginalLOCID": _unified(s_row, t_row, *plant_pair) if plant_pair else None,
+            "Date": _unified(s_row, t_row, *date_pair) if date_pair else None,
+            "Status": _STATUS_BY_CLASS.get(cls, cls.upper()),
+            "ReqQty": _jsonable(req_qty),
+            "SalesOrderRequest": _jsonable(sales_order_request),
+            "Delta": _signed_delta(req_qty, sales_order_request),
         }
         for sf, tf in field_pairs:
             if sf in _RESERVED_DETAIL_COLS:
@@ -1362,32 +1492,98 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _snap_desc(snap: Any) -> str:
-    if snap is None:
-        return "(unavailable)"
-    return (
-        f"{snap.snapshot_id}  |  {snap.row_count} rows × "
-        f"{len(snap.columns)} cols  |  hash {str(snap.snapshot_hash)[:12]}"
-    )
+# IST has no daylight-saving component, so a fixed +5:30 offset from UTC is
+# exact — no zoneinfo/pytz dependency needed for this one display conversion.
+_IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def _format_ist(value: Any) -> str:
+    """Render a UTC ``datetime`` (or ISO string) as IST date & time for display."""
+    dt = value
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except ValueError:
+            return dt
+    if not isinstance(dt, datetime):
+        return "" if dt is None else str(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist = dt.astimezone(timezone.utc) + _IST_OFFSET
+    return ist.strftime("%Y-%m-%d %H:%M:%S") + " IST"
+
+
+# Business-friendly labels for a value-pairing confidence tier, matching the
+# Mapping Review page's TIER_LABEL (frontend/src/reconciliation/steps/
+# MappingReviewPage.jsx) for the two tiers that reach the shadow, plus the
+# tiers that only ever appear on an unpaired/held-out row.
+_CONFIDENCE_LABELS: dict[str, str] = {
+    "very_high": "Identity",
+    "high": "Verified",
+    "medium": "Ambiguous",
+    "none": "Unmatched",
+    "out_of_scope": "Out of Scope",
+}
+
+# "Mapping Details" sheet columns (task spec): both Material↔PRDID and
+# Plant↔LOCID value-pairing reviews, flattened into one filterable table
+# rather than two disconnected blocks, with a leading "Mapping" column to
+# tell the two apart.
+_MAPPING_DETAIL_COLUMNS = [
+    "Mapping", "Source Value", "Target Value", "Status", "Confidence",
+    "Corroboration", "Also Candidate For", "Row Count", "Reason",
+]
+
+
+def _find_value_mapping(contract: Any, target_field: str | None) -> Any | None:
+    """The contract's ``ValueMapping`` for a given target field (PRDID/LOCID),
+    matched the same way :func:`_export_field_roles` identifies Material/Plant
+    — by TARGET field name, stable across connector variants."""
+    if contract is None or target_field is None:
+        return None
+    return next((vm for vm in contract.value_mappings if vm.target_field == target_field), None)
+
+
+def _summarize_value_mapping(vm: Any | None) -> tuple[int, int]:
+    """Distinct-VALUE matched/unmatched counts for one field pair's value
+    mapping — a source value with two accepted candidates (see
+    value_pairing.pipeline) counts once, not twice, mirroring the Mapping
+    Review page's own summary charts."""
+    if vm is None:
+        return 0, 0
+    matched = {m.source_value for m in vm.matches if m.target_value is not None}
+    unmatched = {m.source_value for m in vm.matches if m.target_value is None}
+    return len(matched), len(unmatched)
 
 
 def build_comparison_workbook(run_id: str) -> bytes:
     """Build the downloadable, colour-coded 2-sheet comparison workbook (.xlsx).
 
     Read-only reconstruction — reconciliation logic is untouched; values are
-    re-derived verbatim via :func:`build_enriched_detail`. Exactly two sheets:
+    re-derived verbatim via :func:`build_enriched_detail`; the Mapping Details
+    sheet is re-derived verbatim from ``contract.value_mappings`` (the exact
+    same data the Mapping Review page shows). Exactly three sheets:
 
-    1. ``Summary`` — a **Run Information** block (run / contract / snapshot
-       metadata) and a **Results** block listing every category (even at count
-       0) with its Count and % of Total, each row filled with the category's
-       colour. Top row frozen; column widths auto-fit.
-    2. ``All Records`` — matches, mismatches, missing and extra rows stacked into
-       one flat, field-level table: one column per configured source field,
-       followed by ``_STATUS`` and ``_MISMATCHED_FIELDS``, sorted issues-first
-       and colour-coded by status. Bold white header on dark blue, frozen,
-       with AutoFilter; widths auto-fit.
+    1. ``Summary`` — the **Results** table first (every category, even at
+       count 0, with Count and % of Total, each row filled with the
+       category's colour), then a trimmed **Run Information** block (Run
+       Status / Created At in IST / Created By only), then three native pie
+       charts: overall run results, and the Material↔PRDID and Plant↔LOCID
+       value-mapping matched/unmatched distributions.
+    2. ``All Records`` — matches, quantity mismatches, and mismatches (a
+       business key present on only one side) stacked into one flat,
+       field-level table, sorted issues-first and colour-coded by status.
+       Bold white header on dark blue, frozen, with AutoFilter; widths
+       auto-fit.
+    3. ``Mapping Details`` — every value-mapping match for BOTH field pairs
+       (Material↔PRDID, Plant↔LOCID) in one flat, filterable table — the same
+       pairing decisions the Mapping Review page shows, colour-coded
+       Paired/Unpaired.
     """
     from openpyxl import Workbook
+    from openpyxl.chart import PieChart, Reference
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.chart.marker import DataPoint
     from openpyxl.styles import Font, PatternFill
     from openpyxl.utils import get_column_letter
 
@@ -1400,10 +1596,14 @@ def build_comparison_workbook(run_id: str) -> bytes:
         raise KeyError(f"No reconciliation result found for run '{run_id}'.")
 
     contract = contract_store.get_contract(run.contract_id, run.contract_version)
-    src_snap = snapshot_store.get_snapshot(run.source_snapshot_id)
-    tgt_snap = snapshot_store.get_snapshot(run.target_snapshot_id)
     enriched = build_enriched_detail(run_id)
     summary = result.summary.model_dump()
+
+    material_pair, plant_pair, _date_pair, _qty_pair = _export_field_roles(contract)
+    material_vm = _find_value_mapping(contract, material_pair[1] if material_pair else None)
+    plant_vm = _find_value_mapping(contract, plant_pair[1] if plant_pair else None)
+    material_matched, material_unmatched = _summarize_value_mapping(material_vm)
+    plant_matched, plant_unmatched = _summarize_value_mapping(plant_vm)
 
     bold = Font(bold=True)
     block_header = Font(bold=True, size=12)
@@ -1419,61 +1619,130 @@ def build_comparison_workbook(run_id: str) -> bytes:
         for idx, width in widths.items():
             ws.column_dimensions[get_column_letter(idx)].width = min(max(width + 2, 10), 80)
 
+    def _labeled_pie(title: str, data_ref: Reference, cat_ref: Reference, colors: list[str]) -> PieChart:
+        chart = PieChart()
+        chart.title = title
+        chart.add_data(data_ref, titles_from_data=False)
+        chart.set_categories(cat_ref)
+        chart.dataLabels = DataLabelList()
+        chart.dataLabels.showVal = True
+        chart.height = 8
+        chart.width = 12
+        points = []
+        for idx, color in enumerate(colors):
+            point = DataPoint(idx=idx)
+            point.graphicalProperties.solidFill = color
+            points.append(point)
+        chart.series[0].data_points = points
+        return chart
+
     wb = Workbook()
 
     # ── Sheet 1: Summary ─────────────────────────────────────────────────────
     ws1 = wb.active
     ws1.title = "Summary"
 
-    ws1["A1"] = "Run Information"
-    ws1["A1"].font = block_header
-    run_info = [
-        ("Run ID", run.run_id),
-        ("Status", getattr(run.status, "value", str(run.status))),
-        ("Created At", _jsonable(run.created_at)),
-        ("Created By", run.created_by),
-        ("Rules ID", run.contract_id),
-        ("Rules Version", run.contract_version),
-        ("Source Snapshot", _snap_desc(src_snap)),
-        ("Target Snapshot", _snap_desc(tgt_snap)),
-    ]
-    r = 2
-    for label, value in run_info:
-        ws1.cell(row=r, column=1, value=label).font = bold
-        ws1.cell(row=r, column=2, value=value)
-        r += 1
-
-    r += 1  # blank spacer row
-    ws1.cell(row=r, column=1, value="Results").font = block_header
-    r += 1
+    # -- Results table (top) --
+    ws1.cell(row=1, column=1, value="Results").font = block_header
     for col, name in enumerate(("Category", "Count", "% of Total"), start=1):
-        ws1.cell(row=r, column=col, value=name).font = bold
-    r += 1
+        ws1.cell(row=2, column=col, value=name).font = bold
 
     total = int(summary.get("total", 0))
-    for cls in _SUMMARY_ORDER:
-        count = int(summary.get(cls, 0))
+    results_start_row = 3
+    r = results_start_row
+    for field in _SUMMARY_ORDER:
+        label, status, _raw_classes = _SUMMARY_BUCKETS[field]
+        count = int(summary.get(field, 0))
         pct = (count / total * 100.0) if total else 0.0
-        fill = PatternFill("solid", fgColor=_STATUS_FILL[_STATUS_BY_CLASS[cls]])
+        fill = PatternFill("solid", fgColor=_STATUS_FILL[status])
         cells = [
-            ws1.cell(row=r, column=1, value=_CLASS_LABELS[cls]),
+            ws1.cell(row=r, column=1, value=label),
             ws1.cell(row=r, column=2, value=count),
             ws1.cell(row=r, column=3, value=f"{pct:.1f}%"),
         ]
         for c in cells:
             c.fill = fill
         r += 1
+    results_end_row = r - 1
     # Total row — bold, no category colour (not part of the legend).
     for col, value in ((1, "Total"), (2, total), (3, "100.0%" if total else "0.0%")):
         ws1.cell(row=r, column=col, value=value).font = bold
+    r += 2  # blank spacer
+
+    # -- Run Information (trimmed: Run Status / Created At (IST) / Created By) --
+    ws1.cell(row=r, column=1, value="Run Information").font = block_header
+    r += 1
+    run_info = [
+        ("Run Status", getattr(run.status, "value", str(run.status))),
+        ("Created At", _format_ist(run.created_at)),
+        ("Created By", run.created_by),
+    ]
+    for label, value in run_info:
+        ws1.cell(row=r, column=1, value=label).font = bold
+        ws1.cell(row=r, column=2, value=value)
+        r += 1
+
+    # -- Chart data (Material/Plant mapping matched vs. unmatched) --
+    # Written as a visible, labelled mini-table (column E) rather than a hidden
+    # scratch area — useful on its own, and it's what the two mapping pie
+    # charts reference.
+    chart_col = 5  # column E
+    cr = 1
+    ws1.cell(row=cr, column=chart_col, value="Material → PRDID Mapping").font = block_header
+    cr += 1
+    material_data_start = cr
+    ws1.cell(row=cr, column=chart_col, value="Matched")
+    ws1.cell(row=cr, column=chart_col + 1, value=material_matched)
+    cr += 1
+    ws1.cell(row=cr, column=chart_col, value="Unmatched")
+    ws1.cell(row=cr, column=chart_col + 1, value=material_unmatched)
+    material_data_end = cr
+    cr += 2
+
+    ws1.cell(row=cr, column=chart_col, value="Plant → LOCID Mapping").font = block_header
+    cr += 1
+    plant_data_start = cr
+    ws1.cell(row=cr, column=chart_col, value="Matched")
+    ws1.cell(row=cr, column=chart_col + 1, value=plant_matched)
+    cr += 1
+    ws1.cell(row=cr, column=chart_col, value="Unmatched")
+    ws1.cell(row=cr, column=chart_col + 1, value=plant_unmatched)
+    plant_data_end = cr
+
+    # -- Charts (bottom) --
+    charts_row = max(r, cr) + 2
+    ws1.cell(row=charts_row - 1, column=1, value="Charts").font = block_header
+
+    overall_chart = _labeled_pie(
+        "Overall Run Results",
+        Reference(ws1, min_col=2, min_row=results_start_row, max_row=results_end_row),
+        Reference(ws1, min_col=1, min_row=results_start_row, max_row=results_end_row),
+        [_STATUS_FILL[_SUMMARY_BUCKETS[field][1]] for field in _SUMMARY_ORDER],
+    )
+    ws1.add_chart(overall_chart, f"A{charts_row}")
+
+    material_chart = _labeled_pie(
+        "Material → Product ID Mapping Review",
+        Reference(ws1, min_col=chart_col + 1, min_row=material_data_start, max_row=material_data_end),
+        Reference(ws1, min_col=chart_col, min_row=material_data_start, max_row=material_data_end),
+        ["C6EFCE", "FFC7CE"],  # Matched (green) / Unmatched (red)
+    )
+    ws1.add_chart(material_chart, f"I{charts_row}")
+
+    plant_chart = _labeled_pie(
+        "Plant → Location ID Mapping Review",
+        Reference(ws1, min_col=chart_col + 1, min_row=plant_data_start, max_row=plant_data_end),
+        Reference(ws1, min_col=chart_col, min_row=plant_data_start, max_row=plant_data_end),
+        ["C6EFCE", "FFC7CE"],
+    )
+    ws1.add_chart(plant_chart, f"Q{charts_row}")
 
     ws1.freeze_panes = "A2"
     _autofit(ws1)
 
     # ── Sheet 2: All Records ─────────────────────────────────────────────────
     ws2 = wb.create_sheet("All Records")
-    source_fields = _ordered_source_fields(contract)
-    columns = [*source_fields, "_STATUS", "_MISMATCHED_FIELDS"]
+    columns = _EXPORT_COLUMNS
     header_fill = PatternFill("solid", fgColor=_HEADER_FILL)
     header_font = Font(bold=True, color="FFFFFF")
     for col, name in enumerate(columns, start=1):
@@ -1482,25 +1751,58 @@ def build_comparison_workbook(run_id: str) -> bytes:
         c.fill = header_fill
 
     row_idx = 2
-    for cls in _ALL_RECORDS_ORDER:
-        subset = enriched if enriched.empty else enriched[enriched["classification"] == cls]
+    for field in _ALL_RECORDS_ORDER:
+        _label, bucket_status, raw_classes = _SUMMARY_BUCKETS[field]
+        subset = enriched if enriched.empty else enriched[enriched["classification"].isin(raw_classes)]
         for _, rec in subset.iterrows():
-            status = _STATUS_BY_CLASS.get(cls, cls.upper())
-            mismatched_fields = (
-                ",".join(d["field"] for d in rec["field_diffs"]) if cls == "mismatch" else ""
-            )
-            values = {f: rec.get(f) for f in source_fields}
-            values["_STATUS"] = status
-            values["_MISMATCHED_FIELDS"] = mismatched_fields
-            fill = PatternFill("solid", fgColor=_STATUS_FILL[status])
+            status = rec.get("Status") or bucket_status
+            fill = PatternFill("solid", fgColor=_STATUS_FILL.get(status, "FFFFFF"))
             for col, name in enumerate(columns, start=1):
-                cell = ws2.cell(row=row_idx, column=col, value=values[name])
+                cell = ws2.cell(row=row_idx, column=col, value=rec.get(name))
                 cell.fill = fill
             row_idx += 1
 
     ws2.freeze_panes = "A2"
     ws2.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{max(1, row_idx - 1)}"
     _autofit(ws2)
+
+    # ── Sheet 3: Mapping Details ─────────────────────────────────────────────
+    ws3 = wb.create_sheet("Mapping Details")
+    mapping_columns = _MAPPING_DETAIL_COLUMNS
+    for col, name in enumerate(mapping_columns, start=1):
+        c = ws3.cell(row=1, column=col, value=name)
+        c.font = header_font
+        c.fill = header_fill
+
+    row_idx = 2
+    for label, vm in (("Material → PRDID", material_vm), ("Plant → LOCID", plant_vm)):
+        if vm is None:
+            continue
+        for m in vm.matches:
+            paired = m.target_value is not None
+            status = "Paired" if paired else "Unpaired"
+            siblings = [c for c in (m.candidates or []) if c != m.target_value]
+            corroboration = ""
+            if siblings:
+                corroboration = (
+                    "Dates overlap" if m.corroboration is True
+                    else "No date overlap" if m.corroboration is False
+                    else "No signal"
+                )
+            values = [
+                label, m.source_value, m.target_value, status,
+                _CONFIDENCE_LABELS.get(m.confidence.value, m.confidence.value),
+                corroboration, ", ".join(siblings), m.row_count, m.evidence,
+            ]
+            fill = PatternFill("solid", fgColor="C6EFCE" if paired else "FFC7CE")
+            for col, value in enumerate(values, start=1):
+                cell = ws3.cell(row=row_idx, column=col, value=value)
+                cell.fill = fill
+            row_idx += 1
+
+    ws3.freeze_panes = "A2"
+    ws3.auto_filter.ref = f"A1:{get_column_letter(len(mapping_columns))}{max(1, row_idx - 1)}"
+    _autofit(ws3)
 
     buf = BytesIO()
     wb.save(buf)

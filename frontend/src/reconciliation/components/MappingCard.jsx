@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Badge } from "@bristlecone/canopy";
+import { Badge, Alert } from "@bristlecone/canopy";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 
@@ -84,16 +84,13 @@ function MappingCard() {
       </div>
 
       {notice && (
-        <div className="wizard-mapcard__notice">
-          <span>⚠️ {notice}</span>
-          <button
-            type="button"
-            className="wizard-link"
-            onClick={() => dispatch({ type: WizardActions.CLEAR_FIELD_CHANGE_NOTICE })}
-          >
-            Dismiss
-          </button>
-        </div>
+        <Alert
+          variant="warning"
+          onDismiss={() => dispatch({ type: WizardActions.CLEAR_FIELD_CHANGE_NOTICE })}
+          style={{ marginBottom: 12 }}
+        >
+          {notice}
+        </Alert>
       )}
 
       <CardSide title="Source" role="source" roleState={state.source} onEdit={editRole} />

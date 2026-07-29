@@ -35,6 +35,10 @@ class OperationSpec:
     field_params: tuple[str, ...] = ()
     # Params whose value must be a *list* of column names in the source schema.
     field_list_params: tuple[str, ...] = ()
+    # Params whose value must be a list of {"field": <known column>, "func":
+    # <name in ops.AGGREGATE_FUNCS>} dicts — e.g. aggregate_group's multi-field,
+    # multi-function aggregation spec.
+    aggregation_spec_params: tuple[str, ...] = ()
 
     def validate(self, field: str | None, params: dict[str, Any], columns: list[str]) -> list[str]:
         """Return a list of human-readable validation errors (empty == valid)."""
@@ -76,6 +80,28 @@ class OperationSpec:
                             errors.append(
                                 f"operation '{self.name}' param '{flp}' references unknown field '{c}'."
                             )
+
+        for asp in self.aggregation_spec_params:
+            val = params.get(asp)
+            if val is None:
+                continue
+            if not isinstance(val, list) or not val:
+                errors.append(f"operation '{self.name}' param '{asp}' must be a non-empty list.")
+                continue
+            for item in val:
+                if not isinstance(item, dict):
+                    errors.append(
+                        f"operation '{self.name}' param '{asp}' entries must be objects with 'field' and 'func'."
+                    )
+                    continue
+                if item.get("field") not in colset:
+                    errors.append(
+                        f"operation '{self.name}' param '{asp}' references unknown field '{item.get('field')}'."
+                    )
+                if item.get("func") not in ops.AGGREGATE_FUNCS:
+                    errors.append(
+                        f"operation '{self.name}' param '{asp}' has unknown func '{item.get('func')}'."
+                    )
         return errors
 
 
@@ -117,7 +143,10 @@ _SPECS: list[OperationSpec] = [
     ),
     OperationSpec(
         "remove_leading_zeros", OperationKind.TRANSFORM, ops.remove_leading_zeros,
-        "Strip leading zeros from a field ('005006' -> '5006').",
+        "Strip leading zeros from the embedded numeric run in a field's value "
+        "('005006' -> '5006', 'FG0006' -> 'FG6'); optional 'min_width' floors "
+        "how far it strips (e.g. min_width=2: 'FG0006' -> 'FG06').",
+        optional_params=("min_width",),
     ),
     OperationSpec(
         "replace_value", OperationKind.TRANSFORM, ops.replace_value,
@@ -245,6 +274,16 @@ _SPECS: list[OperationSpec] = [
         required_params=("by",),
         optional_params=("keep",),
         field_list_params=("by",),
+    ),
+    OperationSpec(
+        "aggregate_group", OperationKind.AGGREGATE, ops.aggregate_group,
+        "Group by one or more columns and apply one or more aggregations "
+        "(sum/count/average/min/max) in a single step — combines Group By + "
+        "Aggregate.",
+        requires_field=False,
+        required_params=("by", "aggregations"),
+        field_list_params=("by",),
+        aggregation_spec_params=("aggregations",),
     ),
     OperationSpec(
         "exact_match", OperationKind.COMPARE, ops.exact_match,

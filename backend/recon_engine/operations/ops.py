@@ -13,9 +13,13 @@ Two callable shapes exist:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
+
+from backend.recon_engine.models.contract import AggregationType, MEASURE_AGGREGATIONS
 
 # ── date format translation ──────────────────────────────────────────────────
 # Human tokens (DD.MM.YYYY) -> strftime. Order matters: longer/less-ambiguous
@@ -118,13 +122,35 @@ def append_suffix(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.Da
     return out
 
 
+_NUMERIC_RUN = re.compile(r"(\d+)")
+
+
 def remove_leading_zeros(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
-    """Strip leading zeros ('005006' -> '5006'). An all-zero value becomes '0'."""
+    """Strip leading zeros from the first embedded numeric run, leaving any
+    non-digit prefix/suffix untouched ('005006' -> '5006', 'FG0006' -> 'FG6').
+
+    ``min_width`` (default 1) is the floor the numeric run is stripped down
+    to, e.g. ``min_width=2`` turns '0006' into '06' rather than '6' — some
+    zero-padded codes (e.g. 'FG0006' <-> 'FG06') strip down to a minimum
+    width, not to bare significant digits. An all-zero run becomes as many
+    zeros as ``min_width`` requires (default: a single '0'). A value with no
+    digits at all is left unchanged.
+    """
     out = df.copy()
     col = out[field]
-    stripped = col.astype(str).str.lstrip("0")
-    stripped = stripped.mask(stripped.eq(""), "0")
-    out[field] = _str_where_notna(col, stripped)
+    min_width = max(1, int(params.get("min_width", 1)))
+
+    def _strip(value: str) -> str:
+        match = _NUMERIC_RUN.search(value)
+        if not match:
+            return value
+        digits = match.group(1)
+        stripped = digits.lstrip("0")
+        if len(stripped) < min_width:
+            stripped = digits[-min_width:] if len(digits) >= min_width else digits
+        return value[: match.start()] + stripped + value[match.end() :]
+
+    out[field] = _str_where_notna(col, col.astype(str).map(_strip))
     return out
 
 
@@ -397,6 +423,44 @@ def deduplicate(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> 
     return df.drop_duplicates(subset=by, keep=keep).copy()
 
 
+# The measure-aggregation vocabulary (sum/count/average/min/max) — same enum
+# `aggregation_rules` uses, so a field/func picked in one part of the UI means
+# the same thing everywhere.
+AGGREGATE_FUNCS: frozenset[str] = frozenset(a.value for a in MEASURE_AGGREGATIONS)
+_AGG_PANDAS_FUNC: dict[str, str] = {
+    AggregationType.SUM.value: "sum",
+    AggregationType.COUNT.value: "count",
+    AggregationType.AVERAGE.value: "mean",
+    AggregationType.MIN.value: "min",
+    AggregationType.MAX.value: "max",
+}
+_NUMERIC_AGG_FUNCS = {
+    AggregationType.SUM.value,
+    AggregationType.AVERAGE.value,
+    AggregationType.MIN.value,
+    AggregationType.MAX.value,
+}
+
+
+def aggregate_group(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> pd.DataFrame:
+    """Group by ``params['by']`` and apply one or more aggregations in a
+    single step — "Aggregate & Group": each entry in ``params['aggregations']``
+    is ``{"field": <column>, "func": "sum"|"count"|"average"|"min"|"max"}``.
+    One function per field; a field named twice keeps the last entry.
+    """
+    by = list(params["by"])
+    tmp = df.copy()
+    agg_spec: dict[str, str] = {}
+    for a in params["aggregations"]:
+        col = a["field"]
+        func_name = str(a["func"])
+        pandas_func = _AGG_PANDAS_FUNC[func_name]
+        if func_name in _NUMERIC_AGG_FUNCS:
+            tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+        agg_spec[col] = pandas_func
+    return tmp.groupby(by, as_index=False, dropna=False).agg(agg_spec)
+
+
 # ── compare ops (used by the reconciler, not the shadow builder) ─────────────
 
 def _normalise(series: pd.Series, options: dict[str, Any]) -> pd.Series:
@@ -408,6 +472,23 @@ def _normalise(series: pd.Series, options: dict[str, Any]) -> pd.Series:
     return s
 
 
+def _repr_equal(a: pd.Series, b: pd.Series) -> pd.Series:
+    """Numeric equality that canonicalises IEEE-754 representation error only.
+
+    Two numbers produced by float arithmetic (a UOM conversion, calculated
+    column, or aggregate sum) can differ in their last binary digit — e.g.
+    ``0.1 + 0.2`` yields ``0.30000000000000004`` — even when they are logically
+    identical. A raw ``==`` flags those as mismatches. The ``rtol``/``atol`` here
+    are orders of magnitude tighter than any real quantity delta, so genuine
+    differences (100 vs 0, 100 vs 100.001) still count as unequal. This is
+    representation canonicalisation, NOT a business tolerance.
+    """
+    close = np.isclose(
+        a.to_numpy(dtype=float), b.to_numpy(dtype=float), rtol=1e-9, atol=1e-12
+    )
+    return pd.Series(close, index=a.index)
+
+
 def exact_match(src: pd.Series, tgt: pd.Series, params: dict[str, Any]) -> pd.Series:
     """Element-wise equality. Numeric where both sides parse as numbers, else
     normalised string equality. NaN == NaN is treated as a match."""
@@ -417,7 +498,7 @@ def exact_match(src: pd.Series, tgt: pd.Series, params: dict[str, Any]) -> pd.Se
     both_numeric = src_num.notna() & tgt_num.notna()
 
     result = pd.Series(False, index=src.index)
-    result[both_numeric] = src_num[both_numeric] == tgt_num[both_numeric]
+    result[both_numeric] = _repr_equal(src_num[both_numeric], tgt_num[both_numeric])
 
     non_numeric = ~both_numeric
     if non_numeric.any():
@@ -437,6 +518,8 @@ def tolerance_match(src: pd.Series, tgt: pd.Series, params: dict[str, Any]) -> p
     tol = float(params.get("tolerance", 0.0))
     src_num = pd.to_numeric(src, errors="coerce")
     tgt_num = pd.to_numeric(tgt, errors="coerce")
-    within = (src_num - tgt_num).abs() <= tol
+    # OR in representation-equality so a 0 (or tiny) tolerance still absorbs
+    # IEEE-754 float noise rather than flagging logically-equal values.
+    within = ((src_num - tgt_num).abs() <= tol) | _repr_equal(src_num, tgt_num)
     both_null = src.isna() & tgt.isna()
     return (within & src_num.notna() & tgt_num.notna()) | both_null

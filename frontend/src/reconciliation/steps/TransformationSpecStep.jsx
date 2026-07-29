@@ -13,34 +13,14 @@ import {
   rebuildMapping,
   sampleRows,
 } from "../lib/payload";
-import {
-  createBothSnapshots,
-  generateInsightsForRun,
-  identicalDatasetReason,
-  runContractReconciliation,
-} from "../lib/reconRun";
+import { detectFieldRole } from "../lib/fieldRoleAliases";
 import StepShell from "../components/StepShell";
 import MappingEditor from "../components/MappingEditor";
 import RecipeEditor from "../components/RecipeEditor";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
 import ShadowPreviewPanel from "../components/ShadowPreviewPanel";
 import { serializeOperations } from "../lib/recipeModel";
-import { Button } from "@bristlecone/canopy";
-
-// Applied vs excluded distinct-value counts for one field's value mapping.
-// Applied = VERY_HIGH/HIGH (what the executor writes to the shadow); excluded
-// = MEDIUM/NONE/OUT_OF_SCOPE (held out, never reconciled). Powers the
-// Deterministic path's Run Reconciliation confirmation dialog.
-function appliedExcludedCounts(valueMapping) {
-  const matches = valueMapping?.matches ?? [];
-  let applied = 0;
-  let excluded = 0;
-  for (const m of matches) {
-    if (m.confidence === "very_high" || m.confidence === "high") applied += 1;
-    else excluded += 1;
-  }
-  return { applied, excluded };
-}
+import { Button, Alert } from "@bristlecone/canopy";
 
 function TransformationSpecStep() {
   const { state, dispatch } = useWizard();
@@ -87,11 +67,6 @@ function TransformationSpecStep() {
   // when every AI provider was unavailable (spec points 5 & 6).
   const [providerNotice, setProviderNotice] = useState(null);
   const [approveLoading, setApproveLoading] = useState(false);
-  // Deterministic-path Run Reconciliation (compile → approve → run, no shadow
-  // preview). Its own loading/error so it never collides with the Manual-path
-  // contract compile/approve state above.
-  const [detRunning, setDetRunning] = useState(false);
-  const [detRunError, setDetRunError] = useState(null);
   // Signature of the (source, target) datasets we last auto-mapped. When the
   // user re-uploads or re-fetches, the dataset id changes and the reducer
   // clears the stale mapping, so a new signature re-triggers auto-mapping
@@ -169,7 +144,14 @@ function TransformationSpecStep() {
     try {
       const res = await api.post("/api/recon/mapping/infer", formData);
       const data = res.data ?? {};
-      const inferred = data.display ?? [];
+      // Tag each row with the canonical business-field role its header(s)
+      // match (Product/Location/Date/Quantity) — same detection used for a
+      // manually-added row in MappingEditor — so Deterministic Mapping can
+      // resolve them by role instead of by a hardcoded literal column name.
+      const inferred = (data.display ?? []).map((row) => ({
+        ...row,
+        field_role: row.field_role ?? detectFieldRole(row.source_col, row.target_col),
+      }));
       const nextDisplay = preserveEdits
         ? mergeGeneratedMapping(mapping?.display, inferred)
         : inferred;
@@ -223,7 +205,7 @@ function TransformationSpecStep() {
     Boolean(source.dataset && target.dataset) && missingValueMappingReqs.length === 0;
 
   const runValueMapping = async () => {
-    const formData = buildValueMappingFormData(source, target);
+    const formData = buildValueMappingFormData(source, target, parsedMappingSheet, mapping?.display);
     if (!formData) {
       setValueMappingError(
         "Source or target data is no longer available. Go back and re-fetch or re-upload it.",
@@ -240,10 +222,6 @@ function TransformationSpecStep() {
         valueMappings: {
           product: res.data?.product ?? null,
           location: res.data?.location ?? null,
-          // Recommended-for-Deterministic-Mapping auxiliary evidence fields
-          // (tier + fill rate + consumed). Surfaced on the Mapping Review page;
-          // never sent into the compile payload (see value_mappings below).
-          auxiliaryFields: res.data?.auxiliary_fields ?? null,
         },
       });
       setValueMappingSuccess(true);
@@ -256,106 +234,11 @@ function TransformationSpecStep() {
   };
 
   // ── deterministic reconciliation (Flow 1) ─────────────────────────────────
-  // Auto-assembles a zero-operation contract from the confirmed field mapping
-  // (business_key/compare_fields) + the value mappings (the executor applies
-  // only VERY_HIGH/HIGH and holds out the rest), approves it, and runs — with
-  // NO shadow preview. The confirmation dialog is this flow's only human gate.
+  // Deterministic Mapping no longer compiles/runs a contract inline on this
+  // step — Continue takes the user to the Results step, which compiles,
+  // approves, and runs the deterministic contract there (see
+  // ReconciliationRunStep). This just gates Continue on the mapping being done.
   const canRunDeterministicRecon = Boolean(valueMappings) && missingValueMappingReqs.length === 0;
-
-  const runDeterministicReconciliation = async () => {
-    if (!canRunDeterministicRecon) return;
-
-    const p = appliedExcludedCounts(valueMappings?.product);
-    const l = appliedExcludedCounts(valueMappings?.location);
-    const proceed = window.confirm(
-      `${p.applied} materials + ${l.applied} plants will be applied to the shadow source.\n` +
-        `${p.excluded} materials + ${l.excluded} plants are excluded ` +
-        `(MEDIUM / NONE / out-of-scope) and will not be reconciled.\n\n` +
-        `Proceed with reconciliation?`,
-    );
-    if (!proceed) return;
-
-    setDetRunning(true);
-    setDetRunError(null);
-    try {
-      const identical = identicalDatasetReason(source, target);
-      if (identical) {
-        throw new Error(
-          `Source and target must be different datasets — ${identical}. ` +
-            "Re-upload the correct file for one side before reconciling.",
-        );
-      }
-
-      // Same compile payload as the Manual flow, but with no rules/aggregation
-      // (zero Groq operations) and the value mappings always attached — the
-      // confirmation dialog above is the approval.
-      const payload = {
-        mapping_sheet: buildMappingSheetPayload(null, mapping),
-        rules: "",
-        transformation_rules: [],
-        matching_rules: [],
-        filter_rules: [],
-        aggregation_rules: [],
-        business_key: (mapping?.mapping?.key_fields ?? []).map((f) => ({
-          source_field: f.source_col,
-          target_field: f.target_col,
-        })),
-        compare_fields: (mapping?.mapping?.compare_fields ?? []).map((f) => ({
-          source_field: f.source_col,
-          target_field: f.target_col,
-        })),
-        value_mappings: [valueMappings?.product, valueMappings?.location].filter(Boolean),
-        source_schema: source.dataset?.columns ?? [],
-        target_schema: target.dataset?.columns ?? [],
-        comparison_type: comparisonType?.id ?? "custom",
-        source_type: source.kind ?? "excel",
-        target_type: target.kind ?? "excel",
-        actor: "wizard-user",
-      };
-
-      const compileRes = await api.post("/api/recon/contracts/compile", payload);
-      const draft = compileRes.data?.draft;
-      const approveRes = await api.post("/api/recon/contracts/approve", {
-        draft,
-        approved_by: "wizard-user",
-      });
-      const detContract = approveRes.data?.contract;
-      dispatch({ type: WizardActions.SET_DETERMINISTIC_CONTRACT, contract: detContract });
-
-      const { sourceSnapshot, targetSnapshot } = await createBothSnapshots(
-        source,
-        target,
-        comparisonType,
-      );
-      // No expected_shadow_fingerprint — the Deterministic path has no
-      // shadow-approval gate (resolved design).
-      const result = await runContractReconciliation({
-        contract: detContract,
-        sourceSnapshotId: sourceSnapshot.snapshot_id,
-        targetSnapshotId: targetSnapshot.snapshot_id,
-      });
-      dispatch({
-        type: WizardActions.SET_RECONCILIATION_RESULT,
-        result: {
-          ...result,
-          source_snapshot: result.source_snapshot ?? sourceSnapshot,
-          target_snapshot: result.target_snapshot ?? targetSnapshot,
-        },
-      });
-      dispatch({ type: WizardActions.COMPLETE_STEP, step: "transformationSpec" });
-      dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
-      dispatch({ type: WizardActions.GO_TO_STEP, step: "reconciliation" });
-      generateInsightsForRun(result.run_id);
-      navigate("/reconciliation/reconciliation");
-    } catch (err) {
-      const detail = err?.response?.data?.detail;
-      setDetRunError(
-        typeof detail === "string" ? detail : err?.message || "Reconciliation failed.",
-      );
-    } finally {
-      setDetRunning(false);
-    }
-  };
 
   // ── contract lifecycle: compile → validate → approve ──────────────────────
   const validateDraft = useCallback(
@@ -485,17 +368,23 @@ function TransformationSpecStep() {
     Boolean(source.dataset && target.dataset) &&
     (mapping?.mapping?.key_fields?.length ?? 0) > 0;
 
-  // The run happens inline on this page for the Deterministic flow and for the
-  // Manual contract flow (via ShadowPreviewPanel), so the generic Continue is
-  // hidden there — advancement is via "Run Reconciliation". The Manual script
-  // flow still advances to Results via Continue (its inline preview/approval is
-  // TransformationPreviewPanel; the run happens on the Results step).
-  const runsInline =
-    mappingMode === "deterministic" || (mappingMode === "manual" && !useScriptTransformations);
+  // The run happens inline on this page only for the Manual contract flow (via
+  // ShadowPreviewPanel), so the generic Continue is hidden there — advancement
+  // is via "Run Reconciliation". Deterministic Mapping and the Manual script
+  // flow both advance to Results via Continue — the run itself (and, for
+  // Deterministic, the contract compile/approve) happens on the Results step.
+  const runsInline = mappingMode === "manual" && !useScriptTransformations;
   const hideContinue = mappingMode === null || runsInline;
+  // Deterministic Mapping must have a completed value-mapping run before
+  // Continue advances to Results (Results compiles the contract from it).
+  const canContinueStep = mappingMode === "deterministic" ? canRunDeterministicRecon : true;
 
   return (
-    <StepShell stepKey="transformationSpec" canContinue hideContinue={hideContinue}>
+    <StepShell
+      stepKey="transformationSpec"
+      canContinue={canContinueStep}
+      hideContinue={hideContinue}
+    >
       {/* Mapping-method chooser (no method picked yet) */}
       {mappingMode === null && (
         <section className="wizard-section">
@@ -536,17 +425,20 @@ function TransformationSpecStep() {
       )}
 
       {/* ── Flow 1: Deterministic Mapping ──────────────────────────────────
-          Field mapping + Run Deterministic Mapping + View Mapping Review +
-          Run Reconciliation only. No mapping sheet, rules, transformations,
+          Field mapping + Run Deterministic Mapping + View Mapping Review only.
+          Continue advances to Results, where the contract is compiled,
+          approved, and run. No mapping sheet, rules, transformations,
           aggregation, or transformation-rules approval block. */}
       {mappingMode === "deterministic" && (
         <>
           <section className="wizard-section">
             <h3 className="wizard-section__title">Field Mapping</h3>
             <p className="wizard-field__help">
-              Confirm the source-to-target field mapping used for deterministic matching (Location →
-              LOCID, Product → PRDID, Period → PERIODID0_TSTAMP as Key; Quantity → SALESORDERREQUEST
-              as Compare).
+              Confirm the source-to-target field mapping used for deterministic matching. Each row's
+              "Business Field" is auto-detected from the column names (e.g. "SKU" or "Material Code" →
+              Product / Material) — tag it manually if a required field isn't recognized. Deterministic
+              matching needs a Product/Material and Plant/Location pair confirmed as Key, plus a
+              Date/Period pair as Key and a Quantity pair as Compare.
             </p>
             <MappingEditor
               mapping={mapping}
@@ -574,9 +466,9 @@ function TransformationSpecStep() {
                 disabled={!canRunValueMapping || valueMappingLoading}
                 title={
                   missingValueMappingReqs.length
-                    ? "Confirm these field mappings first: " +
+                    ? "Tag a field mapping row as these Business Fields first: " +
                       missingValueMappingReqs
-                        .map((r) => `${r.source} → ${r.target} (${r.role === "key" ? "Key" : "Compare"})`)
+                        .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
                         .join("; ")
                     : undefined
                 }
@@ -594,46 +486,15 @@ function TransformationSpecStep() {
                 </Button>
               )}
             </div>
-            {valueMappingError && <p className="wizard-step__error">⚠️ {valueMappingError}</p>}
+            {valueMappingError && (
+              <Alert variant="error" style={{ marginTop: 12 }}>{valueMappingError}</Alert>
+            )}
             {valueMappingSuccess && !valueMappingError && (
-              <p className="wizard-step__success">
-                ✓ Deterministic mapping complete. Open "View Mapping Review" to inspect the tiers, or
-                run reconciliation below.
-              </p>
+              <Alert variant="success" style={{ marginTop: 12 }}>
+                Deterministic mapping complete. Open "View Mapping Review" to inspect the tiers, or
+                continue to run reconciliation on the Results step.
+              </Alert>
             )}
-          </section>
-
-          <section className="wizard-section">
-            <h3 className="wizard-section__title">Reconciliation</h3>
-            <p className="wizard-field__help">
-              Applies the VERY_HIGH/HIGH value mappings and reconciles immediately.
-              MEDIUM/NONE/out-of-scope values are excluded. There is no separate preview — Run
-              Reconciliation shows the counts to confirm, then runs.
-            </p>
-            <div className="contract-actions">
-              <Button
-                type="button"
-                variant="primary"
-                size="lg"
-                onClick={runDeterministicReconciliation}
-                disabled={!canRunDeterministicRecon || detRunning}
-                title={
-                  !valueMappings
-                    ? "Run Deterministic Mapping first."
-                    : missingValueMappingReqs.length
-                      ? "Confirm the required field mappings first."
-                      : undefined
-                }
-              >
-                {detRunning ? "Reconciling…" : "Run Reconciliation"}
-              </Button>
-            </div>
-            {!valueMappings && (
-              <p className="wizard-field__help">
-                Run Deterministic Mapping first to enable reconciliation.
-              </p>
-            )}
-            {detRunError && <p className="wizard-step__error">⚠️ {detRunError}</p>}
           </section>
         </>
       )}
@@ -719,8 +580,12 @@ function TransformationSpecStep() {
                   Confirm at least one Key field mapping above to approve.
                 </p>
               )}
-              {contractError && <p className="wizard-step__error">⚠️ {contractError}</p>}
-              {providerNotice && <p className="wizard-step__hint">ℹ️ {providerNotice}</p>}
+              {contractError && (
+                <Alert variant="error" style={{ marginTop: 12 }}>{contractError}</Alert>
+              )}
+              {providerNotice && (
+                <Alert variant="info" style={{ marginTop: 12 }}>{providerNotice}</Alert>
+              )}
             </section>
           )}
 

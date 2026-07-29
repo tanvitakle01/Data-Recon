@@ -83,6 +83,41 @@ def _is_blank(value: Any) -> bool:
     return str(value).strip() in ("", "None", "nan", "NaT")
 
 
+def _expand_multi_candidate_rows(
+    df: pd.DataFrame, keep_mask: pd.Series, field: str, expand: dict[Any, list[str]]
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Duplicate each row in ``expand`` once per candidate target value.
+
+    A source value can carry more than one verified candidate (see
+    ``value_pairing.pipeline`` module docstring) — rather than picking one,
+    every candidate gets its own shadow row (identical in every other column,
+    same lineage position) so the join/compare stage can let real record-level
+    date + quantity agreement decide which candidate actually matches. A
+    candidate that doesn't correspond to any real record simply produces no
+    Match for its duplicate row.
+    """
+    if not expand:
+        return df, keep_mask
+
+    pieces: list[pd.DataFrame] = []
+    keep_pieces: list[pd.Series] = []
+    for idx in df.index:
+        targets = expand.get(idx)
+        if targets is None:
+            pieces.append(df.loc[[idx]])
+            keep_pieces.append(pd.Series([keep_mask.at[idx]]))
+            continue
+        block = pd.concat([df.loc[[idx]]] * len(targets), ignore_index=True)
+        block[field] = targets
+        pieces.append(block)
+        keep_pieces.append(pd.Series([keep_mask.at[idx]] * len(targets)))
+
+    new_df = pd.concat(pieces, ignore_index=True)
+    new_keep_mask = pd.concat(keep_pieces, ignore_index=True)
+    new_keep_mask.index = new_df.index
+    return new_df, new_keep_mask
+
+
 def _apply_value_mappings(
     df: pd.DataFrame, contract: TransformationContract
 ) -> tuple[pd.DataFrame, pd.Series, list[dict[str, Any]]]:
@@ -91,22 +126,28 @@ def _apply_value_mappings(
     For every ``business_key`` field:
       * If it has a matching :class:`~backend.recon_engine.models.value_mapping.ValueMapping`:
         VERY_HIGH/HIGH matches replace the value in place (the executable
-        transform) and proceed to the join. Every other tier — MEDIUM, NONE,
-        OUT_OF_SCOPE, no match record at all — is held out: the row never
-        reaches the join/compare stage, and is never rejoined on its original,
-        unresolved value (which would silently reintroduce false
-        "Missing in Target" noise). There is no review workflow; a MEDIUM
-        match is simply not confident enough to apply.
+        transform) and proceed to the join. When a source value has MORE THAN
+        ONE accepted (VERY_HIGH/HIGH) candidate, the row is duplicated once per
+        candidate (see :func:`_expand_multi_candidate_rows`) rather than
+        picking a winner — reconciliation's per-record compare is the real
+        arbiter. Every other tier — MEDIUM, NONE, OUT_OF_SCOPE, no match
+        record at all — is held out: the row never reaches the join/compare
+        stage, and is never rejoined on its original, unresolved value (which
+        would silently reintroduce false "Missing in Target" noise). There is
+        no review workflow; a MEDIUM match is simply not confident enough to
+        apply.
       * Otherwise (no deterministic value mapping for this field — e.g. a date
         key like ``RequestedDeliveryDate``): only a completeness check runs —
         null/blank values can't form a business key, so those rows are held
         out the same way, for the same "never silently drop, never silently
         keep" reason.
 
-    Returns ``(df, keep_mask, held_out)`` — the caller applies ``keep_mask`` so
-    this function never changes row count itself.
+    Returns ``(df, keep_mask, held_out)``. Row count only ever grows here (via
+    multi-candidate expansion) — the caller applies ``keep_mask`` to drop the
+    held-out rows.
     """
     df = df.copy()
+    df = df.reset_index(drop=True)
     keep_mask = pd.Series(True, index=df.index)
     held_out: list[dict[str, Any]] = []
     value_mapping_by_field = {vm.source_field: vm for vm in contract.value_mappings}
@@ -135,9 +176,13 @@ def _apply_value_mappings(
             keep_mask &= ~blank_mask
             continue
 
-        match_by_value = {m.source_value: m for m in vm.matches}
+        matches_by_value: dict[str, list[Any]] = {}
+        for m in vm.matches:
+            matches_by_value.setdefault(m.source_value, []).append(m)
+
         hold_reasons: dict[str, dict[str, Any]] = {}
         hold_mask = pd.Series(False, index=df.index)
+        expand_rows: dict[Any, list[str]] = {}
 
         for idx, raw_val in col.items():
             if _is_blank(raw_val):
@@ -158,8 +203,8 @@ def _apply_value_mappings(
                 continue
 
             key = str(raw_val)
-            m = match_by_value.get(key)
-            if m is None:
+            ms = matches_by_value.get(key)
+            if not ms:
                 bucket = hold_reasons.setdefault(
                     key,
                     {
@@ -179,9 +224,11 @@ def _apply_value_mappings(
                 hold_mask.at[idx] = True
                 continue
 
-            if m.confidence in AUTO_APPLY_CONFIDENCE:
-                df.at[idx, source_field] = m.target_value
-            else:  # MEDIUM / NONE / OUT_OF_SCOPE — held out, never rejoined unresolved.
+            accepted = [
+                m for m in ms if m.confidence in AUTO_APPLY_CONFIDENCE and m.target_value is not None
+            ]
+            if not accepted:
+                m = ms[0]  # MEDIUM / NONE / OUT_OF_SCOPE — held out, never rejoined unresolved.
                 bucket = hold_reasons.setdefault(
                     key,
                     {
@@ -197,9 +244,16 @@ def _apply_value_mappings(
                 )
                 bucket["row_count"] += 1
                 hold_mask.at[idx] = True
+            elif len(accepted) == 1:
+                df.at[idx, source_field] = accepted[0].target_value
+            else:
+                expand_rows[idx] = [m.target_value for m in accepted]
 
         held_out.extend(hold_reasons.values())
         keep_mask &= ~hold_mask
+
+        if expand_rows:
+            df, keep_mask = _expand_multi_candidate_rows(df, keep_mask, source_field, expand_rows)
 
     return df, keep_mask, held_out
 

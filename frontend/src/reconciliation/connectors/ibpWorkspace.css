@@ -1028,6 +1028,33 @@
   white-space: pre-wrap;
 }
 
+/* ---- Canvas pre-population note (sheet / Step-1 entity+join instruction) ---- */
+.ibpw-prepop-note {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #1e3a5f;
+  background: #eef4ff;
+  border: 1px solid #c7d9f5;
+  border-radius: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ibpw-prepop-note__dismiss {
+  margin-left: auto;
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: #2f6feb;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* ---- Imported dataset preview (post-import, full width) ---- */
 .ibpw-imported {
   margin-top: 16px;

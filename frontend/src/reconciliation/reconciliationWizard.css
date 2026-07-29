@@ -30,12 +30,20 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  padding: 28px 30px;
+  padding: 28px 32px;
   box-shadow: var(--shadow-1);
 }
 
 @media (max-width: 720px) {
   .wizard-step { padding: 20px 18px; }
+}
+
+/* Title band: a hairline under the header mirrors the footer's top rule, so
+   every step reads as a clearly titled card (header → body → actions) with
+   consistent vertical rhythm. */
+.wizard-step__header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
 }
 
 .wizard-step__eyebrow {
@@ -60,10 +68,11 @@
   max-width: 68ch;
   color: var(--ink-2);
   font-size: 14px;
+  line-height: 1.55;
 }
 
 .wizard-step__body {
-  margin-top: 22px;
+  margin-top: 24px;
 }
 
 .wizard-step__footer {
@@ -127,7 +136,7 @@
 .wizard-option-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .wizard-option-card {
@@ -135,7 +144,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: var(--surface);
@@ -433,7 +442,7 @@
 
 /* ---- Sections inside a step ---- */
 .wizard-section {
-  padding: 18px 0;
+  padding: 20px 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -447,9 +456,10 @@
 }
 
 .wizard-section__title {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   font-size: 15px;
   font-weight: 800;
+  letter-spacing: -0.01em;
   color: var(--ink);
 }
 
@@ -984,6 +994,146 @@
   background: var(--medium-bg);
 }
 
+.mapping-review__detail-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.mapping-review__detail-text {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mapping-review__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mapping-review__decision {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.mapping-review__subtitle {
+  margin: 24px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* ---- Mapping Review: summary charts ---- */
+.mapping-review__summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.mapping-review__chart {
+  flex: 1 1 220px;
+  min-width: 220px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.mapping-review__chart-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+
+.mapping-review__chart-figure {
+  height: 140px;
+}
+
+.mapping-review__chart-caption {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.mapping-review__chart-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 6px;
+}
+
+.mapping-review__chart-swatch:first-child {
+  margin-left: 0;
+}
+
+/* ---- Mapping Review: search ---- */
+.mapping-review__search-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.mapping-review__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 320px;
+  max-width: 420px;
+}
+
+.mapping-review__search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.mapping-review__search-icon:hover {
+  color: var(--accent);
+}
+
+.mapping-review__search-input {
+  width: 100%;
+  padding-left: 32px;
+}
+
+.mapping-review__search-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.mapping-review__section {
+  margin-bottom: 16px;
+}
+
+/* Current match: solid highlight. Other on-screen matches: lighter highlight
+   from the same accent scale, so the reviewer always knows which is active. */
+.mapping-review__row--active-match {
+  background: var(--accent-tint-2) !important;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.mapping-review__row--match {
+  background: var(--accent-tint) !important;
+}
+
 .recon-run__hint {
   font-size: 13px;
   color: var(--muted);
@@ -1260,8 +1410,8 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   /* Reconciliation Engine substep region — themed to the sidebar's sub color. */
-  color: var(--sb-sub, #bbb9ab);
-  opacity: 0.85;
+  color: var(--sb-sub, #ffffff);
+  opacity: 1;
 }
 .wsb__label:first-child { margin-top: 2px; }
 
@@ -1339,8 +1489,8 @@
   width: 15px;
   height: 15px;
   flex: none;
-  color: var(--sb-sub, #bbb9ab);
-  opacity: 0.8;
+  color: var(--sb-sub, #ffffff);
+  opacity: 1;
 }
 
 /* Completed step: green marker + check */
@@ -1358,7 +1508,7 @@
    reads brighter than the resting #BBB9AB items. */
 .wsb-step.is-active {
   background: var(--sb-active-bg, rgba(30, 30, 30, 0.46));
-  color: var(--sb-main, #ede7e1);
+  color: #ffffff;
   font-weight: 700;
   box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
 }
@@ -1370,14 +1520,14 @@
   bottom: 7px;
   width: 3px;
   border-radius: var(--radius-pill);
-  background: var(--sb-main, #ede7e1);
+  background: #ffffff;
 }
 .wsb-step.is-active .wsb-step__mk {
-  background: var(--sb-main, #ede7e1);
+  background: #ffffff;
   color: var(--sb-bg, #143d4a);
   border-color: transparent;
 }
-.wsb-step.is-active .wsb-step__glyph { color: var(--sb-main, #ede7e1); opacity: 1; }
+.wsb-step.is-active .wsb-step__glyph { color: #ffffff; opacity: 1; }
 
 /* ---- Context summary (expanded only) ---- */
 .wsb-ctx {
@@ -1398,8 +1548,8 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--sb-sub, #bbb9ab);
-  opacity: 0.75;
+  color: var(--sb-sub, #ffffff);
+  opacity: 1;
 }
 .wsb-ctx__v {
   flex: 1 1 auto;
@@ -1454,7 +1604,7 @@
 }
 .wsb-link:hover {
   background: var(--sb-hover-bg, rgba(30, 30, 30, 0.32));
-  color: var(--sb-main, #ede7e1);
+  color: #ffffff;
   box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
 }
 .wsb-link:focus-visible {
@@ -1467,7 +1617,7 @@
   flex: none;
   color: var(--sb-sub, #bbb9ab);
 }
-.wsb-link:hover .wsb-link__ic { color: var(--sb-main, #ede7e1); }
+.wsb-link:hover .wsb-link__ic { color: #ffffff; }
 .wsb-link__label {
   flex: 1 1 auto;
   min-width: 0;
@@ -1524,73 +1674,254 @@
   transform: translateY(-50%) translateX(0);
 }
 
-/* ── Sheet-driven identification (Step 1) ───────────────────────────────── */
-.wizard-identify {
+/* ── Mapping Sheet Upload (Step 1) — the primary action on this step ─────
+   Progressive disclosure: upload card -> compact file chip + 5-line summary
+   -> two collapsed accordions (Detection Details, Additional Instructions —
+   the ONE free-text input, resolved against both sides independently) for
+   anyone who needs the reasoning or a manual override. Nothing else competes
+   for attention in the default view. ────────────────────────────────────── */
+.wizard-mapping-upload {
   margin-top: 20px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
-.wizard-identify__result {
-  margin-top: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  padding: 12px 14px;
+.wizard-mapping-upload__body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  margin-top: 12px;
 }
-.wizard-identify__filebar {
+
+/* ---- Upload card (empty state) ---- */
+.wizard-upload-card {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+  padding: 32px 20px;
+  margin-top: 12px;
+  border: 1.5px dashed var(--border-strong, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--surface-2, var(--surface));
+  text-align: center;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
-.wizard-identify__filename {
-  font-weight: 600;
+.wizard-upload-card.is-dragover {
+  border-color: var(--accent);
+  background: var(--accent-tint, var(--surface-2));
+}
+.wizard-upload-card__icon {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.wizard-upload-card__title {
+  margin: 0;
+  font-weight: 700;
+  font-size: 14.5px;
   color: var(--ink);
 }
-.wizard-identify__side {
+.wizard-upload-card__subtitle {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  opacity: 0.85;
+}
+
+/* ---- File chip (filled state) ---- */
+.wizard-file-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+.wizard-file-chip__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--accent);
+}
+.wizard-file-chip__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+.wizard-file-chip__status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill, 999px);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.wizard-file-chip__status.is-detected {
+  color: #1a6b3a;
+  background: rgba(16, 185, 129, 0.12);
+}
+.wizard-file-chip__status.is-busy {
+  color: var(--ink-2);
+  background: var(--surface-2, #f4f6fa);
+}
+.wizard-file-chip__status.is-plain {
+  color: var(--ink-2);
+  background: var(--surface-2, #f4f6fa);
+}
+.wizard-file-chip__remove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: var(--radius-sm, 6px);
+}
+.wizard-file-chip__remove:hover {
+  color: var(--missing, #b91c1c);
+  background: var(--surface-2, #f4f6fa);
+}
+
+/* ---- Auto-detected summary: five lines, no prose ---- */
+.wizard-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+.wizard-summary__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.wizard-summary__label {
+  min-width: 130px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.wizard-summary__value {
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 600;
+}
+.wizard-summary__warn {
+  font-size: 12.5px;
+  color: var(--warning, #b26a00);
+  font-weight: 600;
+}
+
+/* ---- Collapsed accordions (Detection Details / Edit Mapping) ---- */
+.wizard-collapsible {
+  margin-top: 2px;
+}
+
+/* ---- Detection Details content ---- */
+.wizard-detection-details {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.wizard-detail-side {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.wizard-identify__side-head {
+.wizard-detail-side__head {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-.wizard-identify__side-title {
-  font-weight: 600;
-  color: var(--ink-2);
-  min-width: 96px;
+.wizard-detail-side__title {
+  font-weight: 700;
+  color: var(--ink);
+  min-width: 56px;
 }
-.wizard-identify__confidence {
-  font-size: 12px;
-  color: var(--ink-2);
-  text-transform: capitalize;
-}
-.wizard-identify__evidence,
-.wizard-identify__fields {
+.wizard-detail-muted {
   margin: 0;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--ink-2);
-}
-.wizard-identify__fields {
-  font-size: 12px;
   opacity: 0.85;
 }
-.wizard-identify__provider {
-  margin: 0;
-  font-size: 12px;
-  color: var(--ink-2);
-  opacity: 0.75;
-}
-.wizard-identify__warn {
-  margin: 0;
-  font-size: 13px;
+.wizard-detail-warn {
   color: var(--warning, #b26a00);
+}
+.wizard-detail-dl {
+  display: grid;
+  grid-template-columns: minmax(88px, max-content) 1fr;
+  gap: 4px 12px;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-2, var(--surface));
+  font-size: 12.5px;
+}
+.wizard-detail-dl dt {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.wizard-detail-dl dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.wizard-detail-chip {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+/* ---- Additional Instructions: one shared free-text box ---- */
+.wizard-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wizard-instructions__textarea {
+  resize: vertical;
+  min-height: 44px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+}
+.wizard-instructions__textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.wizard-instructions__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
 }
 
 /* ── Connector step: binary choice + Live-Fetch confirmation ─────────────── */
@@ -1787,214 +2118,3 @@
   margin: 0 0 4px;
 }
 
-/* ============================================================================
-   RECONCILIATION WORKFLOW THEME — scoped entirely to .wizard-shell.
-     Global background        -> #F7EFE2 (cream) replacing white on page,
-                                 containers, panels, forms, empty states
-     Headers/step indicators  -> #2E3626 (Ebony Wood)
-     Buttons / chips / CTAs    -> bg #7F8466 (sage), text/icon #2E3626 (all states)
-     Text links (non-button)   -> transparent bg, #2E3626 text, subtle hover
-     Tables / cards / previews -> bg #98AA9D (green), text #FFFFFF
-   Every override is prefixed with .wizard-shell so nothing outside the
-   reconciliation workflow changes. The cream background is applied by remapping
-   the neutral --surface/--ground tokens on the root; cards/tables re-remap those
-   tokens locally to green so their headers/rows/labels/values turn white-on-green
-   uniformly (th uses --surface-2, td text uses --ink-2, …) without per-cell
-   rules; semantic status colors (--match/--qty/diff tints) are left untouched.
-   ============================================================================ */
-.wizard-shell {
-  --rc-header: #2e3626;       /* Ebony Wood — headers / step labels */
-  --rc-btn-bg: #7f8466;       /* button / CTA background — sage */
-  --rc-btn-fg: #2e3626;       /* button text/icon — Ebony Wood */
-  --rc-surface: #98aa9d;      /* table / card / data-display background — green */
-  --rc-surface-2: #8a9c8f;    /* table header / hover shade (deeper green) */
-  --rc-surface-3: #7e9184;
-  --rc-surface-fg: #ffffff;   /* text on the green data surfaces */
-  --rc-line: rgba(255, 255, 255, 0.28);
-  --rc-line-strong: rgba(255, 255, 255, 0.42);
-
-  /* Global background: replace white with warm cream on every non-overridden
-     surface (page, content containers, panels, forms, empty states). */
-  --surface: #f7efe2;
-  --surface-2: #f0e6d5;
-  --surface-3: #e9ddc9;
-  --ground: #f7efe2;
-}
-
-/* ---- 1. Headers & step indicators → Ebony Wood ---- */
-.wizard-shell .wizard-step__eyebrow,
-.wizard-shell .wizard-step__title,
-.wizard-shell .wizard-section__title,
-.wizard-shell .rule-builder__section-title,
-.wizard-shell .mapping-editor__title,
-.wizard-shell .run-meta__title,
-.wizard-shell .transform-preview-placeholder__title,
-.wizard-shell .wizard-connector-confirm__title {
-  color: var(--rc-header);
-}
-
-/* ---- 2. Buttons / chips / CTAs → #CBB8A0 bg + Ebony text, held across states.
-   Canopy <Button> renders a plain <button> styled with Tailwind utilities, so
-   !important is required to keep the color through hover/active/selected.
-   Connector-workspace controls (.ibpw-root *) are EXCLUDED from the blanket
-   rule — their CTA buttons are themed explicitly in §4 while their entity/field
-   list rows stay as selection rows (not filled buttons). Non-button text links
-   are handled separately in §2b. ---- */
-.wizard-shell button:not(:where(.ibpw-root *)),
-.wizard-shell button:not(:where(.ibpw-root *)):hover,
-.wizard-shell button:not(:where(.ibpw-root *)):active,
-.wizard-shell button:not(:where(.ibpw-root *))[aria-selected="true"],
-.wizard-shell button.is-active:not(:where(.ibpw-root *)),
-.wizard-shell .wizard-btn,
-.wizard-shell .wizard-btn:hover,
-.wizard-shell .wizard-btn--primary,
-.wizard-shell .wizard-btn--primary:hover,
-.wizard-shell .wizard-btn--ghost,
-.wizard-shell .wizard-option-card,
-.wizard-shell .wizard-option-card:hover,
-.wizard-shell .wizard-option-card.is-selected,
-.wizard-shell .wizard-choice-card,
-.wizard-shell .wizard-choice-card:hover,
-.wizard-shell .wizard-choice-card.is-selected,
-.wizard-shell .mapping-review__tab,
-.wizard-shell .mapping-review__tab:hover,
-.wizard-shell .mapping-review__tab--active {
-  background-color: var(--rc-btn-bg) !important;
-  color: var(--rc-btn-fg) !important;
-  border-color: var(--rc-btn-bg) !important;
-}
-/* Icon + inner text ride the Ebony foreground. */
-.wizard-shell button:not(:where(.ibpw-root *)) *,
-.wizard-shell button:not(:where(.ibpw-root *)) svg,
-.wizard-shell .wizard-option-card *,
-.wizard-shell .wizard-choice-card * {
-  color: var(--rc-btn-fg) !important;
-}
-/* Inner chips/badges inside a button: transparent + Ebony outline. */
-.wizard-shell .wizard-option-card__badge,
-.wizard-shell .wizard-choice-card__badge,
-.wizard-shell button:not(:where(.ibpw-root *)) [class*="badge" i] {
-  background: transparent !important;
-  border-color: rgba(46, 54, 38, 0.5) !important;
-}
-/* Selection stays legible via an Ebony ring (colors themselves don't change). */
-.wizard-shell .wizard-option-card.is-selected,
-.wizard-shell .wizard-choice-card.is-selected,
-.wizard-shell .mapping-review__tab--active {
-  box-shadow: 0 0 0 2px var(--rc-btn-fg) inset !important;
-}
-.wizard-shell button:not(:where(.ibpw-root *)):focus-visible {
-  box-shadow: 0 0 0 3px rgba(46, 54, 38, 0.4) !important;
-}
-
-/* ---- 2b. Clickable TEXT links (non-button actions) → transparent bg, Ebony
-   text, same color on hover with only a subtle opacity emphasis. Covers the
-   wizard's text back-link and any inline anchor/expandable-text control. These
-   rules sit after §2 and are more specific than the blanket button rule, so a
-   .wizard-link that happens to render as a <button> still reads as a text link.
-   Connector-workspace internals are excluded. ---- */
-.wizard-shell .wizard-link,
-.wizard-shell .wizard-link:hover,
-.wizard-shell a:not(:where(.ibpw-root *)),
-.wizard-shell a:not(:where(.ibpw-root *)):hover {
-  background: transparent !important;
-  background-color: transparent !important;
-  color: var(--rc-header) !important;
-  border-color: transparent !important;
-  box-shadow: none !important;
-}
-.wizard-shell .wizard-link *,
-.wizard-shell a:not(:where(.ibpw-root *)) * {
-  color: var(--rc-header) !important;
-}
-.wizard-shell .wizard-link:hover,
-.wizard-shell a:not(:where(.ibpw-root *)):hover {
-  opacity: 0.75; /* subtle emphasis only — color unchanged */
-}
-
-/* ---- 3. Cards / surfaces / tables → Clay bg + Ebony text ---- */
-.wizard-shell .surface-elevated,
-.wizard-shell .wizard-preview-card,
-.wizard-shell .wizard-mapcard,
-.wizard-shell .run-meta__card,
-.wizard-shell .class-card,
-.wizard-shell .class-cards > *,
-.wizard-shell .doc-upload,
-.wizard-shell .wizard-identify__result,
-.wizard-shell .wizard-connector-confirm,
-.wizard-shell .curtain,
-.wizard-shell .section-tier-strip {
-  background-color: var(--rc-surface) !important;   /* #98AA9D green */
-  color: var(--rc-surface-fg);                       /* #FFFFFF */
-  border-color: var(--rc-line);
-  /* Local token remap → the table + labels/values inside turn white-on-green. */
-  --surface: #98aa9d;
-  --surface-2: #8a9c8f;
-  --surface-3: #7e9184;
-  --ground: #98aa9d;
-  --ink: #ffffff;
-  --ink-2: #ffffff;
-  --ink-1: #ffffff;
-  --muted: rgba(255, 255, 255, 0.85);
-  --muted-2: rgba(255, 255, 255, 0.7);
-  --border: rgba(255, 255, 255, 0.28);
-  --border-strong: rgba(255, 255, 255, 0.42);
-}
-/* Table headers follow the same scheme (a touch deeper for hierarchy). */
-.wizard-shell .table-elevated th,
-.wizard-shell .curtain-table thead th {
-  background: var(--rc-surface-2);
-  color: var(--rc-surface-fg);
-}
-
-/* ---- 4. Connector workspaces (S4 / IBP) adopt the palette via their tokens,
-   so their panels/cards/preview grid retheme coherently instead of every list
-   row becoming a black block. ---- */
-.wizard-shell .ibpw-root {
-  --ibpw-surface: #f7efe2;      /* panels → cream */
-  --ibpw-ink: #2e3626;
-  --ibpw-muted: rgba(46, 54, 38, 0.8);
-  --ibpw-faint: rgba(46, 54, 38, 0.62);
-  --ibpw-line: rgba(46, 54, 38, 0.2);
-  --ibpw-accent: #7f8466;       /* sage — selection tint / accent lines */
-  --ibpw-accent-soft: rgba(127, 132, 102, 0.16);
-  --ibpw-accent-line: rgba(127, 132, 102, 0.4);
-  --ibpw-hover: rgba(127, 132, 102, 0.1);
-}
-/* Connector CTA / action / chip buttons → #7F8466 bg + Ebony text, held across
-   states (matches §2). Entity/field selection ROWS are intentionally not
-   included here — they stay selection rows, not filled buttons. */
-.wizard-shell .ibpw-root .ibpw-btn,
-.wizard-shell .ibpw-root .ibpw-btn:hover,
-.wizard-shell .ibpw-root .ibpw-btn--ghost,
-.wizard-shell .ibpw-root .ibpw-btn--header,
-.wizard-shell .ibpw-root .ibpw-chip-btn,
-.wizard-shell .ibpw-root .ibpw-chip-btn:hover,
-.wizard-shell .ibpw-root .ibpw-recent__chip,
-.wizard-shell .ibpw-root .ibpw-recent__chip:hover,
-.wizard-shell .ibpw-root .sapc-btn,
-.wizard-shell .ibpw-root .sapc-btn:hover,
-.wizard-shell .ibpw-root .sapc-actionbtn,
-.wizard-shell .ibpw-root .sapc-actionbtn:hover,
-.wizard-shell .ibpw-root .sapc-actionbtn--primary {
-  background-color: var(--rc-btn-bg) !important;
-  color: var(--rc-btn-fg) !important;
-  border-color: var(--rc-btn-bg) !important;
-}
-.wizard-shell .ibpw-root .ibpw-btn svg,
-.wizard-shell .ibpw-root .sapc-btn svg,
-.wizard-shell .ibpw-root .sapc-actionbtn svg { color: var(--rc-btn-fg) !important; }
-/* Dataset-preview grid = a data-display table → green surface, white text
-   (its panel is cream, so the table itself carries the green background). */
-.wizard-shell .ibpw-grid { background: var(--rc-surface); }
-.wizard-shell .ibpw-grid thead th {
-  background: var(--rc-surface-2);
-  color: var(--rc-surface-fg);
-  border-color: rgba(255, 255, 255, 0.25);
-}
-.wizard-shell .ibpw-grid tbody td {
-  color: var(--rc-surface-fg);
-  border-color: rgba(255, 255, 255, 0.18);
-}
-.wizard-shell .ibpw-grid tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.08); }
-.wizard-shell .ibpw-grid tbody tr:hover td { background: rgba(255, 255, 255, 0.14); }

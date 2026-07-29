@@ -6,14 +6,13 @@ import { getComparisonUrl } from "../lib/reconRun";
 import { Button, Card } from "@bristlecone/canopy";
 
 // Outcome -> Canopy semantic color (matches the Badge outcome language:
-// match=success/green, mismatch=error/red, missing=warning/orange,
-// extra=info/blue). "Missing in Source" = row only in target = extra;
-// "Missing in Target" = a true miss. Total is neutral charcoal.
+// match=success/green, quantity_mismatch=error/red). "mismatch" is the
+// unified bucket for a business key present on only one side (source-only or
+// target-only) — there's no separate Missing/Extra category anymore.
 const CLASS_LABELS = [
   { key: "match", label: "Matches", color: "var(--bcone-green)" },
-  { key: "mismatch", label: "Qty Mismatches", color: "var(--bcone-red)" },
-  { key: "missing_in_source", label: "Missing in Source", color: "var(--bcone-blue)" },
-  { key: "missing_in_target", label: "Missing in Target", color: "var(--bcone-orange)" },
+  { key: "quantity_mismatch", label: "Qty Mismatches", color: "var(--bcone-red)" },
+  { key: "mismatch", label: "Mismatches", color: "var(--bcone-orange)" },
 ];
 
 function ContractRunResults({ result }) {

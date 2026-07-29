@@ -46,7 +46,6 @@ function Mapping({ mappingData, loading, error }) {
         <table className="table-elevated">
           <thead>
             <tr>
-              <th>Logical Field</th>
               <th>Source Column</th>
               <th>Target Column</th>
               <th>Role</th>
@@ -56,7 +55,6 @@ function Mapping({ mappingData, loading, error }) {
           <tbody>
             {mappingData.display.map((row, idx) => (
               <tr key={idx}>
-                <td style={{ fontWeight: 800 }}>{row.logical}</td>
                 <td>{row.source_col}</td>
                 <td>{row.target_col}</td>
                 <td>
