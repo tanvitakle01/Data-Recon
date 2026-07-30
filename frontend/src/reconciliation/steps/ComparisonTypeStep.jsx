@@ -32,6 +32,7 @@ const AUTO_STEP_LABELS = {
   import_source: "Importing source data…",
   select_target: "Selecting target system…",
   import_target: "Importing target data…",
+  identify_candidate_keys: "Identifying candidate business keys (AI)…",
   extract_unique_keys: "Identifying unique key values…",
   pair_values: "Running AI value-pairing…",
   compile_and_run: "Running reconciliation…",

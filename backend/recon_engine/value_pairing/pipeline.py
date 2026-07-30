@@ -60,10 +60,23 @@ def _format_chain(ops: _Chain) -> str:
 
 
 def _propose_llm_chains(
-    *, residual_source: list[str], residual_target: list[str], mapping_sheet_context: Any
+    *,
+    candidate_source: list[str],
+    candidate_target: list[str],
+    exact_matches: dict[str, str],
+    mapping_sheet_context: Any,
 ) -> list[dict[str, Any]]:
-    """LLM pairing on the residual. Never raises — degrades to no candidates."""
-    if not residual_source or not residual_target:
+    """LLM transformation-discovery pairing. Never raises — degrades to no candidates.
+
+    ``candidate_source`` is the COMPLETE distinct source list minus only
+    already-approved library values (Transformation Discovery: the LLM must
+    see exact-matched values too, so it can identify an additional valid
+    transform for them — see ``prompt.py``). ``exact_matches`` is passed
+    through as context; the caller (``pair_values``) is responsible for
+    dropping any returned pair that just restates one, regardless of what the
+    model claims.
+    """
+    if not candidate_source or not candidate_target:
         return []
     if not get_settings().any_llm_configured:
         return []
@@ -71,8 +84,9 @@ def _propose_llm_chains(
         client = build_llm_client()
         payload = client.complete_json(
             build_messages(
-                residual_source=residual_source,
-                residual_target=residual_target,
+                candidate_source=candidate_source,
+                candidate_target=candidate_target,
+                exact_matches=exact_matches,
                 mapping_sheet_context=mapping_sheet_context,
             )
         )
@@ -103,13 +117,22 @@ def _finalize_single(
     several accepted candidates (see module docstring)."""
     kinds = {origin for origin, _chain in origins}
 
-    if kinds == {"identity"}:
+    if "identity" in kinds:
+        # An exact match must never be superseded by a transform/pattern
+        # candidate that ALSO resolved to this same target — both are kept as
+        # coexisting evidence (see module docstring), but the identity match's
+        # provenance/confidence is reported, not silently downgraded to the
+        # transform's.
+        extra = kinds - {"identity"}
+        evidence = evidence_prefix + f"Exact match: {value!r} == {target!r}."
+        if extra:
+            evidence += f" Also corroborated by a verified transform ({', '.join(sorted(extra))})."
         return ValueMatch(
             source_value=value,
             target_value=target,
             confidence=Confidence.VERY_HIGH,
             rule=rule_override or "value_pairing.identity",
-            evidence=evidence_prefix + f"Exact match: {value!r} == {target!r}.",
+            evidence=evidence,
             row_count=row_count,
             corroboration=corroboration,
             candidates=sibling_candidates,
@@ -310,21 +333,24 @@ def pair_values(
         set(unresolved), target_values
     )
 
-    # Step 2: LLM pairing — only for values with no identity candidate and no
-    # already-approved library candidate, so neither the common "genuine
-    # identity match" case nor an already-trusted approved pairing ever pays
-    # for an LLM call. Each proposal is an ordered chain; verification
+    # Step 2: Transformation Discovery (LLM). The LLM sees the COMPLETE
+    # source-value list minus only already-approved library values (a human
+    # decision, never re-litigated here) — deliberately INCLUDING values that
+    # already have an identity (exact) match, so it can identify a genuinely
+    # ADDITIONAL transform-based target for them (both must coexist per the
+    # rules — see prompt.py). It must never return the exact match itself;
+    # any candidate claiming target == source is dropped below regardless of
+    # what the model returns. Each proposal is an ordered chain; verification
     # applies the FULL chain and checks only the final result.
-    llm_residual = sorted(
-        v for v in unresolved if v not in identity_candidate and v not in approved
-    )
+    llm_candidates_source = sorted(v for v in unresolved if v not in approved)
     confirmed_chains: dict[tuple, dict[str, Any]] = {}
     llm_result_by_value: dict[str, dict[str, Any]] = {}
     llm_rejection_by_value: dict[str, str] = {}
 
     for candidate in _propose_llm_chains(
-        residual_source=llm_residual,
-        residual_target=sorted(target_values),
+        candidate_source=llm_candidates_source,
+        candidate_target=sorted(target_values),
+        exact_matches=identity_candidate,
         mapping_sheet_context=mapping_sheet_context,
     ):
         value = candidate["source_value"]
@@ -333,6 +359,11 @@ def pair_values(
 
         chain = candidate["ops"]
         claimed_target = candidate["target_value"]
+        if claimed_target == value:
+            # The LLM must never return an exact match — that's exclusively
+            # the deterministic identity pre-pass's job. Drop it outright,
+            # regardless of what the model claims (never trusted outright).
+            continue
         # Some transforms are inherently one-directional (e.g. stripping
         # zero-padding only ever removes digits) — either side of the claim
         # can be the one that actually needs the transform applied, so both

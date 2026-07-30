@@ -42,6 +42,7 @@ from backend.recon_engine.storage import (
 from backend.recon_engine.value_pairing import pair_values
 from backend.recon_engine.value_pairing.extraction import distinct_values
 
+from backend.recon_engine.auto_pipeline.candidate_keys import identify_candidate_keys
 from backend.recon_engine.auto_pipeline.field_matching import (
     detect_roles_for_columns,
     match_proposed_to_schema,
@@ -49,6 +50,8 @@ from backend.recon_engine.auto_pipeline.field_matching import (
 from backend.recon_engine.auto_pipeline.state import AutoRunState, SideState
 
 _REQUIRED_ROLES = ("product", "location", "date", "quantity")
+_CANDIDATE_KEY_ROLES = ("product", "location")
+_BUSINESS_KEY_ROLES = ("date", "quantity")
 
 
 class ValuePairingUnavailable(RuntimeError):
@@ -259,27 +262,58 @@ def _do_import_target(state: AutoRunState) -> dict[str, Any]:
     return _import_side(state, "target", RawLayer.TARGET)
 
 
-# ── step 5: identify unique key values ───────────────────────────────────────
+# ── step 5: Stage 3 (LLM ONLY) — candidate business-key identification ──────
+
+def _do_identify_candidate_keys(state: AutoRunState) -> dict[str, Any]:
+    """Identify the product/location candidate keys for value pairing (LLM).
+
+    Used EXCLUSIVELY to drive value pairing (extract_unique_keys/pair_values)
+    below — never fed into ``business_key`` (see compile_and_run), which stays
+    a separate, deterministic concept sourced from date/quantity role
+    detection. Hard-stops on degradation: Auto mode has no human checkpoint to
+    catch a silently-skipped LLM stage the way Manual mode's approval step
+    would.
+    """
+    source_df = snapshot_store.load_snapshot_frame(state["source"]["snapshot_id"])
+    target_df = snapshot_store.load_snapshot_frame(state["target"]["snapshot_id"])
+    result = identify_candidate_keys(
+        [str(c) for c in source_df.columns],
+        [str(c) for c in target_df.columns],
+        mapping_sheet_context=state.get("mapping_sheet"),
+    )
+    if result.get("degraded"):
+        raise RuntimeError(
+            f"Candidate-key identification failed: {result.get('degraded_reason')}"
+        )
+    missing = [
+        f"{side}.{role}"
+        for side in ("source", "target")
+        for role in _CANDIDATE_KEY_ROLES
+        if not result[side][role]["field"]
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Could not identify a candidate key for {missing} from the fetched "
+            f"columns (source={list(source_df.columns)!r}, "
+            f"target={list(target_df.columns)!r})."
+        )
+    return {"candidate_keys": result}
+
+
+# ── step 6: identify unique key values ───────────────────────────────────────
 
 def _do_extract_unique_keys(state: AutoRunState) -> dict[str, Any]:
     source_df = snapshot_store.load_snapshot_frame(state["source"]["snapshot_id"])
-    # Which fetched (real, verified) column plays which business role is
-    # DETECTED by alias — the same mechanism manual mode's "AI-mapping" flow
-    # uses (backend/recon_engine/auto_pipeline/field_matching.py, a port of
-    # frontend/src/reconciliation/lib/fieldRoleAliases.js) — never a hardcoded
-    # literal column name.
-    roles = detect_roles_for_columns([str(c) for c in source_df.columns])
-    missing = [r for r in ("product", "location") if r not in roles]
-    if missing:
-        raise RuntimeError(
-            f"Could not detect a {', '.join(missing)} column among the fetched "
-            f"source fields {list(source_df.columns)!r} — nothing to extract "
-            "unique key values from."
-        )
+    # Which column plays the product/location role is the Stage-3 LLM's
+    # candidate-key output (never a hardcoded literal, never alias-detected) —
+    # see identify_candidate_keys_step.
+    candidate_keys = state["candidate_keys"]["source"]
+    product_field = candidate_keys["product"]["field"]
+    location_field = candidate_keys["location"]["field"]
     return {
         "unique_values": {
-            "source_product": distinct_values(source_df[roles["product"]]),
-            "source_location": distinct_values(source_df[roles["location"]]),
+            "source_product": distinct_values(source_df[product_field]),
+            "source_location": distinct_values(source_df[location_field]),
         }
     }
 
@@ -308,21 +342,30 @@ def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
     source_df = snapshot_store.load_snapshot_frame(state["source"]["snapshot_id"])
     target_df = snapshot_store.load_snapshot_frame(state["target"]["snapshot_id"])
 
-    # Roles detected from the ACTUAL fetched columns on each side — never a
-    # hardcoded field name. Validated here (not just product/location) since
-    # compile_and_run needs date + quantity too and there's no point pairing
-    # values only to hard-stop later for a role this step could have caught.
-    source_roles = detect_roles_for_columns([str(c) for c in source_df.columns])
-    target_roles = detect_roles_for_columns([str(c) for c in target_df.columns])
-    missing_source = [r for r in _REQUIRED_ROLES if r not in source_roles]
-    missing_target = [r for r in _REQUIRED_ROLES if r not in target_roles]
+    # product/location: the Stage-3 LLM's candidate-key output (identify_
+    # candidate_keys_step), already hard-validated by that node — used
+    # EXCLUSIVELY here to drive value pairing.
+    candidate_keys = state["candidate_keys"]
+    source_roles = {role: candidate_keys["source"][role]["field"] for role in _CANDIDATE_KEY_ROLES}
+    target_roles = {role: candidate_keys["target"][role]["field"] for role in _CANDIDATE_KEY_ROLES}
+
+    # date/quantity: a SEPARATE, deterministic, alias-based detection — never
+    # the LLM candidate keys above. Used only for the corroboration-date
+    # signal here, and later (independently) for business_key/compare_fields
+    # in compile_and_run — the two concepts never share a mechanism.
+    source_bkey_roles = detect_roles_for_columns([str(c) for c in source_df.columns])
+    target_bkey_roles = detect_roles_for_columns([str(c) for c in target_df.columns])
+    missing_source = [r for r in _BUSINESS_KEY_ROLES if r not in source_bkey_roles]
+    missing_target = [r for r in _BUSINESS_KEY_ROLES if r not in target_bkey_roles]
     if missing_source or missing_target:
         raise RuntimeError(
-            "Could not detect all required business roles (product/location/date/"
-            f"quantity) for value pairing — source missing {missing_source or 'none'} "
+            "Could not detect all required business-key roles (date/quantity) for "
+            f"reconciliation — source missing {missing_source or 'none'} "
             f"(columns: {list(source_df.columns)!r}), target missing "
             f"{missing_target or 'none'} (columns: {list(target_df.columns)!r})."
         )
+    source_roles.update({role: source_bkey_roles[role] for role in _BUSINESS_KEY_ROLES})
+    target_roles.update({role: target_bkey_roles[role] for role in _BUSINESS_KEY_ROLES})
 
     source_dates = source_df[source_roles["date"]]
     target_dates = target_df[target_roles["date"]]
@@ -404,7 +447,7 @@ def _do_compile_and_run(state: AutoRunState) -> dict[str, Any]:
     ]
     value_mappings = [m for m in (state.get("product_mapping"), state.get("location_mapping")) if m]
 
-    draft, _degraded_reason = service.compile_draft(
+    draft, degraded_reason = service.compile_draft(
         mapping_sheet=state.get("mapping_sheet") or [],
         rules="",
         business_key=business_key,
@@ -417,6 +460,15 @@ def _do_compile_and_run(state: AutoRunState) -> dict[str, Any]:
         target_type=state["target"]["kind"],
         actor=actor,
     )
+    if degraded_reason is not None:
+        # Auto mode has no human checkpoint to catch a silently stub-compiled
+        # contract the way Manual mode's approval step would — hard-stop
+        # regardless of the global RECON_GROQ_STRICT setting rather than let
+        # deterministic regex rules silently stand in for the LLM compiler.
+        raise RuntimeError(
+            f"Contract compilation degraded to the deterministic stub compiler: "
+            f"{degraded_reason} — Auto mode requires a real LLM compile."
+        )
     approved = service.approve_contract(draft, approved_by=actor)
 
     started = time.time()
@@ -505,6 +557,10 @@ def select_target(state: AutoRunState) -> dict[str, Any]:
 
 def import_target(state: AutoRunState) -> dict[str, Any]:
     return _run_step(state, "import_target", _do_import_target)
+
+
+def identify_candidate_keys_step(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "identify_candidate_keys", _do_identify_candidate_keys)
 
 
 def extract_unique_keys(state: AutoRunState) -> dict[str, Any]:

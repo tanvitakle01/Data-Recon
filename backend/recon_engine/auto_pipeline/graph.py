@@ -1,4 +1,4 @@
-"""Wires the 7 Auto-mode nodes into a linear LangGraph ``StateGraph`` with a
+"""Wires the 8 Auto-mode nodes into a linear LangGraph ``StateGraph`` with a
 hard-stop conditional edge after every node: a node that recorded
 ``status == "failed"`` routes straight to ``END`` instead of continuing, so a
 genuine step failure never lets a later step run on incomplete state. A low
@@ -20,6 +20,7 @@ _NODE_ORDER = [
     ("import_source", nodes.import_source),
     ("select_target", nodes.select_target),
     ("import_target", nodes.import_target),
+    ("identify_candidate_keys", nodes.identify_candidate_keys_step),
     ("extract_unique_keys", nodes.extract_unique_keys),
     ("pair_values", nodes.pair_values_step),
     ("compile_and_run", nodes.compile_and_run),

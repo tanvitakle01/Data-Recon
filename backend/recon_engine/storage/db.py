@@ -198,7 +198,8 @@ CREATE TABLE IF NOT EXISTS value_pair_library (
     reviewed_by         TEXT,
     reviewed_on         TEXT,
     version             INTEGER NOT NULL,
-    UNIQUE (source_connector, target_connector, source_field, target_field, source_value)
+    UNIQUE (source_connector, target_connector, source_field, target_field,
+            source_value, target_value)
 );
 """
 
@@ -274,6 +275,58 @@ def _migrate_value_pair_library(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_value_pair_library_target_value(conn: sqlite3.Connection) -> None:
+    """One-time migration adding ``target_value`` to the UNIQUE constraint.
+
+    The original constraint — ``(source_connector, target_connector,
+    source_field, target_field, source_value)`` — omitted ``target_value``,
+    so a genuinely different target proposed for the same source value was
+    treated as a duplicate of whichever target got there first: ``propose()``
+    silently returned the FIRST target's row, and approving it approved the
+    wrong pairing. This never self-heals via ``CREATE TABLE IF NOT EXISTS``,
+    so an existing table must be rebuilt on the current DDL, exactly like
+    :func:`_migrate_value_pair_library` above.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'value_pair_library'"
+    ).fetchone()
+    if row is None:
+        return  # table doesn't exist yet — created fresh on the current DDL
+    existing_sql = row[0] or ""
+    if "target_value" in existing_sql.split("UNIQUE", 1)[-1]:
+        return  # already on the current constraint
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(value_pair_library)")}
+    if "ops_json" not in cols:
+        return  # unrecognized shape — handled by the ops_json migration first
+
+    conn.execute("ALTER TABLE value_pair_library RENAME TO value_pair_library_old2")
+    conn.executescript(_MAIN_SCHEMA)  # recreates value_pair_library on the current DDL
+
+    rows = conn.execute("SELECT * FROM value_pair_library_old2").fetchall()
+    for r in rows:
+        conn.execute(
+            """INSERT INTO value_pair_library
+               (id, source_connector, target_connector, source_field, target_field,
+                source_value, target_value, ops_json, status, evidence_json,
+                added_by, added_on, reviewed_by, reviewed_on, version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                r["id"], r["source_connector"], r["target_connector"],
+                r["source_field"], r["target_field"], r["source_value"],
+                r["target_value"], r["ops_json"], r["status"], r["evidence_json"],
+                r["added_by"], r["added_on"], r["reviewed_by"], r["reviewed_on"],
+                r["version"],
+            ),
+        )
+    conn.execute("DROP TABLE value_pair_library_old2")
+    logger.info(
+        "Migrated value_pair_library: %d row(s) moved to the (…, source_value, "
+        "target_value) UNIQUE constraint.",
+        len(rows),
+    )
+
+
 def init_storage() -> None:
     """Create store directories and both databases with their schemas.
 
@@ -285,6 +338,7 @@ def init_storage() -> None:
     with _connect(settings.main_db_path) as conn:
         conn.executescript(_MAIN_SCHEMA)
         _migrate_value_pair_library(conn)
+        _migrate_value_pair_library_target_value(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

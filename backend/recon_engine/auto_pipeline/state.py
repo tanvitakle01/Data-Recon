@@ -14,6 +14,7 @@ STEP_NAMES = (
     "import_source",
     "select_target",
     "import_target",
+    "identify_candidate_keys",
     "extract_unique_keys",
     "pair_values",
     "compile_and_run",
@@ -44,6 +45,13 @@ class AutoRunState(TypedDict, total=False):
     target: SideState
 
     unique_values: dict[str, Any]
+
+    # Stage 3 (LLM ONLY): {"source": {"product": {...}, "location": {...}},
+    # "target": {...}} — candidate business-identifier keys, used exclusively
+    # to drive value pairing (extract_unique_keys/pair_values). Never fed into
+    # business_key (see compile_and_run) — that stays a separate, deterministic
+    # concept. Set by identify_candidate_keys.
+    candidate_keys: dict[str, Any]
 
     # role ("product"/"location"/"date"/"quantity") -> the actual fetched
     # column name detected for it (never a hardcoded literal) — set by

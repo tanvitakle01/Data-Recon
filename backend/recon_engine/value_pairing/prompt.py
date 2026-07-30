@@ -1,21 +1,34 @@
-"""LLM pairing prompt construction — pipeline step 3.
+"""LLM pairing prompt construction — pipeline step 3 (Transformation Discovery).
 
-Given the residual (post-identity, post-library) source/target values plus
-optional STM (mapping-sheet) context, asks the LLM to propose
-``{source_value, target_value, ops, reason}`` pairs, where ``ops`` is an
-ORDERED LIST of allow-listed transform steps — most real-world identifier
-transforms are more than one step (a prefix AND a suffix), so a single-op
-schema biases the model toward stopping after the first step it finds. Each
-op has a worked example, including at least one CHAINED example, so the
-model matches a concrete multi-step pattern rather than reasoning from a bare
-name. The prompt also teaches a find-the-match-then-derive-the-rule strategy
-(see ``_SUBSTRING_DERIVATION_STRATEGY``): when one residual value is literally
+Given the COMPLETE distinct source/target value lists (minus only values
+already covered by an approved library pairing — a human decision, never
+re-litigated here), the exact-match registry the deterministic identity
+pre-pass already found, and optional STM (mapping-sheet) context, asks the
+LLM to propose ``{source_value, target_value, ops, reason}`` pairs, where
+``ops`` is an ORDERED LIST of allow-listed transform steps — most real-world
+identifier transforms are more than one step (a prefix AND a suffix), so a
+single-op schema biases the model toward stopping after the first step it
+finds. Each op has a worked example, including at least one CHAINED example,
+so the model matches a concrete multi-step pattern rather than reasoning from
+a bare name. The prompt also teaches a find-the-match-then-derive-the-rule
+strategy (see ``_SUBSTRING_DERIVATION_STRATEGY``): when one value is literally
 a contiguous substring of another, the prefix/suffix chain is derived from
 that overlap instead of guessed independently.
 
+The LLM never performs exact matching and must never RETURN one either (see
+``_SYSTEM_PREAMBLE``'s hard rule against ``target_value == source_value``) —
+that is exclusively the deterministic identity pre-pass's job. A source value
+that already has an exact match may still appear here so the model can
+propose a genuinely ADDITIONAL, different target when the data/mapping sheet
+supports one (e.g. ``S102 -> S102`` exact, ``S102 -> PLS102@SF500``
+transform, both valid, both coexist) — it is never asked to choose between
+them, only to check for an extra one.
+
 Same safety posture as ``field_mapper.py``: sampled/capped inputs, strict
 JSON, existence gated. Every claim here is a HYPOTHESIS — ``verify.py`` is
-what actually re-executes the full chain; nothing here is trusted outright.
+what actually re-executes the full chain against the real operation registry;
+nothing here is trusted outright, and ``pipeline.py`` drops any candidate
+that restates an exact match regardless of what the model returns.
 """
 
 from __future__ import annotations
@@ -91,38 +104,53 @@ you still write the proposal as an ops chain from that vocabulary, and every pro
 mechanically re-executed and rejected if it does not reproduce the target exactly.
 """
 
-_SYSTEM_PREAMBLE = f"""You are pairing residual, unmatched identifier values
-between a SOURCE dataset and a TARGET dataset for reconciliation. Every value
-you see here already failed an exact-match pre-pass and a known-pairs library
-lookup — you are looking for a value that becomes its target counterpart under
-a SIMPLE, MECHANICAL text transform, or a CHAIN of such transforms applied in
-order (a fixed prefix AND a fixed suffix together is common — see the worked
-chain example below), never a semantic guess.
+_SYSTEM_PREAMBLE = f"""You are identifying TRANSFORMATION-BASED value pairings
+between a SOURCE dataset and a TARGET dataset for reconciliation — candidate
+pairs that require an EXISTING, mechanically-verifiable transformation, never
+a semantic guess and never a brand new kind of rule you invent from nothing.
+
+You are given the COMPLETE distinct source_values and target_values lists,
+PLUS an "exact_match_registry" — the pairs the deterministic engine already
+found via exact string equality (source_value == target_value). That registry
+is not your job to reproduce or second-guess.
 
 {_VOCABULARY}
 
 {_SUBSTRING_DERIVATION_STRATEGY}
 
 You may also be given an "stm_context" — a mapping-sheet excerpt describing
-the naming convention in prose. Use it only as a hint; it never substitutes
-for an ops chain that actually reproduces the target from the source (your
-claim will be mechanically re-executed, step by step, and rejected if the
-FINAL result does not reproduce the target EXACTLY).
+the naming convention in prose. Use it, and the exact_match_registry, and the
+find-the-match-then-derive-the-rule strategy above, as your EVIDENCE for
+which transform applies — never propose an ops chain that isn't grounded in
+one of these. It never substitutes for an ops chain that actually reproduces
+the target from the source (your claim will be mechanically re-executed,
+step by step, and rejected if the FINAL result does not reproduce the target
+EXACTLY).
 
-Rules:
-- Only propose a pair when you have a concrete ops chain that mechanically
-  transforms the exact source_value into the exact target_value.
+HARD RULES:
+- NEVER propose a pair where target_value equals source_value. That IS an
+  exact match — exclusively the deterministic engine's job, already recorded
+  in exact_match_registry. Returning one is always wrong, even if you believe
+  it's correct.
+- A source_value that already appears in exact_match_registry MAY still be
+  proposed here, but only with a DIFFERENT target_value backed by a genuine
+  transform — you are checking for an ADDITIONAL valid pairing that coexists
+  with the exact match, never restating or replacing it.
+- Only propose a pair when you have a concrete ops chain — grounded in
+  stm_context, the vocabulary's derivation strategy, or both — that
+  mechanically transforms the exact source_value into the exact target_value.
+  If no such transformation rule applies to a value, leave it out entirely;
+  do not force a guess.
 - Only reference source/target values that appear EXACTLY in the lists given.
-  Never invent a value.
-- Each source value maps to at most one target value.
-- If you cannot find a confident mechanical transform for a value, leave it
-  out entirely rather than forcing a guess.
+  Never invent a value, an operation, or a param key outside the vocabulary.
+- Each source value maps to at most one NEW (transformation-based) target
+  value per response.
 
 Respond with a single JSON object only, no prose/markdown/code fences:
 {{
   "pairs": [
     {{"source_value": "<exact source value>",
-      "target_value": "<exact target value>",
+      "target_value": "<exact target value, != source_value>",
       "ops": [{{"op": "<allow-listed op name>", "params": {{...}}}}, ...],
       "reason": "<one line: which values, which transform chain>"}},
     ...
@@ -133,14 +161,19 @@ Respond with a single JSON object only, no prose/markdown/code fences:
 
 def build_messages(
     *,
-    residual_source: list[str],
-    residual_target: list[str],
+    candidate_source: list[str],
+    candidate_target: list[str],
+    exact_matches: dict[str, str] | None = None,
     mapping_sheet_context: Any = None,
 ) -> list[dict[str, str]]:
     user_payload: dict[str, Any] = {
-        "source_values": residual_source[:_MAX_VALUES_PER_SIDE],
-        "target_values": residual_target[:_MAX_VALUES_PER_SIDE],
+        "source_values": candidate_source[:_MAX_VALUES_PER_SIDE],
+        "target_values": candidate_target[:_MAX_VALUES_PER_SIDE],
     }
+    if exact_matches:
+        user_payload["exact_match_registry"] = dict(
+            list(exact_matches.items())[:_MAX_VALUES_PER_SIDE]
+        )
     if mapping_sheet_context:
         user_payload["stm_context"] = mapping_sheet_context
     return [

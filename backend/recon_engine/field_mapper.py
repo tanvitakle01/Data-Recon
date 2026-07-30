@@ -65,10 +65,17 @@ entirely different names, including custom fields. Reason from the data in front
 of you, not from memorized field pairings.
 
 For each pairing you propose, assign a role:
-  - "Key"     : an identifier/dimension used to match records (e.g. product,
-                location, date-like columns, order numbers).
-  - "Compare" : a measured value compared once keys align (e.g. quantity/amount
-                columns).
+  - "Key"     : a business identifier/dimension used to match records — a
+                product/material/SKU code, a location/plant/site code, a
+                date/period/timestamp that scopes the comparison, or an
+                order/document number.
+  - "Compare" : a measured, non-temporal VALUE compared once keys align (e.g.
+                quantity, amount, price, count).
+
+A date/timestamp/period column is ALWAYS "Key", NEVER "Compare" — it scopes
+which records line up, it is not a measured value being compared. Never
+assign "Compare" to a date, timestamp, or period column under any
+circumstance, even if its values look numeric (epoch/serial dates, etc.).
 
 Rules:
 - Only reference column names that appear EXACTLY in the provided lists. Never
@@ -85,6 +92,7 @@ Respond with a single JSON object only, no prose/markdown/code fences:
     {"source_column": "<exact source column name>",
      "target_column": "<exact target column name>",
      "role": "Key" | "Compare",
+     "confidence": "high" | "medium" | "low",
      "reason": "<one line citing the evidence you used: name similarity, value shape, ...>",
      "label": "<optional short concept name for display; omit if unsure>"},
     ...
@@ -95,6 +103,25 @@ Respond with a single JSON object only, no prose/markdown/code fences:
   }
 }
 """
+
+_CONFIDENCE_VALUES = ("high", "medium", "low")
+
+# Deterministic safety net: exact-normalized-name match only (never a
+# substring — "Updated"/"Validated" etc. must NOT collide with "date"), so a
+# date/period/timestamp column is force-corrected to Key even if the model
+# still mislabels it Compare. Mirrors the same exact-match discipline as
+# ``auto_pipeline/field_matching.py``'s ROLE_ALIASES date list.
+_DATE_LIKE_NAMES = frozenset(
+    {
+        "date", "period", "periodid", "periodid0tstamp", "timestamp",
+        "datetime", "requesteddeliverydate", "deliverydate",
+        "transactiondate", "orderdate",
+    }
+)
+
+
+def _is_date_like(name: str) -> bool:
+    return _norm(name) in _DATE_LIKE_NAMES
 
 
 def _norm(name: str) -> str:
@@ -196,12 +223,26 @@ def _normalize(
         used_src.add(sc)
         used_tgt.add(tc)
         role = COMPARE_ROLE if _is_compare_role(item.get("role")) else KEY_ROLE
+        if role == COMPARE_ROLE and (_is_date_like(sc) or _is_date_like(tc)):
+            # The model is never trusted outright: a date/period/timestamp
+            # column must always be Key, never Compare (see _SYSTEM_PREAMBLE)
+            # — force-correct rather than surface the wrong role to the user.
+            role = KEY_ROLE
+            warnings.append(
+                f"Corrected {sc!r} -> {tc!r} from Compare to Key: date/period/"
+                f"timestamp columns are always a matching dimension, never a "
+                f"compared value."
+            )
+        confidence = str(item.get("confidence") or "low").strip().lower()
+        if confidence not in _CONFIDENCE_VALUES:
+            confidence = "low"
         display.append(
             {
                 "logical": str(item.get("label") or item.get("concept") or "").strip(),
                 "source_col": sc,
                 "target_col": tc,
                 "role": role,
+                "confidence": confidence,
                 "reason": str(item.get("reason") or item.get("evidence") or "").strip(),
                 "provenance": "generated",
             }

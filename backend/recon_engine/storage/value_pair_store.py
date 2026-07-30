@@ -90,16 +90,22 @@ def propose(
 ) -> ValuePair:
     """Insert a PENDING row for a freshly-verified pairing (an ordered ops chain).
 
-    If a row already exists for this key (any status), it is returned
-    unchanged — see the module docstring on conflict policy.
+    If a row already exists for this exact ``(..., source_value,
+    target_value)`` key (any status), it is returned unchanged — see the
+    module docstring on conflict policy. ``target_value`` is part of the
+    lookup key so a genuinely different target proposed for the same source
+    value inserts its OWN row instead of being handed back an unrelated
+    target's row (one-to-many support).
     """
     evidence = evidence or {}
     with main_db() as conn:
         existing = conn.execute(
             """SELECT * FROM value_pair_library
                WHERE source_connector = ? AND target_connector = ?
-                 AND source_field = ? AND target_field = ? AND source_value = ?""",
-            (source_connector, target_connector, source_field, target_field, source_value),
+                 AND source_field = ? AND target_field = ?
+                 AND source_value = ? AND target_value = ?""",
+            (source_connector, target_connector, source_field, target_field,
+             source_value, target_value),
         ).fetchone()
         if existing:
             return _row_to_pair(existing)
