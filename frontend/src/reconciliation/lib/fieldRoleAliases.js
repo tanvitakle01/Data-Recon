@@ -1,12 +1,16 @@
-// Deterministic Mapping needs to know which confirmed field-mapping row is
-// the product/material pairing, which is the plant/location pairing, and so
-// on — regardless of what the source or target actually calls that column.
-// Live Fetch (SAP/IBP) gets this for free because the API's field names are
-// always literally "Material"/"ProductionPlant"/"PRDID"/"LOCID". Excel
-// headers vary ("SKU", "Material Code", "Plant ID", ...), so this module
-// recognizes the same canonical roles from common header variations. See
+// AI-mapping needs to know which confirmed field-mapping row is the
+// product/material pairing, which is the plant/location pairing, and so on —
+// regardless of what the source or target actually calls that column. Column
+// names vary by connector and configuration (Excel headers like "SKU" or
+// "Material Code"; even Live Fetch shouldn't be assumed to always literally
+// expose "Material"/"ProductionPlant"/"PRDID"/"LOCID" — that varies by SAP
+// system/config too), so this module recognizes canonical roles from common
+// header variations, never assuming one is guaranteed present. See
 // MappingEditor's "Business Field" column for the manual-override path when
-// a header isn't recognized (or is recognized wrong).
+// a header isn't recognized (or is recognized wrong). A backend Python port
+// of this same alias detection (never a literal-name assumption) drives
+// Auto mode's equivalent role resolution — see
+// backend/recon_engine/auto_pipeline/field_matching.py.
 export const FIELD_ROLES = {
   PRODUCT: "product",
   LOCATION: "location",

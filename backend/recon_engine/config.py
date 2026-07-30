@@ -7,21 +7,41 @@ whole subsystem importable and testable offline.
 
 Environment variables
 ---------------------
-GROQ_API_KEY        API key for the Groq LLM (the PRIMARY provider). Required
-                    ONLY when a real ``GroqContractCompiler`` is used to draft a
-                    contract. Not needed for validation, approval, or reconciliation.
+GROQ_API_KEY        API key for the Groq LLM (the PRIMARY provider, tier 1).
+                    Required ONLY when a real ``GroqContractCompiler`` is used to
+                    draft a contract. Not needed for validation, approval, or
+                    reconciliation.
 GROQ_MODEL          Groq model id used for contract drafting.
                     Default: ``llama-3.3-70b-versatile``.
 GROQ_BASE_URL       Optional override for the Groq API base URL.
-OPENAI_API_KEY      API key for OpenAI (the FALLBACK provider). When set, LLM
-                    requests automatically fail over to OpenAI if Groq returns a
-                    retryable error (rate limit / quota / token limit / timeout /
-                    service unavailable / connection error). Optional.
-OPENAI_MODEL        OpenAI model id used for the fallback. Default: ``gpt-4o-mini``.
-OPENAI_BASE_URL     Optional override for the OpenAI API base URL.
+GEMINI_API_KEY      API key for Gemini (fallback tier 2), called via Gemini's
+                    OpenAI-compatible endpoint. Optional.
+GEMINI_MODEL        Gemini model id used for tier 2. No default — must be set
+                    for this tier to be usable.
+GEMINI_BASE_URL     Optional override for the Gemini OpenAI-compatible base URL
+                    (default: ``https://generativelanguage.googleapis.com/v1beta/openai/``).
+CEREBRAS_API_KEY    API key for Cerebras (fallback tier 3), called via
+                    Cerebras's OpenAI-compatible endpoint. Optional.
+CEREBRAS_MODEL      Cerebras model id used for tier 3. No default — must be set
+                    for this tier to be usable.
+CEREBRAS_BASE_URL   Optional override for the Cerebras OpenAI-compatible base
+                    URL (default: ``https://api.cerebras.ai/v1``).
+OPENROUTER_API_KEY  API key for OpenRouter (fallback tier 4 — the last resort,
+                    free models). Optional.
+OPENROUTER_MODEL    OpenRouter model id used for tier 4.
+                    Default: ``meta-llama/llama-3.1-8b-instruct:free``.
+OPENROUTER_BASE_URL Optional override for the OpenRouter base URL
+                    (default: ``https://openrouter.ai/api/v1``).
 LLM_FALLBACK_COOLDOWN_SECONDS
                     After a Groq retryable failure, how long (seconds) to route
-                    straight to OpenAI before retrying Groq again. Default: 60.
+                    straight to the next tier before retrying Groq again.
+                    Default: 60.
+OPENAI_API_KEY      API key for OpenAI. No longer part of the default
+                    Groq→Gemini→Cerebras→OpenRouter failover chain built by
+                    ``build_llm_client()`` — kept only for standalone/manual use
+                    of ``OpenAIJSONClient``. Optional.
+OPENAI_MODEL        OpenAI model id for standalone use. Default: ``gpt-4o-mini``.
+OPENAI_BASE_URL     Optional override for the OpenAI API base URL.
 RECON_STORE_DIR     Directory root for all persisted state (SQLite DBs + raw
                     snapshot / shadow data files). Default: ``<repo>/data/recon_store``.
 SHADOW_TTL_DAYS     Retention window (days) for Shadow_Source data before
@@ -83,11 +103,51 @@ class GroqSettings:
 
 @dataclass(frozen=True)
 class OpenAISettings:
-    """OpenAI LLM configuration — the fallback provider for LLM failover.
+    """OpenAI LLM configuration — kept for standalone use only.
 
-    ``api_key`` may be ``None`` (the app runs, and failover is simply a no-op —
-    Groq is used alone). A key enables automatic Groq→OpenAI failover.
+    No longer part of the default ``build_llm_client()`` failover chain (see
+    :mod:`backend.recon_engine.llm.failover`); ``OpenAIJSONClient`` still reads
+    this if constructed directly.
     """
+
+    api_key: str | None
+    model: str
+    base_url: str | None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+
+@dataclass(frozen=True)
+class GeminiSettings:
+    """Gemini LLM configuration — fallback tier 2, via Gemini's OpenAI-compatible endpoint."""
+
+    api_key: str | None
+    model: str
+    base_url: str | None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+
+@dataclass(frozen=True)
+class CerebrasSettings:
+    """Cerebras LLM configuration — fallback tier 3, via Cerebras's OpenAI-compatible endpoint."""
+
+    api_key: str | None
+    model: str
+    base_url: str | None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+
+@dataclass(frozen=True)
+class OpenRouterSettings:
+    """OpenRouter LLM configuration — fallback tier 4, the last resort (free models)."""
 
     api_key: str | None
     model: str
@@ -110,12 +170,22 @@ class Settings:
     groq_strict: bool
     llm_fallback_cooldown_s: int
     groq: GroqSettings = field(repr=False)
+    gemini: GeminiSettings = field(repr=False)
+    cerebras: CerebrasSettings = field(repr=False)
+    openrouter: OpenRouterSettings = field(repr=False)
     openai: OpenAISettings = field(repr=False)
 
     @property
     def any_llm_configured(self) -> bool:
-        """True when at least one LLM provider (Groq or OpenAI) has a key."""
-        return self.groq.is_configured or self.openai.is_configured
+        """True when at least one provider in the active failover chain
+        (Groq → Gemini → Cerebras → OpenRouter) has a key. ``openai`` is
+        deliberately excluded — it is no longer part of that chain."""
+        return (
+            self.groq.is_configured
+            or self.gemini.is_configured
+            or self.cerebras.is_configured
+            or self.openrouter.is_configured
+        )
 
     # ── Derived paths ────────────────────────────────────────────────────────
     @property
@@ -191,6 +261,25 @@ def get_settings() -> Settings:
         model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
         base_url=os.environ.get("GROQ_BASE_URL") or None,
     )
+    gemini = GeminiSettings(
+        api_key=os.environ.get("GEMINI_API_KEY") or None,
+        # No invented default — this tier is only usable once GEMINI_MODEL is
+        # actually set (see llm/gemini_client.py, which fails loudly rather
+        # than guessing a model name).
+        model=os.environ.get("GEMINI_MODEL", ""),
+        base_url=os.environ.get("GEMINI_BASE_URL")
+        or "https://generativelanguage.googleapis.com/v1beta/openai/",
+    )
+    cerebras = CerebrasSettings(
+        api_key=os.environ.get("CEREBRAS_API_KEY") or None,
+        model=os.environ.get("CEREBRAS_MODEL", ""),
+        base_url=os.environ.get("CEREBRAS_BASE_URL") or "https://api.cerebras.ai/v1",
+    )
+    openrouter = OpenRouterSettings(
+        api_key=os.environ.get("OPENROUTER_API_KEY") or None,
+        model=os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
+        base_url=os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1",
+    )
     openai = OpenAISettings(
         api_key=os.environ.get("OPENAI_API_KEY") or None,
         model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
@@ -208,6 +297,9 @@ def get_settings() -> Settings:
         groq_strict=_bool_env("RECON_GROQ_STRICT", False),
         llm_fallback_cooldown_s=max(0, _int_env("LLM_FALLBACK_COOLDOWN_SECONDS", 60)),
         groq=groq,
+        gemini=gemini,
+        cerebras=cerebras,
+        openrouter=openrouter,
         openai=openai,
     )
 

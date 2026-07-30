@@ -528,12 +528,12 @@ function MappingReviewPage() {
         <header className="wizard-step__header">
           <p className="wizard-step__eyebrow">Mapping — Mapping Review</p>
           <h2 className="wizard-step__title">Mapping Review</h2>
-          <p className="wizard-step__desc">Run Deterministic Mapping on the Mapping step first.</p>
+          <p className="wizard-step__desc">Run AI-mapping on the Mapping step first.</p>
         </header>
         <div className="wizard-step__body">
           <EmptyState
             title="No mapping review yet"
-            description={'No value pairing has been run yet. Go back to the Mapping step and click "Run Deterministic Mapping" once the required field mappings are confirmed.'}
+            description={'No value pairing has been run yet. Go back to the Mapping step and click "Run AI-mapping" once the required field mappings are confirmed.'}
           />
         </div>
         <footer className="wizard-step__footer">

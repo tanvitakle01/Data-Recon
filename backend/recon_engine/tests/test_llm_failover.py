@@ -1,9 +1,11 @@
-"""Automatic Groq→OpenAI LLM failover: classification, orchestration, circuit
-breaker, provider provenance, and the end-to-end compile path.
+"""Automatic Groq→Gemini→Cerebras→OpenRouter LLM failover: classification,
+orchestration, circuit breaker, provider provenance, and the end-to-end
+compile path.
 
 These prove that a Groq rate-limit/quota/timeout/outage transparently continues
-on OpenAI — deterministically, with no live API calls (providers are faked and
-the OpenAI SDK is monkeypatched).
+on the next configured tier — deterministically, with no live API calls
+(providers are faked and the OpenAI SDK, which Gemini/Cerebras/OpenRouter all
+reuse via base_url, is monkeypatched).
 """
 
 from __future__ import annotations
@@ -215,32 +217,71 @@ _MAPPING = [
 ]
 
 
-def test_compile_draft_fails_over_to_openai(monkeypatch):
-    """With both keys set, a Groq retryable failure produces an OpenAI-authored
-    draft (compiler=='openai'), no degradation, and a fallback notice."""
+def test_compile_draft_fails_over_to_gemini(monkeypatch):
+    """With both keys set, a Groq retryable failure produces a Gemini-authored
+    draft (compiler=='gemini', tier 2), no degradation, and a fallback notice."""
     monkeypatch.setenv("GROQ_API_KEY", "gsk_fake")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk_fake")
+    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
     reset_settings_cache()
 
     from backend.recon_engine.compiler.groq_client import GroqJSONClient
-    from backend.recon_engine.llm.openai_client import OpenAIJSONClient
+    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
 
     def _groq_429(self, messages):
         raise RetryableLLMError("Groq API call failed: 429 rate_limit_exceeded", provider="groq")
 
     monkeypatch.setattr(GroqJSONClient, "complete_json", _groq_429)
-    monkeypatch.setattr(OpenAIJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
+    monkeypatch.setattr(GeminiJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
 
     draft, degraded_reason = service.compile_draft(
         mapping_sheet=_MAPPING, rules="", source_schema=["id", "qty"],
         target_schema=["id", "qty"], comparison_type="sales_history",
         source_type="s4", target_type="ibp",
     )
-    assert draft.compiler == "openai"       # provenance = actual provider
-    assert degraded_reason is None          # OpenAI succeeded → no degradation
+    assert draft.compiler == "gemini"       # provenance = actual provider
+    assert degraded_reason is None          # Gemini succeeded → no degradation
     outcome = get_last_llm_outcome()
     assert outcome.fallback_occurred is True
-    assert outcome.notice == FALLBACK_NOTICE
+    assert outcome.provider_used == "gemini"
+
+
+def test_compile_draft_falls_through_all_four_tiers_in_order(monkeypatch):
+    """Groq, Gemini, and Cerebras all fail with a retryable error; OpenRouter
+    (the last resort, free-model tier) serves the request."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake")
+    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+    monkeypatch.setenv("CEREBRAS_API_KEY", "cb_fake")
+    monkeypatch.setenv("CEREBRAS_MODEL", "llama3.1-8b")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or_fake")
+    reset_settings_cache()
+
+    from backend.recon_engine.compiler.groq_client import GroqJSONClient
+    from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
+    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
+    from backend.recon_engine.llm.openrouter_client import OpenRouterJSONClient
+
+    def _retryable(name):
+        def _behavior(self, messages):
+            raise RetryableLLMError(f"{name} API call failed: 503", provider=name)
+        return _behavior
+
+    monkeypatch.setattr(GroqJSONClient, "complete_json", _retryable("groq"))
+    monkeypatch.setattr(GeminiJSONClient, "complete_json", _retryable("gemini"))
+    monkeypatch.setattr(CerebrasJSONClient, "complete_json", _retryable("cerebras"))
+    monkeypatch.setattr(OpenRouterJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
+
+    draft, degraded_reason = service.compile_draft(
+        mapping_sheet=_MAPPING, rules="", source_schema=["id", "qty"],
+        target_schema=["id", "qty"], comparison_type="sales_history",
+        source_type="s4", target_type="ibp",
+    )
+    assert draft.compiler == "openrouter"
+    assert degraded_reason is None
+    outcome = get_last_llm_outcome()
+    assert outcome.fallback_occurred is True
+    assert outcome.provider_used == "openrouter"
 
 
 def test_openai_client_uses_sdk(monkeypatch):
@@ -278,6 +319,57 @@ def test_openai_client_uses_sdk(monkeypatch):
     assert client.complete_json([{"role": "user", "content": "hi"}]) == {"hello": "world"}
 
 
+def test_gemini_client_uses_openai_compatible_sdk(monkeypatch):
+    """GeminiJSONClient reuses the openai SDK against Gemini's base_url."""
+    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+    reset_settings_cache()
+
+    class _Msg:
+        content = '{"hello": "gemini"}'
+
+    class _Choice:
+        message = _Msg()
+
+    class _Resp:
+        choices = [_Choice()]
+
+    class _Completions:
+        def create(self, **kwargs):
+            assert kwargs["model"] == "gemini-2.0-flash"
+            return _Resp()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            assert kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai/"
+            self.chat = _Chat()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+
+    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
+    client = GeminiJSONClient()
+    assert client.is_configured is True
+    assert client.complete_json([{"role": "user", "content": "hi"}]) == {"hello": "gemini"}
+
+
+def test_fallback_tier_without_a_model_env_var_fails_loudly(monkeypatch):
+    """A configured API key but no model id must not silently guess a model —
+    it should raise a clear, actionable error instead."""
+    monkeypatch.setenv("CEREBRAS_API_KEY", "cb_fake")
+    monkeypatch.delenv("CEREBRAS_MODEL", raising=False)
+    reset_settings_cache()
+
+    from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
+    client = CerebrasJSONClient()
+    assert client.is_configured is True  # a key alone is enough for is_configured
+    with pytest.raises(ContractCompilerError, match="CEREBRAS_MODEL"):
+        client.complete_json([{"role": "user", "content": "hi"}])
+
+
 def test_compile_route_surfaces_fallback_fields(monkeypatch):
     """The /compile HTTP response carries provider/fallback/provider_notice so
     the frontend can show the non-blocking notice (contextvar → route)."""
@@ -285,11 +377,12 @@ def test_compile_route_surfaces_fallback_fields(monkeypatch):
     from fastapi.testclient import TestClient
 
     from backend.recon_engine.compiler.groq_client import GroqJSONClient
-    from backend.recon_engine.llm.openai_client import OpenAIJSONClient
+    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
     from backend.routes.contracts import router
 
     monkeypatch.setenv("GROQ_API_KEY", "gsk_fake")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk_fake")
+    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
     reset_settings_cache()
     monkeypatch.setattr(
         GroqJSONClient, "complete_json",
@@ -297,7 +390,7 @@ def test_compile_route_surfaces_fallback_fields(monkeypatch):
             RetryableLLMError("429 rate_limit_exceeded", provider="groq")
         ),
     )
-    monkeypatch.setattr(OpenAIJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
+    monkeypatch.setattr(GeminiJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
 
     app = FastAPI()
     app.include_router(router)
@@ -316,7 +409,7 @@ def test_compile_route_surfaces_fallback_fields(monkeypatch):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["provider"] == "openai"
+    assert body["provider"] == "gemini"
     assert body["fallback"] is True
-    assert body["provider_notice"] == FALLBACK_NOTICE
+    assert body["provider_notice"] is not None
     assert body["degraded"] is False

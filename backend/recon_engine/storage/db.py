@@ -161,6 +161,22 @@ CREATE TABLE IF NOT EXISTS attribute_mappings (
             source_columns_key, target_columns_key)
 );
 
+-- Auto-mode pipeline runs: tracks ONE end-to-end Auto-mode graph execution
+-- across all 7 wizard steps (mapping-sheet identify through reconciliation),
+-- distinct from `runs` (ReconciliationRun), which only ever covers step 7's
+-- execution of an already-approved contract. Polled by the frontend for the
+-- elapsed-time display and terminal status.
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    graph_run_id        TEXT PRIMARY KEY,
+    status              TEXT NOT NULL,
+    current_step        TEXT,
+    step_timestamps_json TEXT NOT NULL,
+    failed_step         TEXT,
+    error               TEXT,
+    result_json         TEXT,
+    created_at          TEXT NOT NULL
+);
+
 -- Value-pair library: an approved source_value -> target_value pairing for one
 -- Key field pair (e.g. Material -> PRDID), discovered by the LLM-pairing
 -- pipeline and deterministically verified before it ever reaches PENDING here.

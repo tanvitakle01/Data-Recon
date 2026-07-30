@@ -9,8 +9,14 @@ import pytest
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setenv("RECON_STORE_DIR", str(tmp_path / "store"))
     # No live LLM providers in tests unless a test opts in explicitly. Clearing
-    # OpenAI too keeps the failover path deterministic (Groq-only / neither).
-    for var in ("GROQ_API_KEY", "GROQ_MODEL", "OPENAI_API_KEY", "OPENAI_MODEL"):
+    # every tier's vars keeps the failover path deterministic (Groq-only / none).
+    for var in (
+        "GROQ_API_KEY", "GROQ_MODEL",
+        "GEMINI_API_KEY", "GEMINI_MODEL",
+        "CEREBRAS_API_KEY", "CEREBRAS_MODEL",
+        "OPENROUTER_API_KEY", "OPENROUTER_MODEL",
+        "OPENAI_API_KEY", "OPENAI_MODEL",
+    ):
         monkeypatch.delenv(var, raising=False)
 
     from backend.recon_engine.config import reset_settings_cache

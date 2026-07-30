@@ -97,6 +97,7 @@ def _finalize_single(
     evidence_prefix: str = "",
     corroboration: bool | None = None,
     sibling_candidates: list[str] | None = None,
+    approved: dict[str, Any] | None = None,
 ) -> ValueMatch:
     """The resolution for one (value, target) pair — sole candidate or one of
     several accepted candidates (see module docstring)."""
@@ -109,6 +110,31 @@ def _finalize_single(
             confidence=Confidence.VERY_HIGH,
             rule=rule_override or "value_pairing.identity",
             evidence=evidence_prefix + f"Exact match: {value!r} == {target!r}.",
+            row_count=row_count,
+            corroboration=corroboration,
+            candidates=sibling_candidates,
+        )
+
+    if kinds == {"library"}:
+        # Trusted, immediate, no re-verification — a human already reviewed
+        # and approved this exact pairing on a prior run. Still routed
+        # through the normal candidate machinery (rather than short-circuited
+        # in Step 0) so a genuinely competing candidate for the same value
+        # (e.g. a coincidental identity match) is never silently discarded
+        # just because a different transform was already approved for it.
+        hit = (approved or {}).get(value)
+        reviewed_on = hit.reviewed_on if hit is not None else None
+        chain = next((c for _origin, c in origins if c), [])
+        return ValueMatch(
+            source_value=value,
+            target_value=target,
+            confidence=Confidence.HIGH,
+            rule=rule_override or "value_pairing.library_approved",
+            evidence=(
+                evidence_prefix
+                + f"Reused an approved value pair from the library "
+                f"({_format_chain(chain)}, approved {reviewed_on})."
+            ),
             row_count=row_count,
             corroboration=corroboration,
             candidates=sibling_candidates,
@@ -166,6 +192,7 @@ def _resolve_candidates(
     source_field: str,
     target_field: str,
     actor: str,
+    approved: dict[str, Any] | None = None,
 ) -> list[ValueMatch]:
     """Resolve every distinct candidate target for ``value`` — a sole
     candidate resolves directly; multiple verified candidates are ALL
@@ -186,6 +213,7 @@ def _resolve_candidates(
                 source_field=source_field,
                 target_field=target_field,
                 actor=actor,
+                approved=approved,
             )
         ]
 
@@ -222,6 +250,7 @@ def _resolve_candidates(
             evidence_prefix=f"Multiple candidates for {value!r} ({detail}). ",
             corroboration=overlaps[target],
             sibling_candidates=siblings,
+            approved=approved,
         )
         for target in distinct_targets
     ]
@@ -242,10 +271,15 @@ def pair_values(
 ) -> ValueMapping:
     """Resolve every distinct ``source_field`` value to a ``target_field`` value.
 
-    Step order: library-approved reuse (unchanged, immediate) -> build every
-    value's candidate set (identity + reused chains + fresh LLM chains, each
+    Step order: look up any library-approved pairing (no LLM cost, no
+    re-verification) -> build every value's full candidate set (that approved
+    pairing, plus identity, plus reused chains, plus fresh LLM chains, each
     mandatorily verified) -> resolve a sole candidate cheaply, or accept every
-    candidate when several compete for a value (see module docstring).
+    candidate when several compete for a value (see module docstring). An
+    approved library pairing is trusted immediately but is still only ONE
+    candidate among however many a value turns out to have this run — it
+    never suppresses a genuinely competing candidate (e.g. a coincidental
+    identity match) the way an eager pop-and-return would.
     ``source_dates``/``target_dates`` are optional aligned date columns (same
     index as ``source_series``/``target_series``) used only to compute the
     per-candidate corroboration signal; when omitted, corroboration always
@@ -257,46 +291,33 @@ def pair_values(
     matches: list[ValueMatch] = []
     unresolved: dict[str, int] = dict(source_counts)
 
-    # Step 0: library-first lookup — unchanged, immediate, trusted (a human
-    # already reviewed and approved this exact pairing on a prior run).
+    # Step 0: library-first lookup. A human already reviewed and approved
+    # this exact pairing on a prior run, so it never costs an LLM call or a
+    # re-verification — but it is recorded as a CANDIDATE, not popped and
+    # auto-accepted here, so it can never silently outrank or hide a
+    # genuinely competing candidate for the same value discovered below (see
+    # module docstring: a value can legitimately carry more than one verified
+    # candidate — an approved prior pairing is no exception to that rule).
     approved = value_pair_store.lookup_approved(
         source_connector=source_connector,
         target_connector=target_connector,
         source_field=source_field,
         target_field=target_field,
     )
-    for value in list(unresolved):
-        hit = approved.get(value)
-        if hit is None:
-            continue
-        row_count = unresolved.pop(value)
-        matches.append(
-            ValueMatch(
-                source_value=value,
-                target_value=hit.target_value,
-                confidence=Confidence.HIGH,
-                rule="value_pairing.library_approved",
-                evidence=(
-                    f"Reused an approved value pair from the library "
-                    f"({_format_chain(hit.ops)}, approved {hit.reviewed_on})."
-                ),
-                row_count=row_count,
-            )
-        )
-
-    if not unresolved:
-        return ValueMapping(source_field=source_field, target_field=target_field, matches=matches)
 
     # Step 1: identity is a CANDIDATE, not an auto-accept (see module docstring).
     identity_candidate, _residual_source, _residual_target = identity_prepass(
         set(unresolved), target_values
     )
 
-    # Step 2: LLM pairing — only for values with no identity candidate, so the
-    # common "genuine identity match" case never pays for an LLM call. Each
-    # proposal is an ordered chain; verification applies the FULL chain and
-    # checks only the final result.
-    llm_residual = sorted(v for v in unresolved if v not in identity_candidate)
+    # Step 2: LLM pairing — only for values with no identity candidate and no
+    # already-approved library candidate, so neither the common "genuine
+    # identity match" case nor an already-trusted approved pairing ever pays
+    # for an LLM call. Each proposal is an ordered chain; verification
+    # applies the FULL chain and checks only the final result.
+    llm_residual = sorted(
+        v for v in unresolved if v not in identity_candidate and v not in approved
+    )
     confirmed_chains: dict[tuple, dict[str, Any]] = {}
     llm_result_by_value: dict[str, dict[str, Any]] = {}
     llm_rejection_by_value: dict[str, str] = {}
@@ -381,6 +402,8 @@ def pair_values(
         row_count = unresolved.pop(value)
         candidates: dict[str, list[tuple[str, _Chain]]] = {}
 
+        if value in approved:
+            candidates.setdefault(approved[value].target_value, []).append(("library", approved[value].ops))
         if value in identity_candidate:
             candidates.setdefault(identity_candidate[value], []).append(("identity", []))
         if value in llm_result_by_value:
@@ -431,6 +454,7 @@ def pair_values(
                 source_field=source_field,
                 target_field=target_field,
                 actor=actor,
+                approved=approved,
             )
         )
 

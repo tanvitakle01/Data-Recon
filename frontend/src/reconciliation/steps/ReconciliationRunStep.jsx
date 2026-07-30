@@ -315,7 +315,7 @@ function ReconciliationRunStep() {
             : scriptApproval
               ? ` · Approved transformation (${scriptApproval.approval_id})`
               : isDeterministic
-                ? " · Deterministic value mapping (VERY_HIGH/HIGH applied)"
+                ? " · AI-mapping (VERY_HIGH/HIGH applied)"
                 : " · no transformation rules (direct comparison)"}
         </span>
       </div>

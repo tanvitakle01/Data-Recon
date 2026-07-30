@@ -1,4 +1,4 @@
-"""Transformation script generation: LLM (Groq→OpenAI) with a deterministic fallback.
+"""Transformation script generation: LLM (Groq→Gemini→Cerebras→OpenRouter) with a deterministic fallback.
 
     Parsed mapping JSON + rules  →  TransformationScript (pandas `transform(df)`)
 
@@ -72,7 +72,7 @@ def _norm(text: Any) -> str:
     return _re.sub(r"[^a-z0-9]", "", str(text).lower())
 
 
-# ── LLM generation (Groq primary → OpenAI fallback) ──────────────────────────
+# ── LLM generation (Groq primary → Gemini → Cerebras → OpenRouter fallback) ──
 
 def _generate_with_llm(
     *,

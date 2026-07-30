@@ -60,6 +60,7 @@ from backend.routes.entity_join import router as entity_join_router
 from backend.routes.library import router as library_router
 from backend.routes.recon_v2 import router as recon_v2_router
 from backend.routes.script_transformations import router as script_transformations_router
+from backend.routes.auto_pipeline import router as auto_pipeline_router
 from backend.recon_engine.storage.db import init_storage
 
 app = FastAPI()
@@ -126,6 +127,7 @@ app.include_router(mapping_infer_router)
 app.include_router(library_router)
 app.include_router(recon_v2_router)
 app.include_router(script_transformations_router)
+app.include_router(auto_pipeline_router)
 
 
 

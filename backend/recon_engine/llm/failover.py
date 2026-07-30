@@ -1,4 +1,5 @@
-"""Provider failover orchestrator: Groq (primary) → OpenAI (fallback).
+"""Provider failover orchestrator: Groq (primary) → Gemini → Cerebras →
+OpenRouter (last resort, free models).
 
 ``FailoverLLMClient.complete_json`` is a drop-in for the old
 ``GroqJSONClient.complete_json`` — same messages in, same parsed JSON out — but
@@ -10,14 +11,16 @@ trigger fallback).
 
 Provider selection strategy (spec point 8)
 ------------------------------------------
-A process-wide circuit breaker tracks the primary (Groq). On a Groq retryable
+A process-wide circuit breaker tracks the primary (Groq) only — the three
+fallback tiers (Gemini, Cerebras, OpenRouter) are always tried in fixed order
+on every request and carry no cooldown of their own. On a Groq retryable
 failure the breaker trips for a cooldown window, during which Groq is *demoted*
-below the fallback so requests go straight to OpenAI instead of paying Groq's
+below the fallbacks so requests go straight to Gemini instead of paying Groq's
 latency + a wasted call on every request while it is rate-limited. Groq is never
-fully excluded — if the fallback also fails it is still tried as a last resort.
+fully excluded — if every fallback also fails it is still tried as a last resort.
 A Groq success closes the breaker; after the cooldown expires Groq is promoted
-back to first. This satisfies "switch to OpenAI on failure, return to Groq once
-it recovers" without hammering a limited Groq.
+back to first. This satisfies "switch away on failure, return to Groq once it
+recovers" without hammering a limited Groq.
 
 The provider actually used per request — and whether a fallback happened — is
 recorded on a context variable (:func:`get_last_llm_outcome`) so routes can log
@@ -38,7 +41,6 @@ from backend.recon_engine.compiler.base import ContractCompilerError
 from backend.recon_engine.config import get_settings
 from backend.recon_engine.llm.base import LLMProvider
 from backend.recon_engine.llm.errors import AllProvidersUnavailableError, RetryableLLMError
-from backend.recon_engine.llm.openai_client import OpenAIJSONClient
 
 logger = logging.getLogger("recon.llm.failover")
 
@@ -52,7 +54,13 @@ ALL_UNAVAILABLE_NOTICE = (
 )
 
 # Human-readable provider labels for the fallback notice.
-_PROVIDER_LABELS = {"groq": "Groq", "openai": "OpenAI"}
+_PROVIDER_LABELS = {
+    "groq": "Groq",
+    "gemini": "Gemini",
+    "cerebras": "Cerebras",
+    "openrouter": "OpenRouter",
+    "openai": "OpenAI",
+}
 
 
 @dataclass(frozen=True)
@@ -164,7 +172,8 @@ class FailoverLLMClient:
                 )
             )
             raise ContractCompilerError(
-                "No LLM provider is configured. Set GROQ_API_KEY and/or OPENAI_API_KEY."
+                "No LLM provider is configured. Set GROQ_API_KEY and/or "
+                "GEMINI_API_KEY/CEREBRAS_API_KEY/OPENROUTER_API_KEY."
             )
 
         for provider in self._ordered(configured):
@@ -238,17 +247,25 @@ class FailoverLLMClient:
 def build_llm_client(
     *, groq_api_key: str | None = None, groq_model: str | None = None
 ) -> FailoverLLMClient:
-    """Construct the Groq→OpenAI failover client from settings.
+    """Construct the Groq→Gemini→Cerebras→OpenRouter failover client from settings.
 
-    Groq is the primary; OpenAI is the fallback. ``groq_api_key`` / ``groq_model``
-    override the primary's credentials (used by callers/tests that inject them).
+    Groq is the primary; Gemini, Cerebras, then OpenRouter (free models) are
+    tried in order as it fails over. ``groq_api_key`` / ``groq_model`` override
+    the primary's credentials (used by callers/tests that inject them). Each
+    fallback tier reads its own key/model from settings — a tier with no key
+    configured is simply skipped (see ``FailoverLLMClient.complete_json``).
     """
     # Imported lazily to avoid an import cycle: groq_client imports llm.errors.
     from backend.recon_engine.compiler.groq_client import GroqJSONClient
+    from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
+    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
+    from backend.recon_engine.llm.openrouter_client import OpenRouterJSONClient
 
     settings = get_settings()
     providers: list[LLMProvider] = [
         GroqJSONClient(api_key=groq_api_key, model=groq_model),
-        OpenAIJSONClient(),
+        GeminiJSONClient(),
+        CerebrasJSONClient(),
+        OpenRouterJSONClient(),
     ]
     return FailoverLLMClient(providers, cooldown_s=settings.llm_fallback_cooldown_s)

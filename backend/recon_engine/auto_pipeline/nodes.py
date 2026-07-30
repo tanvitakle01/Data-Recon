@@ -1,0 +1,519 @@
+"""Auto-mode pipeline nodes.
+
+Each node calls the exact same business-logic functions the manual wizard's
+routes already call (never HTTP, never a parallel re-implementation), and
+translates their existing exceptions into the graph's hard-stop signal. Manual
+mode's own endpoints are never touched by anything in this module.
+
+No field, entity, or business-key name is ever hardcoded here. Every name used
+to fetch data comes from the mapping sheet's LLM extraction
+(``identification``), verified against the live connector's real schema
+before use (:mod:`backend.recon_engine.auto_pipeline.field_matching`). Which
+extracted, verified column plays which business role (Product/Location/Date/
+Quantity) is detected the same way manual mode's "AI-mapping" flow detects it
+— by alias, from the column's real name — never assumed from a fixed literal.
+The one legitimate default anywhere in this path is a join key: when the sheet
+names none, the live schema's own relationship suggestion is used, exactly as
+manual mode's Join Builder canvas defaults it — never as a substitute for
+something the sheet DID provide.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any, Callable
+
+import pandas as pd
+
+from backend.API_conn.connectors import registry
+from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
+from backend.API_conn.connectors.s4_metadata_service import S4MetadataService
+from backend.recon_engine import service
+from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome
+from backend.recon_engine.models.snapshot import RawLayer
+from backend.recon_engine.models.value_mapping import ValueMapping
+from backend.recon_engine.storage import (
+    contract_store,
+    result_store,
+    run_store,
+    snapshot_store,
+    value_pair_store,
+)
+from backend.recon_engine.value_pairing import pair_values
+from backend.recon_engine.value_pairing.extraction import distinct_values
+
+from backend.recon_engine.auto_pipeline.field_matching import (
+    detect_roles_for_columns,
+    match_proposed_to_schema,
+)
+from backend.recon_engine.auto_pipeline.state import AutoRunState, SideState
+
+_REQUIRED_ROLES = ("product", "location", "date", "quantity")
+
+
+class ValuePairingUnavailable(RuntimeError):
+    """All configured LLM providers failed during Auto-mode value pairing.
+
+    ``pair_values()`` deliberately degrades LLM failures to unresolved matches
+    rather than raising (so Manual mode never blocks on provider downtime) —
+    this is the explicit hard-failure signal Auto mode adds on top, checked
+    via ``get_last_llm_outcome()`` immediately after each call, without
+    changing ``pair_values()`` or the manual ``/value-mapping/run`` endpoint.
+    """
+
+
+# ── step 1/3: select connector/entity ────────────────────────────────────────
+
+def _select_side(identification: dict[str, Any], role: str) -> SideState:
+    kind = identification.get("kind")
+    allowed = {c["kind"] for c in registry.get_configured_connectors(role=role)}
+    if not kind or kind not in allowed:
+        raise RuntimeError(
+            f"The {role} system was not resolved to a configured connector from the "
+            f"mapping sheet (got kind={kind!r})."
+        )
+    primary_entity = identification.get("primary_entity")
+    if not primary_entity:
+        raise RuntimeError(f"The {role} entity was not resolved from the mapping sheet.")
+    return {
+        "kind": kind,
+        "connector_id": identification.get("connector_id"),
+        "primary_entity": primary_entity,
+        "fields": list(identification.get("fields") or []),
+        "entities": list(identification.get("entities") or []),
+        "join_type": identification.get("join_type"),
+        "join_keys": list(identification.get("join_keys") or []),
+    }
+
+
+def _do_select_source(state: AutoRunState) -> dict[str, Any]:
+    return {"source": _select_side(state["identification"]["source"], registry.SOURCE)}
+
+
+def _do_select_target(state: AutoRunState) -> dict[str, Any]:
+    return {"target": _select_side(state["identification"]["target"], registry.TARGET)}
+
+
+# ── step 2/4: import data ─────────────────────────────────────────────────────
+
+def _live_property_names(client: S4MetadataService, entity: str) -> list[str]:
+    return [p["name"] for p in client.get_entity_properties(entity)]
+
+
+def _fetch_s4_dataset(side: SideState) -> pd.DataFrame:
+    client = S4MetadataService()
+    primary = side["primary_entity"]
+    requested_fields = list(side.get("fields") or [])
+    if not requested_fields:
+        raise RuntimeError(
+            f"The mapping sheet did not extract any source fields for {primary!r} — "
+            "nothing to verify or fetch."
+        )
+
+    joined_entities = [e for e in (side.get("entities") or []) if e != primary]
+
+    primary_live = _live_property_names(client, primary)
+    primary_matched, _unmatched = match_proposed_to_schema(requested_fields, primary_live)
+
+    join_live: dict[str, list[str]] = {}
+    join_matched: dict[str, list[str]] = {}
+    for entity in joined_entities:
+        entity_live = _live_property_names(client, entity)
+        join_live[entity] = entity_live
+        matched, _unmatched = match_proposed_to_schema(requested_fields, entity_live)
+        join_matched[entity] = matched
+
+    if not primary_matched and not any(join_matched.values()):
+        raise RuntimeError(
+            f"None of the mapping sheet's extracted fields {requested_fields!r} match "
+            f"the live schema of {primary!r} or its joined entities {joined_entities!r} "
+            "— cannot fetch without at least one verified field."
+        )
+
+    joins: list[dict[str, Any]] = []
+    if joined_entities:
+        relationships = client.get_entity_relationships(primary)
+        by_target = {r["target_entity"]: r for r in relationships}
+        llm_keys = [
+            (k["left"], k["right"])
+            for k in (side.get("join_keys") or [])
+            if k.get("left") and k.get("right")
+        ]
+
+        for entity in joined_entities:
+            keys: list[dict[str, str]] | None = None
+            if llm_keys:
+                # The sheet named join keys — verify each against BOTH
+                # entities' live schemas before trusting it. Unlike entity
+                # *properties* (safely filtered by S4MetadataService itself),
+                # join *keys* are placed straight into the OData $select with
+                # no such filtering — an unvalidated key is exactly how a bad
+                # sheet-derived field reached a live query unfiltered before.
+                verified: list[dict[str, str]] = []
+                for left, right in llm_keys:
+                    left_matched, _ = match_proposed_to_schema([left], primary_live)
+                    right_matched, _ = match_proposed_to_schema([right], join_live[entity])
+                    if left_matched and right_matched:
+                        verified.append({"left": left_matched[0], "right": right_matched[0]})
+                keys = verified or None
+
+            if not keys:
+                # The sheet named no (verified) join key — the one legitimate
+                # default anywhere in this path: the live schema's own
+                # relationship suggestion, exactly what manual mode's Join
+                # Builder canvas defaults to. Never a substitute for a key the
+                # sheet DID provide — only for one it genuinely didn't.
+                rel = by_target.get(entity)
+                suggested_keys = rel["suggested_keys"] if rel else []
+                if not suggested_keys:
+                    raise RuntimeError(
+                        f"No valid join key between {primary!r} and {entity!r} — the "
+                        "mapping sheet named none (or none verified against the live "
+                        "schema) and the live schema suggests none either."
+                    )
+                keys = [{"left": k, "right": k} for k in suggested_keys]
+
+            # An entity contributing no verified business field to this run
+            # still needs a concrete, non-empty properties list — its own live
+            # keys (real, already-verified structural identifiers, never a
+            # guessed business field) rather than an empty list, which would
+            # fall through to S4MetadataService's own generic "first few
+            # properties" default (a silent substitution this module must
+            # never make).
+            props = join_matched[entity] or client.get_entity_keys(entity)
+            joins.append(
+                {
+                    "entity": entity,
+                    "properties": props,
+                    "type": side.get("join_type") or "left",
+                    "keys": keys,
+                }
+            )
+
+    primary_props = primary_matched or client.get_entity_keys(primary)
+    spec = {
+        "primary": {"entity": primary, "properties": primary_props},
+        "joins": joins,
+    }
+    return client.fetch_joined_dataset(spec)
+
+
+def _fetch_ibp_dataset(side: SideState) -> pd.DataFrame:
+    client = IBPMetadataService()
+    primary = side["primary_entity"]
+    requested_fields = list(side.get("fields") or [])
+    if not requested_fields:
+        raise RuntimeError(
+            f"The mapping sheet did not extract any target fields for {primary!r} — "
+            "nothing to verify or fetch."
+        )
+    live_selectable = [
+        p["name"] for p in client.get_entity_properties(primary) if p.get("selectable")
+    ]
+    matched, _unmatched = match_proposed_to_schema(requested_fields, live_selectable)
+    if not matched:
+        raise RuntimeError(
+            f"None of the mapping sheet's extracted target fields {requested_fields!r} "
+            f"match {primary!r}'s live (selectable) schema — cannot fetch."
+        )
+    return client.fetch_entity(primary, matched)
+
+
+_FETCHERS: dict[str, Callable[[SideState], pd.DataFrame]] = {
+    "s4": _fetch_s4_dataset,
+    "ibp": _fetch_ibp_dataset,
+}
+
+
+def _import_side(state: AutoRunState, role: str, layer: RawLayer) -> dict[str, Any]:
+    side = state[role]
+    fetcher = _FETCHERS.get(side["kind"])
+    if fetcher is None:
+        raise RuntimeError(f"No live-fetch importer for connector kind {side['kind']!r}.")
+    df = fetcher(side)
+    if df is None or df.empty:
+        raise RuntimeError(
+            f"{role.capitalize()} import returned no rows "
+            f"(entity={side['primary_entity']!r})."
+        )
+    snap = service.ingest_snapshot(
+        df,
+        layer=layer,
+        source_type=side["kind"],
+        comparison_type=state.get("comparison_type"),
+        created_by=state.get("actor", "system"),
+        lineage={"graph_run_id": state["graph_run_id"], "entity": side["primary_entity"]},
+    )
+    updated = dict(side)
+    updated["snapshot_id"] = snap.snapshot_id
+    updated["row_count"] = snap.row_count
+    updated["columns"] = list(snap.columns)
+    return {role: updated}
+
+
+def _do_import_source(state: AutoRunState) -> dict[str, Any]:
+    return _import_side(state, "source", RawLayer.SOURCE)
+
+
+def _do_import_target(state: AutoRunState) -> dict[str, Any]:
+    return _import_side(state, "target", RawLayer.TARGET)
+
+
+# ── step 5: identify unique key values ───────────────────────────────────────
+
+def _do_extract_unique_keys(state: AutoRunState) -> dict[str, Any]:
+    source_df = snapshot_store.load_snapshot_frame(state["source"]["snapshot_id"])
+    # Which fetched (real, verified) column plays which business role is
+    # DETECTED by alias — the same mechanism manual mode's "AI-mapping" flow
+    # uses (backend/recon_engine/auto_pipeline/field_matching.py, a port of
+    # frontend/src/reconciliation/lib/fieldRoleAliases.js) — never a hardcoded
+    # literal column name.
+    roles = detect_roles_for_columns([str(c) for c in source_df.columns])
+    missing = [r for r in ("product", "location") if r not in roles]
+    if missing:
+        raise RuntimeError(
+            f"Could not detect a {', '.join(missing)} column among the fetched "
+            f"source fields {list(source_df.columns)!r} — nothing to extract "
+            "unique key values from."
+        )
+    return {
+        "unique_values": {
+            "source_product": distinct_values(source_df[roles["product"]]),
+            "source_location": distinct_values(source_df[roles["location"]]),
+        }
+    }
+
+
+# ── step 6: LLM value-pairing + mandatory verification, then auto-approve ───
+
+def _pair_values_or_raise(**kwargs: Any) -> ValueMapping:
+    reset_llm_outcome()
+    mapping = pair_values(**kwargs)
+    outcome = get_last_llm_outcome()
+    if outcome is not None and outcome.all_failed:
+        raise ValuePairingUnavailable(
+            f"All configured AI providers are unavailable for value-pairing on "
+            f"{kwargs['source_field']!r} -> {kwargs['target_field']!r}."
+        )
+    return mapping
+
+
+def _auto_approve(mapping: ValueMapping, *, actor: str) -> None:
+    for match in mapping.matches:
+        if match.library_id:
+            value_pair_store.approve(match.library_id, actor=actor)
+
+
+def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
+    source_df = snapshot_store.load_snapshot_frame(state["source"]["snapshot_id"])
+    target_df = snapshot_store.load_snapshot_frame(state["target"]["snapshot_id"])
+
+    # Roles detected from the ACTUAL fetched columns on each side — never a
+    # hardcoded field name. Validated here (not just product/location) since
+    # compile_and_run needs date + quantity too and there's no point pairing
+    # values only to hard-stop later for a role this step could have caught.
+    source_roles = detect_roles_for_columns([str(c) for c in source_df.columns])
+    target_roles = detect_roles_for_columns([str(c) for c in target_df.columns])
+    missing_source = [r for r in _REQUIRED_ROLES if r not in source_roles]
+    missing_target = [r for r in _REQUIRED_ROLES if r not in target_roles]
+    if missing_source or missing_target:
+        raise RuntimeError(
+            "Could not detect all required business roles (product/location/date/"
+            f"quantity) for value pairing — source missing {missing_source or 'none'} "
+            f"(columns: {list(source_df.columns)!r}), target missing "
+            f"{missing_target or 'none'} (columns: {list(target_df.columns)!r})."
+        )
+
+    source_dates = source_df[source_roles["date"]]
+    target_dates = target_df[target_roles["date"]]
+    source_connector = state["source"]["kind"]
+    target_connector = state["target"]["kind"]
+    actor = state.get("actor", "auto")
+    mapping_sheet_context = state.get("mapping_sheet")
+
+    product = _pair_values_or_raise(
+        source_field=source_roles["product"],
+        target_field=target_roles["product"],
+        source_series=source_df[source_roles["product"]],
+        target_series=target_df[target_roles["product"]],
+        source_connector=source_connector,
+        target_connector=target_connector,
+        mapping_sheet_context=mapping_sheet_context,
+        source_dates=source_dates,
+        target_dates=target_dates,
+        actor=actor,
+    )
+    location = _pair_values_or_raise(
+        source_field=source_roles["location"],
+        target_field=target_roles["location"],
+        source_series=source_df[source_roles["location"]],
+        target_series=target_df[target_roles["location"]],
+        source_connector=source_connector,
+        target_connector=target_connector,
+        mapping_sheet_context=mapping_sheet_context,
+        source_dates=source_dates,
+        target_dates=target_dates,
+        actor=actor,
+    )
+
+    _auto_approve(product, actor=actor)
+    _auto_approve(location, actor=actor)
+
+    return {
+        "product_mapping": product.model_dump(mode="json"),
+        "location_mapping": location.model_dump(mode="json"),
+        "source_field_roles": source_roles,
+        "target_field_roles": target_roles,
+    }
+
+
+# ── step 7: compile, approve, run ─────────────────────────────────────────────
+
+def _do_compile_and_run(state: AutoRunState) -> dict[str, Any]:
+    source_snap_id = state["source"]["snapshot_id"]
+    target_snap_id = state["target"]["snapshot_id"]
+    source_df = snapshot_store.load_snapshot_frame(source_snap_id)
+    target_df = snapshot_store.load_snapshot_frame(target_snap_id)
+    actor = state.get("actor", "auto")
+
+    # Reuse the exact roles pair_values_step already detected and validated —
+    # never a fresh hardcoded assumption, and guarantees business_key/
+    # compare_fields agree with whatever was actually paired.
+    source_roles = state.get("source_field_roles") or {}
+    target_roles = state.get("target_field_roles") or {}
+    missing = [
+        role for role in _REQUIRED_ROLES
+        if role not in source_roles or role not in target_roles
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Missing a detected business role for {missing} on one or both sides — "
+            "cannot build the business key/compare fields for reconciliation."
+        )
+
+    business_key = [
+        {"source_field": source_roles[role], "target_field": target_roles[role]}
+        for role in ("product", "location", "date")
+    ]
+    compare_fields = [
+        {
+            "source_field": source_roles["quantity"],
+            "target_field": target_roles["quantity"],
+            "match_type": "exact",
+        },
+    ]
+    value_mappings = [m for m in (state.get("product_mapping"), state.get("location_mapping")) if m]
+
+    draft, _degraded_reason = service.compile_draft(
+        mapping_sheet=state.get("mapping_sheet") or [],
+        rules="",
+        business_key=business_key,
+        compare_fields=compare_fields,
+        value_mappings=value_mappings,
+        source_schema=[str(c) for c in source_df.columns],
+        target_schema=[str(c) for c in target_df.columns],
+        comparison_type=state.get("comparison_type") or "auto",
+        source_type=state["source"]["kind"],
+        target_type=state["target"]["kind"],
+        actor=actor,
+    )
+    approved = service.approve_contract(draft, approved_by=actor)
+
+    started = time.time()
+    out = service.run_reconciliation(
+        contract_id=approved.contract_id,
+        contract_version=approved.contract_version,
+        source_snapshot_id=source_snap_id,
+        target_snapshot_id=target_snap_id,
+        actor=actor,
+    )
+    # Mirror the exact enrichment recon_v2.py's `POST /api/recon/runs` route
+    # adds (contract/snapshot summaries) plus the result detail `GET
+    # /api/recon/results/{id}` returns, so the frontend can drop this straight
+    # into `reconciliation` state and render Results identically to a manual
+    # contract run — no extra API round-trips needed after landing.
+    out["runtime_ms"] = int((time.time() - started) * 1000)
+    run = run_store.get_run(out["run_id"])
+    if run is not None:
+        out["run"] = run.model_dump(mode="json")
+        run_contract = contract_store.get_contract(run.contract_id, run.contract_version)
+        if run_contract is not None:
+            out["contract"] = {
+                "contract_id": run_contract.contract_id,
+                "contract_version": run_contract.contract_version,
+                "compiler": run_contract.compiler,
+                "approved_by": run_contract.approved_by,
+                "approved_at": run_contract.approved_at.isoformat() if run_contract.approved_at else None,
+            }
+    for key, snap_id in (("source_snapshot", source_snap_id), ("target_snapshot", target_snap_id)):
+        snap = snapshot_store.get_snapshot(snap_id)
+        if snap is not None:
+            out[key] = snap.model_dump(mode="json")
+
+    result_row = result_store.get_result(out["result_id"])
+    preview_rows: list[dict[str, Any]] = []
+    if result_row is not None:
+        detail_df = result_store.load_result_frame(out["result_id"]).head(200)
+        preview_rows = detail_df.astype(object).where(pd.notna(detail_df), None).to_dict(orient="records")
+    out["detail"] = {
+        "result": result_row.model_dump(mode="json") if result_row else None,
+        "preview_rows": preview_rows,
+    }
+    out["engine"] = "contract"
+
+    return {
+        "contract_id": approved.contract_id,
+        "contract_version": approved.contract_version,
+        "run_id": out["run_id"],
+        "result_summary": out,
+        "status": "completed",
+    }
+
+
+# ── per-node timing + hard-stop wrapper ──────────────────────────────────────
+
+def _run_step(state: AutoRunState, step: str, fn: Callable[[AutoRunState], dict[str, Any]]) -> dict[str, Any]:
+    start = time.time()
+    timestamps = dict(state.get("step_timestamps") or {})
+    try:
+        updates = fn(state)
+    except Exception as exc:  # noqa: BLE001 - any exception here is a genuine hard failure
+        timestamps[step] = {"start": start, "end": time.time()}
+        return {
+            "step_timestamps": timestamps,
+            "status": "failed",
+            "failed_step": step,
+            "error": str(exc),
+        }
+    timestamps[step] = {"start": start, "end": time.time()}
+    result = dict(updates)
+    result["step_timestamps"] = timestamps
+    return result
+
+
+def select_source(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "select_source", _do_select_source)
+
+
+def import_source(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "import_source", _do_import_source)
+
+
+def select_target(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "select_target", _do_select_target)
+
+
+def import_target(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "import_target", _do_import_target)
+
+
+def extract_unique_keys(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "extract_unique_keys", _do_extract_unique_keys)
+
+
+def pair_values_step(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "pair_values", _do_pair_values)
+
+
+def compile_and_run(state: AutoRunState) -> dict[str, Any]:
+    return _run_step(state, "compile_and_run", _do_compile_and_run)

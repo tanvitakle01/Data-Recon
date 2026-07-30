@@ -1,8 +1,10 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import StepShell from "../components/StepShell";
+import { getVisibleSteps, getStepByKey } from "./stepConfig";
 import { liveKindForRole } from "../lib/connectorOptions";
 import {
   describeEntitySource,
@@ -13,6 +15,27 @@ import {
 } from "../lib/entityJoinSpec";
 import { Badge, Select, Button, Alert, CollapsibleSection } from "@bristlecone/canopy";
 import { Upload, FileSpreadsheet, X, Loader2 } from "lucide-react";
+
+// Elapsed-time display for Auto mode: purely client-side (no backend job
+// status is polled fast enough to drive a smooth tick) — starts the moment
+// Auto is clicked, freezes at the last tick once the run reaches a terminal
+// state.
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+const AUTO_STEP_LABELS = {
+  select_source: "Selecting source system…",
+  import_source: "Importing source data…",
+  select_target: "Selecting target system…",
+  import_target: "Importing target data…",
+  extract_unique_keys: "Identifying unique key values…",
+  pair_values: "Running AI value-pairing…",
+  compile_and_run: "Running reconciliation…",
+};
 
 // Only Sales Order History is offered for now. Additional comparison types
 // will be added here (or sourced from /api/comparison-types) as their
@@ -364,9 +387,19 @@ function ComparisonTypeStep() {
     if (sheetInputRef.current) sheetInputRef.current.value = "";
   };
 
-  const canContinue = useMemo(() => Boolean(state.comparisonType), [state.comparisonType]);
+  const canContinueManual = useMemo(() => Boolean(state.comparisonType), [state.comparisonType]);
 
   const hasIdentification = Boolean(identification && !identification.degraded);
+
+  // Auto mode requires the mapping sheet to have actually resolved both
+  // sides to a configured connector + entity — otherwise the pipeline would
+  // hard-stop at step 1 every time. Manual's gate stays untouched (Excel
+  // upload can still happen later, on the Source/Target steps).
+  const canAuto =
+    canContinueManual &&
+    hasIdentification &&
+    Boolean(identification?.source?.kind) &&
+    Boolean(identification?.target?.kind);
 
   // Each side's entity/join input is resolved against ITS OWN connector kind:
   // the one the sheet identified for that side, else that role's sole live
@@ -425,8 +458,157 @@ function ComparisonTypeStep() {
     setInstrError(null);
   };
 
+  // ── Auto/Manual: replaces the shell's generic Continue button ───────────
+  const navigate = useNavigate();
+  const wizardSteps = useMemo(() => getVisibleSteps(), []);
+
+  const goToStep = (target) => {
+    dispatch({ type: WizardActions.GO_TO_STEP, step: target.key });
+    navigate(`/reconciliation/${target.path}`);
+  };
+
+  const handleManualContinue = () => {
+    dispatch({ type: WizardActions.COMPLETE_STEP, step: "comparisonType" });
+    const next = wizardSteps[wizardSteps.findIndex((s) => s.key === "comparisonType") + 1];
+    if (next) goToStep(next);
+  };
+
+  const [autoRunning, setAutoRunning] = useState(false);
+  const [autoElapsedMs, setAutoElapsedMs] = useState(0);
+  const [autoCurrentStep, setAutoCurrentStep] = useState(null);
+  const [autoError, setAutoError] = useState(null);
+  const [autoFailedStep, setAutoFailedStep] = useState(null);
+
+  const autoStartRef = useRef(null);
+  const tickIntervalRef = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const appliedRef = useRef({ source: false, target: false, mapping: false });
+
+  useEffect(() => {
+    // Stop any in-flight timers if the user navigates away mid-run.
+    return () => {
+      if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
+
+  const sideDataset = (role, side) => ({
+    datasetId: `${role}-${side.kind}-auto-${side.snapshot_id ?? "pending"}`,
+    filename: `${role === "source" ? identification?.source?.label : identification?.target?.label} — ${side.primary_entity}`,
+    kind: side.kind,
+    columns: side.columns ?? [],
+    preview: [],
+    rowCount: side.row_count ?? 0,
+    colCount: (side.columns ?? []).length,
+    rows: null,
+    file: null,
+    sheet: null,
+    sheets: [],
+    fetchedAt: new Date().toISOString(),
+    mdtFields: [],
+  });
+
+  // Applies whatever the run has produced SO FAR to wizard state — called on
+  // every poll tick, not just on completion, so a mid-run hard-stop still
+  // leaves already-succeeded steps usable if the user switches to Manual.
+  const applyPartialResult = (result) => {
+    if (!result) return;
+    if (result.source?.snapshot_id && !appliedRef.current.source) {
+      appliedRef.current.source = true;
+      dispatch({ type: WizardActions.SET_DATASET, role: "source", dataset: sideDataset("source", result.source) });
+      dispatch({ type: WizardActions.COMPLETE_STEP, step: "source" });
+    }
+    if (result.target?.snapshot_id && !appliedRef.current.target) {
+      appliedRef.current.target = true;
+      dispatch({ type: WizardActions.SET_DATASET, role: "target", dataset: sideDataset("target", result.target) });
+      dispatch({ type: WizardActions.COMPLETE_STEP, step: "target" });
+    }
+    if ((result.product_mapping || result.location_mapping) && !appliedRef.current.mapping) {
+      appliedRef.current.mapping = true;
+      dispatch({
+        type: WizardActions.SET_VALUE_MAPPINGS,
+        valueMappings: { product: result.product_mapping ?? null, location: result.location_mapping ?? null },
+      });
+      dispatch({ type: WizardActions.SET_MAPPING_MODE, mappingMode: "deterministic" });
+    }
+  };
+
+  const finishAutoRun = async (result) => {
+    applyPartialResult(result);
+    if (result?.contract_id) {
+      try {
+        const contractRes = await api.get(`/api/recon/contracts/${result.contract_id}/approved`);
+        if (contractRes.data?.contract) {
+          dispatch({ type: WizardActions.SET_DETERMINISTIC_CONTRACT, contract: contractRes.data.contract });
+        }
+      } catch {
+        // Non-fatal — Results still renders from the reconciliation result alone.
+      }
+    }
+    if (result?.result_summary) {
+      dispatch({ type: WizardActions.SET_RECONCILIATION_RESULT, result: result.result_summary });
+    }
+    dispatch({ type: WizardActions.COMPLETE_STEP, step: "comparisonType" });
+    dispatch({ type: WizardActions.COMPLETE_STEP, step: "transformationSpec" });
+    dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
+    setAutoRunning(false);
+    goToStep(getStepByKey("reconciliation"));
+  };
+
+  const pollAutoRun = async (graphRunId) => {
+    try {
+      const res = await api.get(`/api/recon/auto-run/${graphRunId}/status`);
+      const run = res.data;
+      setAutoCurrentStep(run.current_step);
+      applyPartialResult(run.result);
+      if (run.status === "completed") {
+        clearInterval(pollIntervalRef.current);
+        clearInterval(tickIntervalRef.current);
+        await finishAutoRun(run.result);
+      } else if (run.status === "failed") {
+        clearInterval(pollIntervalRef.current);
+        clearInterval(tickIntervalRef.current);
+        setAutoRunning(false);
+        setAutoFailedStep(run.failed_step);
+        setAutoError(run.error || "Auto mode failed.");
+      }
+    } catch {
+      // A transient poll failure shouldn't abort the run — the next tick retries.
+    }
+  };
+
+  const startAutoRun = async () => {
+    setAutoError(null);
+    setAutoFailedStep(null);
+    setAutoCurrentStep(null);
+    setAutoElapsedMs(0);
+    appliedRef.current = { source: false, target: false, mapping: false };
+    setAutoRunning(true);
+
+    autoStartRef.current = Date.now();
+    tickIntervalRef.current = setInterval(() => {
+      setAutoElapsedMs(Date.now() - autoStartRef.current);
+    }, 250);
+
+    try {
+      const res = await api.post("/api/recon/auto-run/start", {
+        mapping_sheet: identification.parsed,
+        identification: { source: identification.source, target: identification.target },
+        comparison_type: state.comparisonType?.id ?? null,
+        actor: "auto",
+      });
+      const graphRunId = res.data.graph_run_id;
+      pollIntervalRef.current = setInterval(() => pollAutoRun(graphRunId), 1000);
+    } catch (err) {
+      clearInterval(tickIntervalRef.current);
+      setAutoRunning(false);
+      const detail = err?.response?.data?.detail;
+      setAutoError(typeof detail === "string" ? detail : "Could not start Auto mode.");
+    }
+  };
+
   return (
-    <StepShell stepKey="comparisonType" canContinue={canContinue}>
+    <StepShell stepKey="comparisonType" hideContinue>
       {/* ── Mapping Sheet Upload: the primary action on this step ── */}
       <div className="wizard-field wizard-mapping-upload">
         <label className="wizard-field__label">Mapping Sheet</label>
@@ -549,6 +731,67 @@ function ComparisonTypeStep() {
           <span>{state.comparisonType.label}</span>
         </div>
       )}
+
+      {/* ── Auto/Manual: replaces the generic Continue button ── */}
+      <div className="wizard-field wizard-run-mode">
+        <label className="wizard-field__label">How should this run proceed?</label>
+
+        {autoRunning ? (
+          <div className="wizard-auto-progress">
+            <Loader2 size={16} className="animate-spin" aria-hidden />
+            <span className="wizard-auto-progress__step">
+              {AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
+            </span>
+            <span className="wizard-auto-progress__timer">{formatElapsed(autoElapsedMs)}</span>
+          </div>
+        ) : (
+          <div className="wizard-source-choice">
+            <button
+              type="button"
+              className="wizard-choice-card"
+              onClick={handleManualContinue}
+              disabled={!canContinueManual}
+            >
+              <span className="wizard-choice-card__label">Manual</span>
+              <span className="wizard-choice-card__meta">
+                Step through source, target and mapping with approval at each step
+              </span>
+            </button>
+            <button
+              type="button"
+              className="wizard-choice-card"
+              onClick={startAutoRun}
+              disabled={!canAuto}
+            >
+              <span className="wizard-choice-card__label">Auto</span>
+              <span className="wizard-choice-card__meta">
+                {canAuto
+                  ? "Run all steps automatically and land on Results"
+                  : "Requires the mapping sheet to resolve both source and target systems"}
+              </span>
+            </button>
+          </div>
+        )}
+
+        {!autoRunning && autoElapsedMs > 0 && !autoError && (
+          <p className="wizard-field__help">Last Auto run took {formatElapsed(autoElapsedMs)}.</p>
+        )}
+
+        {autoError && (
+          <Alert variant="error" style={{ marginTop: 8 }}>
+            {autoFailedStep ? `Auto mode failed at "${AUTO_STEP_LABELS[autoFailedStep] ?? autoFailedStep}": ` : ""}
+            {autoError}
+            <div className="wizard-instructions__actions" style={{ marginTop: 8 }}>
+              <Button variant="secondary" size="sm" onClick={startAutoRun}>
+                Retry Auto
+              </Button>
+              <button type="button" className="wizard-link" onClick={handleManualContinue}>
+                Switch to Manual
+              </button>
+            </div>
+          </Alert>
+        )}
+      </div>
     </StepShell>
   );
 }

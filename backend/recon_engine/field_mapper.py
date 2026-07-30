@@ -17,7 +17,7 @@ column sets, so a value pair cannot survive the normalizer.
 Same safety posture as :mod:`sheet_identifier`:
 
 * **Same provider chain.** Goes through ``build_llm_client()`` (Groq primary →
-  OpenAI fallback), never a bespoke client.
+  Gemini → Cerebras → OpenRouter fallback), never a bespoke client.
 * **Never raises on LLM failure.** Degrades to an empty mapping the frontend
   treats as "map manually" — no deterministic fallback (the wizard's no-sheet
   path is LLM-only by design).

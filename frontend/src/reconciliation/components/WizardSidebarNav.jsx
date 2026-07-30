@@ -47,7 +47,7 @@ function approvalSummary(spec) {
   if (spec.contract) {
     return { label: "Approved", detail: `v${spec.contract.contract_version ?? 1}` };
   }
-  if (spec.deterministicContract) return { label: "Approved", detail: "deterministic" };
+  if (spec.deterministicContract) return { label: "Approved", detail: "AI-mapping" };
   if (spec.scriptApproval) return { label: "Approved", detail: "transformation" };
   return null;
 }

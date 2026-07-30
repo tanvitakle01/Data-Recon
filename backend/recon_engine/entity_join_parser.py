@@ -10,7 +10,8 @@ Two paths reach the same place, and they share ONE validator:
 * **Free-text fallback.** :func:`parse_entity_join` turns a typed instruction
   ("join salesorder and scheduleline with left join on salesorder key") into the
   same structure, through the same ``build_llm_client()`` chain (Groq primary →
-  OpenAI fallback) every other LLM call in the codebase uses.
+  Gemini → Cerebras → OpenRouter fallback) every other LLM call in the codebase
+  uses.
 
 Three rules make this safe, mirroring ``sheet_identifier``/``field_mapper``:
 

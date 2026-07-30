@@ -227,7 +227,7 @@ function TransformationSpecStep() {
       setValueMappingSuccess(true);
     } catch (err) {
       const detail = err?.response?.data?.detail;
-      setValueMappingError(typeof detail === "string" ? detail : "Deterministic mapping failed.");
+      setValueMappingError(typeof detail === "string" ? detail : "AI-mapping failed.");
     } finally {
       setValueMappingLoading(false);
     }
@@ -409,7 +409,7 @@ function TransformationSpecStep() {
               className="wizard-option-card"
               onClick={() => setMappingMode("deterministic")}
             >
-              <span className="wizard-option-card__label">Deterministic Mapping</span>
+              <span className="wizard-option-card__label">AI-mapping</span>
               <span className="wizard-option-card__meta">
                 Tiered value matching · VERY_HIGH/HIGH applied · no transformation rules
               </span>
@@ -434,10 +434,10 @@ function TransformationSpecStep() {
           <section className="wizard-section">
             <h3 className="wizard-section__title">Field Mapping</h3>
             <p className="wizard-field__help">
-              Confirm the source-to-target field mapping used for deterministic matching. Each row's
+              Confirm the source-to-target field mapping used for AI-mapping. Each row's
               "Business Field" is auto-detected from the column names (e.g. "SKU" or "Material Code" →
-              Product / Material) — tag it manually if a required field isn't recognized. Deterministic
-              matching needs a Product/Material and Plant/Location pair confirmed as Key, plus a
+              Product / Material) — tag it manually if a required field isn't recognized. AI-mapping
+              needs a Product/Material and Plant/Location pair confirmed as Key, plus a
               Date/Period pair as Key and a Quantity pair as Compare.
             </p>
             <MappingEditor
@@ -473,7 +473,7 @@ function TransformationSpecStep() {
                     : undefined
                 }
               >
-                {valueMappingLoading ? "Matching…" : "Run Deterministic Mapping"}
+                {valueMappingLoading ? "Matching…" : "Run AI-mapping"}
               </Button>
               {valueMappings && (
                 <Button
@@ -491,7 +491,7 @@ function TransformationSpecStep() {
             )}
             {valueMappingSuccess && !valueMappingError && (
               <Alert variant="success" style={{ marginTop: 12 }}>
-                Deterministic mapping complete. Open "View Mapping Review" to inspect the tiers, or
+                AI-mapping complete. Open "View Mapping Review" to inspect the tiers, or
                 continue to run reconciliation on the Results step.
               </Alert>
             )}

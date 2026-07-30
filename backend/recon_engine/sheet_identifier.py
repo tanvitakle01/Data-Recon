@@ -23,10 +23,11 @@ Two hard rules make this safe:
    ``unidentified`` — never coerced to the nearest configured connector. A wrong
    system fetches entirely wrong data with no downstream check to catch it.
 2. **Same provider chain as everything else.** The call goes through
-   ``build_llm_client()`` (Groq primary → OpenAI fallback), not a bespoke Groq
-   client. Any provider failure degrades to an empty/unidentified result rather
-   than raising, so the wizard never dies because the LLM is unavailable — the
-   human just falls back to manual connector selection.
+   ``build_llm_client()`` (Groq primary → Gemini → Cerebras → OpenRouter
+   fallback), not a bespoke Groq client. Any provider failure degrades to an
+   empty/unidentified result rather than raising, so the wizard never dies
+   because the LLM is unavailable — the human just falls back to manual
+   connector selection.
 
 Field *validation* against the live schema is intentionally NOT done here: the
 LLM only proposes field names from the sheet; the deterministic intersection
@@ -77,6 +78,25 @@ mapping_candidates, join_conditions, and any preamble/banner rows above the
 header) and an ALLOW-LIST of the configured connectors, each with a
 naming_convention hint and — when known — that connector's available_entities
 (its live entity list).
+
+This sheet's layout is inconsistent — business names, technical table.field
+references, entity names, and dataset identifiers may appear in any column,
+including one seemingly meant for something else (e.g. an entity name
+appearing in a "Join Condition" cell). Reason from context: a technical
+reference matching TABLE-FIELD notation (letters, dash/dot, more letters) is
+evidence of which system/tables are involved, never a field name to fetch. A
+bare business-sounding phrase near it is the actual field. A value that looks
+like a CDS view or entity name (often prefixed A_/I_/similar) is an entity,
+not a field. A short alphanumeric code with no other business description
+nearby, especially under a target-system header, may be a target
+dataset/planning-area identifier.
+
+Extract only what this specific sheet's evidence supports. Never assume a
+field, entity, or identifier because it looks familiar from another dataset —
+every value you output must trace to something actually present in this
+sheet, and must be verified against the live connector's real schema before
+use (a downstream step will fetch using exactly what you output; if you
+invent or guess, that fetch will fail loudly rather than silently).
 
 Decide, independently for the SOURCE side and the TARGET side:
 1. Which allowed connector (if any) the sheet describes, identified by its
