@@ -36,9 +36,10 @@ from typing import Any
 import pandas as pd
 
 from backend.recon_engine.config import get_settings
-from backend.recon_engine.llm import build_llm_client
+from backend.recon_engine.llm import build_llm_client, get_last_llm_outcome, reset_llm_outcome
 from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
 from backend.recon_engine.storage import value_pair_store
+from backend.recon_engine.value_pairing.batching import BatchProgress, build_source_batches
 from backend.recon_engine.value_pairing.corroborate import corroboration_overlap
 from backend.recon_engine.value_pairing.extraction import distinct_values
 from backend.recon_engine.value_pairing.identity import identity_prepass
@@ -48,6 +49,27 @@ from backend.recon_engine.value_pairing.verify import verify_chain, verify_chain
 logger = logging.getLogger("recon.value_pairing")
 
 _Chain = list[dict[str, Any]]
+
+# Bounded in-process retry for a batch whose LLM proposal call finds every
+# configured provider unavailable (see ``get_last_llm_outcome().all_failed``)
+# — 2 retries (3 attempts total) before that batch's residual is either
+# hard-stopped (Auto mode, ``raise_on_batch_failure=True``) or left to degrade
+# to unpaired (Manual mode's default) exactly like a normal "LLM proposed
+# nothing" outcome. No cross-run/checkpointed retry exists here — see
+# ``ValuePairingUnavailable``.
+MAX_BATCH_LLM_RETRIES = 2
+
+
+class ValuePairingUnavailable(RuntimeError):
+    """A batch's LLM proposal call found every configured provider
+    unavailable, even after :data:`MAX_BATCH_LLM_RETRIES` retries.
+
+    Only ever raised when the caller opts in via
+    ``pair_values(raise_on_batch_failure=True)`` (Auto mode) — Manual mode's
+    ``/value-mapping/run`` never raises this; it leaves the batch's residual
+    values unpaired, same as :func:`pair_values`'s existing degrade-on-LLM-
+    failure contract.
+    """
 
 
 def _chain_key(ops: _Chain) -> tuple:
@@ -93,6 +115,46 @@ def _propose_llm_chains(
         logger.warning("LLM value-pairing failed; leaving residual values unpaired. %s", exc)
         return []
     return parse_candidates(payload)
+
+
+def _propose_llm_chains_with_retry(
+    *,
+    candidate_source: list[str],
+    candidate_target: list[str],
+    exact_matches: dict[str, str],
+    mapping_sheet_context: Any,
+    batch_label: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Like :func:`_propose_llm_chains`, but retries up to
+    :data:`MAX_BATCH_LLM_RETRIES` more times when EVERY configured provider
+    failed (``get_last_llm_outcome().all_failed``) — never when the LLM
+    simply had nothing to propose (``candidate_source`` empty, or no provider
+    configured at all; both leave the outcome unset, so no retry fires).
+
+    Returns ``(candidates, all_failed_after_retries)`` — the caller decides
+    whether ``all_failed_after_retries`` should hard-stop (Auto mode) or
+    degrade this batch's residual to unpaired (Manual mode's default), same
+    as any other "LLM proposed nothing" outcome.
+    """
+    attempt = 0
+    while True:
+        reset_llm_outcome()
+        candidates = _propose_llm_chains(
+            candidate_source=candidate_source,
+            candidate_target=candidate_target,
+            exact_matches=exact_matches,
+            mapping_sheet_context=mapping_sheet_context,
+        )
+        outcome = get_last_llm_outcome()
+        all_failed = bool(outcome is not None and outcome.all_failed)
+        if not all_failed or attempt >= MAX_BATCH_LLM_RETRIES:
+            return candidates, all_failed
+        attempt += 1
+        logger.warning(
+            "Value-pairing batch %r: all configured LLM providers failed "
+            "(attempt %d/%d) — retrying.",
+            batch_label, attempt, MAX_BATCH_LLM_RETRIES + 1,
+        )
 
 
 def _finalize_single(
@@ -419,47 +481,43 @@ def pair_values_deterministic_only(
     return ValueMapping(source_field=source_field, target_field=target_field, matches=matches)
 
 
-def pair_values(
+def _pair_batch(
     *,
+    source_counts: dict[str, int],
+    target_values: set[str],
     source_field: str,
     target_field: str,
     source_series: pd.Series,
     target_series: pd.Series,
     source_connector: str,
     target_connector: str,
-    mapping_sheet_context: Any = None,
-    source_dates: pd.Series | None = None,
-    target_dates: pd.Series | None = None,
-    actor: str = "system",
-) -> ValueMapping:
-    """Resolve every distinct ``source_field`` value to a ``target_field`` value.
+    mapping_sheet_context: Any,
+    source_dates: pd.Series | None,
+    target_dates: pd.Series | None,
+    actor: str,
+    batch_label: str,
+) -> tuple[list[ValueMatch], bool]:
+    """One batch's worth of steps 0-4 (library, identity, LLM proposal +
+    verification, pattern reuse, resolve) — everything :func:`pair_values`
+    used to do in one dataset-wide pass, now scoped to ``source_counts`` (this
+    batch's own distinct source values). ``target_values`` is always the
+    FULL, dataset-wide distinct-target set (see module docstring on why the
+    target side is never batch-scoped) and ``source_series``/``target_series``/
+    ``source_dates``/``target_dates`` are always the FULL, unsliced columns —
+    corroboration must see the whole dataset even for a batch-scoped value
+    (see the build prompt's "Verification/corroboration stays global" rule).
 
-    Step order: look up any stored library pairing (no LLM cost, no
-    re-verification) -> build every value's full candidate set (that stored
-    pairing, plus identity, plus reused chains, plus fresh LLM chains, each
-    mandatorily verified) -> resolve a sole candidate cheaply, or accept every
-    candidate when several compete for a value (see module docstring). A
-    stored library pairing is trusted immediately but is still only ONE
-    candidate among however many a value turns out to have this run — it
-    never suppresses a genuinely competing candidate (e.g. a coincidental
-    identity match) the way an eager pop-and-return would.
-    ``source_dates``/``target_dates`` are optional aligned date columns (same
-    index as ``source_series``/``target_series``) used only to compute the
-    per-candidate corroboration signal; when omitted, corroboration always
-    reports "no signal" but every verified candidate is still accepted.
+    Returns ``(matches, all_failed)`` — ``all_failed`` is True only when this
+    batch had real residual LLM work and every configured provider failed it
+    even after :data:`MAX_BATCH_LLM_RETRIES` retries.
     """
-    source_counts = distinct_values(source_series)
-    target_values = set(distinct_values(target_series))
-
     unresolved: dict[str, int] = dict(source_counts)
 
-    # Step 0: library-first lookup. This exact pairing was already verified
-    # and stored on a prior run, so it never costs an LLM call or a
-    # re-verification — but it is recorded as a CANDIDATE, not popped and
-    # auto-accepted here, so it can never silently outrank or hide a
-    # genuinely competing candidate for the same value discovered below (see
-    # module docstring: a value can legitimately carry more than one verified
-    # candidate — a stored prior pairing is no exception to that rule).
+    # Step 0: library-first lookup — queried FRESH for every batch, so a
+    # pairing an EARLIER batch just persisted (see _finalize_single/
+    # value_pair_store.propose) is already visible here, no extra plumbing
+    # needed. Still recorded as a CANDIDATE, not popped and auto-accepted
+    # (see module docstring).
     library_pairs = value_pair_store.lookup_pairs(
         source_connector=source_connector,
         target_connector=target_connector,
@@ -472,26 +530,24 @@ def pair_values(
         set(unresolved), target_values
     )
 
-    # Step 2: Transformation Discovery (LLM). The LLM sees the COMPLETE
-    # source-value list minus only values already stored in the library —
-    # deliberately INCLUDING values that already have an identity (exact)
-    # match, so it can identify a genuinely ADDITIONAL transform-based target
-    # for them (both must coexist per the rules — see prompt.py). It must
-    # never return the exact match itself; any candidate claiming target ==
-    # source is dropped below regardless of what the model returns. Each
-    # proposal is an ordered chain; verification applies the FULL chain and
-    # checks only the final result.
+    # Step 2: Transformation Discovery (LLM), scoped to this batch's residual
+    # source values only — the whole point of batching (smaller payload,
+    # independently retryable). ``candidate_target`` still sees the complete
+    # target-value universe as context, same as an unbatched call today.
     llm_candidates_source = sorted(v for v in unresolved if v not in library_pairs)
     confirmed_chains: dict[tuple, dict[str, Any]] = {}
     llm_result_by_value: dict[str, dict[str, Any]] = {}
     llm_rejection_by_value: dict[str, str] = {}
 
-    for candidate in _propose_llm_chains(
+    proposed, all_failed = _propose_llm_chains_with_retry(
         candidate_source=llm_candidates_source,
         candidate_target=sorted(target_values),
         exact_matches=identity_candidate,
         mapping_sheet_context=mapping_sheet_context,
-    ):
+        batch_label=batch_label,
+    )
+
+    for candidate in proposed:
         value = candidate["source_value"]
         if value not in unresolved or value in llm_result_by_value:
             continue  # not a real residual value, or a duplicate proposal for it
@@ -530,15 +586,16 @@ def pair_values(
                 f"(reproduced exactly), but {claimed_target!r} is not a real target value — rejected."
             )
 
-    # Step 3: mechanically reapply every chain confirmed THIS RUN — whether it
-    # came from this value's own LLM proposal or one proposed for a DIFFERENT
-    # value — to every still-unresolved value, no extra LLM call. This is
-    # what lets a value the LLM didn't itself address (e.g. "7000", when only
-    # "5001" was explicitly proposed) still pick up the same real transform.
-    # A chain confirmed in the "reverse" direction (it reduces the TARGET down
-    # to the source, e.g. stripping the target's zero-padding) is reused the
-    # same way: applied to each candidate target and checked against the
-    # unresolved source value, not the other way around.
+    # Step 3: mechanically reapply every chain confirmed THIS BATCH — whether
+    # it came from this value's own LLM proposal or one proposed for a
+    # DIFFERENT value in the SAME batch — to every still-unresolved value in
+    # the batch, no extra LLM call. This is what lets a value the LLM didn't
+    # itself address (e.g. "7000", when only "5001" was explicitly proposed)
+    # still pick up the same real transform. A chain confirmed in the
+    # "reverse" direction (it reduces the TARGET down to the source, e.g.
+    # stripping the target's zero-padding) is reused the same way: applied to
+    # each candidate target and checked against the unresolved source value,
+    # not the other way around.
     pattern_candidates: dict[str, list[tuple[str, _Chain]]] = {}
     reverse_lookup_cache: dict[tuple, dict[str, str]] = {}
 
@@ -569,6 +626,8 @@ def pair_values(
 
     # Step 4: assemble every distinct candidate target per value and resolve
     # (shared with pair_values_deterministic_only — see _assemble_and_resolve).
+    # source_series/target_series/dates passed through UNSLICED — corroboration
+    # must see the whole dataset even for a value this batch happens to own.
     matches = _assemble_and_resolve(
         unresolved=unresolved,
         library_pairs=library_pairs,
@@ -586,5 +645,157 @@ def pair_values(
         target_field=target_field,
         actor=actor,
     )
+    return matches, all_failed
 
+
+def _is_real_resolution(rule: str) -> bool:
+    """False only for a same-batch-or-later restatement of an already-stored
+    library pairing — i.e. a later batch re-encountering a recurring value
+    that an EARLIER batch (or a prior run entirely) already resolved and
+    persisted. Used by :func:`_merge_batch_matches` to prefer whichever
+    instance carries the richer, original evidence."""
+    return rule != "value_pairing.library_reused"
+
+
+def _merge_batch_matches(all_batch_matches: list[list[ValueMatch]]) -> list[ValueMatch]:
+    """Combine every batch's matches into ValueMapping.matches' final shape.
+
+    A source value's records can legitimately span more than one batch (see
+    ``value_pairing.batching``), so the SAME value can be independently
+    resolved by more than one batch — the later one(s) via a cheap library
+    hit (see module docstring). Deduped here by (source_value, target_value)
+    so the final list never repeats a row purely because a later batch
+    re-discovered it; row_count is summed across every batch the pairing
+    appeared in. A value resolved in ANY batch is never ALSO reported
+    unpaired just because a DIFFERENT batch's LLM call didn't happen to
+    address it that time.
+    """
+    resolved: dict[tuple[str, str], ValueMatch] = {}
+    unresolved: dict[str, ValueMatch] = {}
+
+    for batch_matches in all_batch_matches:
+        for m in batch_matches:
+            if m.target_value is None:
+                existing = unresolved.get(m.source_value)
+                unresolved[m.source_value] = (
+                    m if existing is None
+                    else existing.model_copy(update={"row_count": existing.row_count + m.row_count})
+                )
+                continue
+
+            key = (m.source_value, m.target_value)
+            existing = resolved.get(key)
+            if existing is None:
+                resolved[key] = m
+                continue
+            keep_new = _is_real_resolution(m.rule) and not _is_real_resolution(existing.rule)
+            winner = m if keep_new else existing
+            resolved[key] = winner.model_copy(
+                update={"row_count": existing.row_count + m.row_count}
+            )
+
+    resolved_source_values = {sv for sv, _tv in resolved}
+    for source_value in resolved_source_values:
+        unresolved.pop(source_value, None)
+
+    return list(resolved.values()) + list(unresolved.values())
+
+
+def pair_values(
+    *,
+    source_field: str,
+    target_field: str,
+    source_series: pd.Series,
+    target_series: pd.Series,
+    source_connector: str,
+    target_connector: str,
+    mapping_sheet_context: Any = None,
+    source_dates: pd.Series | None = None,
+    target_dates: pd.Series | None = None,
+    actor: str = "system",
+    date_window_years: int | None = None,
+    raise_on_batch_failure: bool = False,
+    on_batch: Any = None,
+) -> ValueMapping:
+    """Resolve every distinct ``source_field`` value to a ``target_field`` value.
+
+    Partitions the SOURCE side into year-range batches (see
+    ``value_pairing.batching``; ``date_window_years`` overrides the
+    ``VALUE_PAIRING_WINDOW_YEARS`` setting when given) and runs library lookup
+    -> identity -> LLM proposal (mandatorily verified) -> pattern reuse ->
+    resolve (see :func:`_pair_batch`) once per batch, oldest first, merging
+    every batch's matches at the end (see :func:`_merge_batch_matches`). The
+    library is re-queried fresh every batch, so a pairing an earlier batch
+    just persisted is reused (no LLM call) by a later batch that re-encounters
+    the same value — this is what makes batching never cost a redundant LLM
+    call for a value whose records span more than one year window.
+
+    A stored library pairing is trusted immediately but is still only ONE
+    candidate among however many a value turns out to have this run — it
+    never suppresses a genuinely competing candidate (e.g. a coincidental
+    identity match) the way an eager pop-and-return would.
+
+    ``source_dates``/``target_dates`` are optional aligned date columns (same
+    index as ``source_series``/``target_series``). ``source_dates`` ALSO
+    drives batch partitioning (never ``target_dates`` — see
+    ``value_pairing.batching``'s module docstring); both are used, unsliced,
+    for the per-candidate corroboration signal. When ``source_dates`` is
+    omitted, batching degrades to a single pass over everything (today's
+    unbatched behavior) — a missing date column never blocks pairing.
+
+    ``raise_on_batch_failure`` (default False, Manual mode's contract): when
+    True, a batch whose LLM calls fail on every configured provider even
+    after retrying raises :class:`ValuePairingUnavailable` immediately rather
+    than degrading that batch's residual to unpaired — Auto mode has no human
+    checkpoint to catch a silently-degraded run the way Manual mode's review
+    step would, so it opts into this.
+
+    ``on_batch``, if given, is called after each batch resolves with a
+    :class:`~value_pairing.batching.BatchProgress` — the hook Auto mode uses
+    to surface live "batch N of M (label)" progress.
+    """
+    target_values = set(distinct_values(target_series))
+    window_years = date_window_years or get_settings().value_pairing_window_years
+    batches = build_source_batches(
+        source_series=source_series, source_dates=source_dates, window_years=window_years
+    )
+
+    all_batch_matches: list[list[ValueMatch]] = []
+    for index, (label, mask) in enumerate(batches):
+        batch_source_series = source_series[mask]
+        source_counts = distinct_values(batch_source_series)
+        if source_counts:
+            matches, all_failed = _pair_batch(
+                source_counts=source_counts,
+                target_values=target_values,
+                source_field=source_field,
+                target_field=target_field,
+                source_series=source_series,
+                target_series=target_series,
+                source_connector=source_connector,
+                target_connector=target_connector,
+                mapping_sheet_context=mapping_sheet_context,
+                source_dates=source_dates,
+                target_dates=target_dates,
+                actor=actor,
+                batch_label=label,
+            )
+            if all_failed and raise_on_batch_failure:
+                raise ValuePairingUnavailable(
+                    f"All configured AI providers are unavailable for value-pairing on "
+                    f"{source_field!r} -> {target_field!r} (batch {label!r})."
+                )
+            all_batch_matches.append(matches)
+
+        if on_batch is not None:
+            on_batch(
+                BatchProgress(
+                    field_pair=f"{source_field} -> {target_field}",
+                    batch_index=index,
+                    batch_count=len(batches),
+                    batch_label=label,
+                )
+            )
+
+    matches = _merge_batch_matches(all_batch_matches)
     return ValueMapping(source_field=source_field, target_field=target_field, matches=matches)

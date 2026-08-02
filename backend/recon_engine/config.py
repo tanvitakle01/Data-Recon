@@ -69,6 +69,12 @@ RECON_GROQ_STRICT   When true, a configured-but-failing Groq compile raises
                     Turn this on in any environment where a stub-compiled
                     contract reaching Gate 1 should be treated as a bug, not a
                     normal degraded path. Accepts true/1/yes/on.
+VALUE_PAIRING_WINDOW_YEARS
+                    Size (in years) of each year-range batch the value-pairing
+                    pipeline partitions the SOURCE side into (see
+                    ``value_pairing.batching``) — e.g. 2 -> "2021-2022",
+                    "2023-2024", ... Default: 2. A caller can still override
+                    this per-call via ``pair_values(date_window_years=...)``.
 """
 
 from __future__ import annotations
@@ -169,6 +175,7 @@ class Settings:
     use_script_transformations: bool
     groq_strict: bool
     llm_fallback_cooldown_s: int
+    value_pairing_window_years: int
     groq: GroqSettings = field(repr=False)
     gemini: GeminiSettings = field(repr=False)
     cerebras: CerebrasSettings = field(repr=False)
@@ -296,6 +303,7 @@ def get_settings() -> Settings:
         use_script_transformations=_bool_env("USE_SCRIPT_TRANSFORMATIONS", False),
         groq_strict=_bool_env("RECON_GROQ_STRICT", False),
         llm_fallback_cooldown_s=max(0, _int_env("LLM_FALLBACK_COOLDOWN_SECONDS", 60)),
+        value_pairing_window_years=max(1, _int_env("VALUE_PAIRING_WINDOW_YEARS", 2)),
         groq=groq,
         gemini=gemini,
         cerebras=cerebras,

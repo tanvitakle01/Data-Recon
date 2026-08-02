@@ -469,6 +469,10 @@ function ComparisonTypeStep() {
   const [autoRunning, setAutoRunning] = useState(false);
   const [autoElapsedMs, setAutoElapsedMs] = useState(0);
   const [autoCurrentStep, setAutoCurrentStep] = useState(null);
+  // Live "batch N of M (2023-2024)" progress within the pair_values step —
+  // year-range batches of the AI value-pairing call (see
+  // value_pairing.pipeline.pair_values' on_batch hook). null outside that step.
+  const [autoBatchProgress, setAutoBatchProgress] = useState(null);
   const [autoError, setAutoError] = useState(null);
   const [autoFailedStep, setAutoFailedStep] = useState(null);
 
@@ -553,6 +557,7 @@ function ComparisonTypeStep() {
       const res = await api.get(`/api/recon/auto-run/${graphRunId}/status`);
       const run = res.data;
       setAutoCurrentStep(run.current_step);
+      setAutoBatchProgress(run.batch_progress ?? null);
       applyPartialResult(run.result);
       if (run.status === "completed") {
         clearInterval(pollIntervalRef.current);
@@ -574,6 +579,7 @@ function ComparisonTypeStep() {
     setAutoError(null);
     setAutoFailedStep(null);
     setAutoCurrentStep(null);
+    setAutoBatchProgress(null);
     setAutoElapsedMs(0);
     appliedRef.current = { source: false, target: false, mapping: false };
     setAutoRunning(true);
@@ -808,6 +814,10 @@ function ComparisonTypeStep() {
                     <Loader2 size={16} className="animate-spin" aria-hidden />
                     <span className="wizard-auto-progress__step">
                       {AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
+                      {autoCurrentStep === "pair_values" && autoBatchProgress && (
+                        <> — batch {autoBatchProgress.batch_index + 1} of{" "}
+                        {autoBatchProgress.batch_count} ({autoBatchProgress.batch_label})</>
+                      )}
                     </span>
                     <span className="wizard-auto-progress__timer">{formatElapsed(autoElapsedMs)}</span>
                   </div>

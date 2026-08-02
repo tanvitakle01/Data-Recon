@@ -174,7 +174,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     failed_step         TEXT,
     error               TEXT,
     result_json         TEXT,
-    created_at          TEXT NOT NULL
+    created_at          TEXT NOT NULL,
+    batch_progress_json TEXT
 );
 
 -- Value-pair library: a source_value -> target_value pairing for one Key
@@ -361,6 +362,19 @@ def _migrate_value_pair_library_drop_approval_columns(conn: sqlite3.Connection) 
     )
 
 
+def _migrate_pipeline_runs_add_batch_progress(conn: sqlite3.Connection) -> None:
+    """One-time migration adding ``batch_progress_json`` to ``pipeline_runs``.
+
+    Nullable column with no existing data to backfill, so a plain
+    ``ALTER TABLE ... ADD COLUMN`` is safe here (unlike the value_pair_library
+    migrations above, which touch a UNIQUE constraint and need a full rebuild).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(pipeline_runs)")}
+    if not cols or "batch_progress_json" in cols:
+        return  # table doesn't exist yet, or already on the current schema
+    conn.execute("ALTER TABLE pipeline_runs ADD COLUMN batch_progress_json TEXT")
+
+
 def init_storage() -> None:
     """Create store directories and both databases with their schemas.
 
@@ -374,6 +388,7 @@ def init_storage() -> None:
         _migrate_value_pair_library(conn)
         _migrate_value_pair_library_target_value(conn)
         _migrate_value_pair_library_drop_approval_columns(conn)
+        _migrate_pipeline_runs_add_batch_progress(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

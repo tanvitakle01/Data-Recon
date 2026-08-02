@@ -148,6 +148,7 @@ class _FakeClient:
 
 class _Settings:
     any_llm_configured = True
+    value_pairing_window_years = 2
 
 
 @pytest.fixture

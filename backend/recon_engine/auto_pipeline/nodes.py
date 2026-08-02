@@ -29,16 +29,15 @@ from backend.API_conn.connectors import registry
 from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
 from backend.API_conn.connectors.s4_metadata_service import S4MetadataService
 from backend.recon_engine import service
-from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome
 from backend.recon_engine.models.snapshot import RawLayer
-from backend.recon_engine.models.value_mapping import ValueMapping
 from backend.recon_engine.storage import (
     contract_store,
+    pipeline_run_store,
     result_store,
     run_store,
     snapshot_store,
 )
-from backend.recon_engine.value_pairing import pair_values
+from backend.recon_engine.value_pairing import BatchProgress, pair_values
 from backend.recon_engine.value_pairing.extraction import distinct_values
 
 from backend.recon_engine.auto_pipeline.candidate_keys import identify_candidate_keys
@@ -51,17 +50,6 @@ from backend.recon_engine.auto_pipeline.state import AutoRunState, SideState
 _REQUIRED_ROLES = ("product", "location", "date", "quantity")
 _CANDIDATE_KEY_ROLES = ("product", "location")
 _BUSINESS_KEY_ROLES = ("date", "quantity")
-
-
-class ValuePairingUnavailable(RuntimeError):
-    """All configured LLM providers failed during Auto-mode value pairing.
-
-    ``pair_values()`` deliberately degrades LLM failures to unresolved matches
-    rather than raising (so Manual mode never blocks on provider downtime) —
-    this is the explicit hard-failure signal Auto mode adds on top, checked
-    via ``get_last_llm_outcome()`` immediately after each call, without
-    changing ``pair_values()`` or the manual ``/value-mapping/run`` endpoint.
-    """
 
 
 # ── step 1/3: select connector/entity ────────────────────────────────────────
@@ -319,16 +307,24 @@ def _do_extract_unique_keys(state: AutoRunState) -> dict[str, Any]:
 
 # ── step 6: LLM value-pairing + mandatory verification ───────────────────────
 
-def _pair_values_or_raise(**kwargs: Any) -> ValueMapping:
-    reset_llm_outcome()
-    mapping = pair_values(**kwargs)
-    outcome = get_last_llm_outcome()
-    if outcome is not None and outcome.all_failed:
-        raise ValuePairingUnavailable(
-            f"All configured AI providers are unavailable for value-pairing on "
-            f"{kwargs['source_field']!r} -> {kwargs['target_field']!r}."
+def _make_batch_progress_cb(graph_run_id: str) -> Any:
+    """Live "batch N of M (label)" progress for the Auto-mode process card —
+    pair_values() calls this after every year-range batch resolves, for both
+    the product and location pairing calls below (a fresh closure per call,
+    so the polled status always reflects whichever field pair is currently
+    mid-flight rather than stale progress from the other one).
+    """
+
+    def _on_batch(progress: BatchProgress) -> None:
+        pipeline_run_store.update_batch_progress(
+            graph_run_id,
+            field_pair=progress.field_pair,
+            batch_index=progress.batch_index,
+            batch_count=progress.batch_count,
+            batch_label=progress.batch_label,
         )
-    return mapping
+
+    return _on_batch
 
 
 def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
@@ -366,8 +362,14 @@ def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
     target_connector = state["target"]["kind"]
     actor = state.get("actor", "auto")
     mapping_sheet_context = state.get("mapping_sheet")
+    graph_run_id = state["graph_run_id"]
 
-    product = _pair_values_or_raise(
+    # raise_on_batch_failure=True: Auto mode has no human checkpoint to catch
+    # a silently-degraded batch the way Manual mode's review step would, so a
+    # batch whose LLM calls fail on every configured provider (even after
+    # pair_values' own bounded retry) hard-stops here instead of degrading —
+    # see ValuePairingUnavailable.
+    product = pair_values(
         source_field=source_roles["product"],
         target_field=target_roles["product"],
         source_series=source_df[source_roles["product"]],
@@ -378,8 +380,10 @@ def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
         source_dates=source_dates,
         target_dates=target_dates,
         actor=actor,
+        raise_on_batch_failure=True,
+        on_batch=_make_batch_progress_cb(graph_run_id),
     )
-    location = _pair_values_or_raise(
+    location = pair_values(
         source_field=source_roles["location"],
         target_field=target_roles["location"],
         source_series=source_df[source_roles["location"]],
@@ -390,6 +394,8 @@ def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
         source_dates=source_dates,
         target_dates=target_dates,
         actor=actor,
+        raise_on_batch_failure=True,
+        on_batch=_make_batch_progress_cb(graph_run_id),
     )
 
     return {

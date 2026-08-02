@@ -6,9 +6,16 @@ ProductionPlant -> LOCID) between a source and target dataset. See
 ``pipeline.pair_values`` for the entry point and step-by-step contract.
 """
 
+from backend.recon_engine.value_pairing.batching import BatchProgress
 from backend.recon_engine.value_pairing.pipeline import (
+    ValuePairingUnavailable,
     pair_values,
     pair_values_deterministic_only,
 )
 
-__all__ = ["pair_values", "pair_values_deterministic_only"]
+__all__ = [
+    "pair_values",
+    "pair_values_deterministic_only",
+    "ValuePairingUnavailable",
+    "BatchProgress",
+]
