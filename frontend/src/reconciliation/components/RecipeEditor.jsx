@@ -1,22 +1,23 @@
 // Step-recipe transformation editor (Fig 4). A visual, structured authoring
-// surface over the SAME contract `operations` array the manual flow compiles
-// and the deterministic executor runs — no parallel engine. Three panes:
+// surface over the SAME contract `operations` array the executor runs — no
+// parallel engine. Two panes:
 //
 //   left   — ordered step list, grouped by execution phase (Filters →
 //            Transforms → Aggregations). Drag to reorder WITHIN a phase; a
 //            step's phase is fixed by its op kind so cross-phase moves are
 //            impossible (Decision B: visible order always == execution order).
-//   middle — the selected step's config (field + parameters), driven by the
+//   right  — the selected step's config (field + parameters), driven by the
 //            allow-listed registry's param schema.
-//   right  — live before/after preview of the recipe (or up to the selected
-//            step), via /api/recon/recipe-preview, reusing the shadow diff.
 //
 // Groq is optional: "Draft steps from a description" (when the parent wires
 // onDraftSteps) emits steps into the list that the user then edits. Building
 // steps by hand needs no LLM. Both produce the same operations array.
+//
+// No embedded preview here — the merged Mapping card's Mapping Review (fed by
+// the live pre-pass, see TransformationSpecStep) is the feedback surface for
+// what a recipe edit changes, not a raw shadow-diff curtain on this component.
 import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../../services/api";
-import BeforeAfterCurtain from "./BeforeAfterCurtain";
 import {
   PHASES,
   addStep,
@@ -25,8 +26,6 @@ import {
   phaseIndexForKind,
   removeStep,
   reorderWithinPhase,
-  serializeOperations,
-  serializedIndexOf,
   toggleStep,
   updateStep,
 } from "../lib/recipeModel";
@@ -255,16 +254,10 @@ export default function RecipeEditor({
   steps,
   onChange,
   sourceColumns = [],
-  sourceSample = [],
-  previewContext = {},
   onDraftSteps,
 }) {
   const [catalogue, setCatalogue] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [previewError, setPreviewError] = useState(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [pulse, setPulse] = useState(false);
   const [draftDesc, setDraftDesc] = useState("");
   const [drafting, setDrafting] = useState(false);
   // The manual operation palette starts collapsed so the ~20 ops don't confront
@@ -272,8 +265,6 @@ export default function RecipeEditor({
   // library is opened on demand (its toggle or "+ Add Step").
   const [libraryOpen, setLibraryOpen] = useState(false);
   const dragRef = useRef(null); // { id, phaseKey, index }
-  const prevFpRef = useRef(null);
-  const timerRef = useRef(null);
 
   // Registry catalogue for the palette (compare ops excluded — reconciler-only).
   useEffect(() => {
@@ -306,65 +297,6 @@ export default function RecipeEditor({
   }, [steps]);
   const selected = steps.find((s) => s.id === selectedId) ?? null;
   const selectedEntry = selected ? byName.get(selected.op) : null;
-
-  // ── live preview (debounced) ──────────────────────────────────────────────
-  useEffect(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    let cancelled = false;
-    timerRef.current = setTimeout(async () => {
-      // Clearing inside the (async) debounce callback — not synchronously in the
-      // effect body — so an empty recipe drops the preview without a cascading
-      // render.
-      if (!steps.length || !sourceSample.length) {
-        if (!cancelled) setPreview(null);
-        return;
-      }
-      setPreviewLoading(true);
-      setPreviewError(null);
-      const draft = {
-        comparison_type: previewContext.comparison_type ?? "custom",
-        source_type: previewContext.source_type ?? "excel",
-        target_type: previewContext.target_type ?? "excel",
-        operations: serializeOperations(steps),
-        source_schema: sourceColumns,
-        target_schema: previewContext.target_schema ?? sourceColumns,
-      };
-      const activeIndex = selectedId ? serializedIndexOf(steps, selectedId) : null;
-      try {
-        const res = await api.post("/api/recon/recipe-preview", {
-          draft,
-          source_rows: sourceSample,
-          active_step_index: activeIndex >= 0 ? activeIndex : null,
-        });
-        if (cancelled) return;
-        const data = res.data;
-        if (prevFpRef.current && prevFpRef.current !== data.shadow_fingerprint) {
-          setPulse(true);
-          setTimeout(() => setPulse(false), 900);
-        }
-        prevFpRef.current = data.shadow_fingerprint;
-        setPreview(data);
-      } catch (err) {
-        if (cancelled) return;
-        const detail = err?.response?.data?.detail;
-        setPreviewError(typeof detail === "string" ? detail : "Could not build the preview.");
-        setPreview(null);
-      } finally {
-        if (!cancelled) setPreviewLoading(false);
-      }
-    }, 400);
-    return () => {
-      cancelled = true;
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [steps, selectedId, sourceSample, sourceColumns, previewContext]);
-
-  const previewColumns = useMemo(() => {
-    if (!preview) return [];
-    return Array.from(
-      new Set([...(preview.source?.columns ?? []), ...(preview.shadow?.columns ?? [])]),
-    );
-  }, [preview]);
 
   // ── step mutations ──────────────────────────────────────────────────────
   const setSteps = (next) => onChange(next);
@@ -552,9 +484,8 @@ export default function RecipeEditor({
         </div>
       </div>
 
-      {/* ── Right column (60%): config (top) stacked over preview (bottom) ── */}
+      {/* ── Right column: selected-step configuration ── */}
       <div className={styles.rightCol}>
-      {/* Top panel: selected-step configuration */}
       <div className={[styles.pane, styles.paneConfig].join(" ")}>
         <p className={styles.paneTitle}>Step Configuration</p>
         {!selected && <p className={styles.hint}>Select a step to configure.</p>}
@@ -601,42 +532,6 @@ export default function RecipeEditor({
                 <p className={styles.hint}>This step takes no parameters.</p>
               )}
           </div>
-        )}
-      </div>
-
-      {/* Bottom panel: live preview — largest, always visible */}
-      <div className={[styles.pane, styles.panePreview, pulse ? styles.previewPulse : ""].join(" ")}>
-        <p className={styles.paneTitle}>
-          Live Preview
-          {selected && steps.length ? " (up to selected step)" : ""}
-        </p>
-        {steps.length === 0 ? (
-          <p className={styles.hint}>Preview will appear after adding your first transformation.</p>
-        ) : (
-          !sourceSample.length && (
-            <p className={styles.hint}>Load source data to preview the recipe.</p>
-          )
-        )}
-        {steps.length > 0 && previewLoading && <p className={styles.hint}>Building preview…</p>}
-        {steps.length > 0 && previewError && <p className={styles.exprError}>⚠️ {previewError}</p>}
-        {steps.length > 0 && preview && !previewError && (
-          <>
-            <div className={styles.previewMeta}>
-              {preview.shadow?.total_rows ?? 0} shadow rows
-              {preview.row_count_changed ? " (row count changed)" : ""} · {preview.changed_cells ?? 0}{" "}
-              changed cells
-            </div>
-            {preview.affected_columns?.length > 0 && (
-              <div className={styles.affected}>
-                {preview.affected_columns.map((c) => (
-                  <Badge key={c} variant="info">
-                    {c}
-                  </Badge>
-                ))}
-              </div>
-            )}
-            <BeforeAfterCurtain columns={previewColumns} diffs={preview.diffs ?? []} />
-          </>
         )}
       </div>
       </div>

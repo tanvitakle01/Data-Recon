@@ -2,8 +2,8 @@
 generation (identity + reused chains + fresh LLM chains), mandatory
 verification, and corroboration when candidates compete.
 
-Review (step 5) and library approval (step 6) are the route/frontend layer's
-job — this module's output is the same ``ValueMapping`` shape the retired
+Every verified pairing is persisted to the value-pair library automatically —
+this module's output is the same ``ValueMapping`` shape the retired
 ``matching.product``/``matching.location`` produced, so ``engine.executor``
 and ``models.contract`` need no changes at all.
 
@@ -38,7 +38,6 @@ import pandas as pd
 from backend.recon_engine.config import get_settings
 from backend.recon_engine.llm import build_llm_client
 from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
-from backend.recon_engine.models.value_pair import ValuePairStatus
 from backend.recon_engine.storage import value_pair_store
 from backend.recon_engine.value_pairing.corroborate import corroboration_overlap
 from backend.recon_engine.value_pairing.extraction import distinct_values
@@ -69,8 +68,8 @@ def _propose_llm_chains(
     """LLM transformation-discovery pairing. Never raises — degrades to no candidates.
 
     ``candidate_source`` is the COMPLETE distinct source list minus only
-    already-approved library values (Transformation Discovery: the LLM must
-    see exact-matched values too, so it can identify an additional valid
+    values already stored in the library (Transformation Discovery: the LLM
+    must see exact-matched values too, so it can identify an additional valid
     transform for them — see ``prompt.py``). ``exact_matches`` is passed
     through as context; the caller (``pair_values``) is responsible for
     dropping any returned pair that just restates one, regardless of what the
@@ -111,7 +110,7 @@ def _finalize_single(
     evidence_prefix: str = "",
     corroboration: bool | None = None,
     sibling_candidates: list[str] | None = None,
-    approved: dict[str, Any] | None = None,
+    library_pairs: dict[str, Any] | None = None,
 ) -> ValueMatch:
     """The resolution for one (value, target) pair — sole candidate or one of
     several accepted candidates (see module docstring)."""
@@ -139,24 +138,24 @@ def _finalize_single(
         )
 
     if kinds == {"library"}:
-        # Trusted, immediate, no re-verification — a human already reviewed
-        # and approved this exact pairing on a prior run. Still routed
-        # through the normal candidate machinery (rather than short-circuited
-        # in Step 0) so a genuinely competing candidate for the same value
-        # (e.g. a coincidental identity match) is never silently discarded
-        # just because a different transform was already approved for it.
-        hit = (approved or {}).get(value)
-        reviewed_on = hit.reviewed_on if hit is not None else None
+        # Trusted, immediate, no re-verification — this exact pairing was
+        # already verified and stored on a prior run. Still routed through
+        # the normal candidate machinery (rather than short-circuited in
+        # Step 0) so a genuinely competing candidate for the same value (e.g.
+        # a coincidental identity match) is never silently discarded just
+        # because a different transform was already stored for it.
+        hit = (library_pairs or {}).get(value)
+        added_on = hit.added_on if hit is not None else None
         chain = next((c for _origin, c in origins if c), [])
         return ValueMatch(
             source_value=value,
             target_value=target,
             confidence=Confidence.HIGH,
-            rule=rule_override or "value_pairing.library_approved",
+            rule=rule_override or "value_pairing.library_reused",
             evidence=(
                 evidence_prefix
-                + f"Reused an approved value pair from the library "
-                f"({_format_chain(chain)}, approved {reviewed_on})."
+                + f"Reused a stored value pair from the library "
+                f"({_format_chain(chain)}, added {added_on})."
             ),
             row_count=row_count,
             corroboration=corroboration,
@@ -164,8 +163,8 @@ def _finalize_single(
         )
 
     # A transform (fresh LLM chain and/or a chain reused from another value)
-    # resolved this value — a NEW source_value pairing, worth a PENDING
-    # library row even when the chain pattern itself was already confirmed
+    # resolved this value — a NEW source_value pairing, worth persisting to
+    # the library even when the chain pattern itself was already confirmed
     # elsewhere this run.
     chain = next((c for _origin, c in origins if c), [])
     stored = value_pair_store.propose(
@@ -187,7 +186,7 @@ def _finalize_single(
         rule=rule_override or f"value_pairing.{origin_label}",
         evidence=evidence_prefix + f"Verified transform {_format_chain(chain)}: {value!r} -> {target!r}.",
         row_count=row_count,
-        library_id=stored.id if stored.status == ValuePairStatus.PENDING else None,
+        library_id=stored.id,
         corroboration=corroboration,
         candidates=sibling_candidates,
     )
@@ -215,7 +214,7 @@ def _resolve_candidates(
     source_field: str,
     target_field: str,
     actor: str,
-    approved: dict[str, Any] | None = None,
+    library_pairs: dict[str, Any] | None = None,
 ) -> list[ValueMatch]:
     """Resolve every distinct candidate target for ``value`` — a sole
     candidate resolves directly; multiple verified candidates are ALL
@@ -236,7 +235,7 @@ def _resolve_candidates(
                 source_field=source_field,
                 target_field=target_field,
                 actor=actor,
-                approved=approved,
+                library_pairs=library_pairs,
             )
         ]
 
@@ -273,10 +272,151 @@ def _resolve_candidates(
             evidence_prefix=f"Multiple candidates for {value!r} ({detail}). ",
             corroboration=overlaps[target],
             sibling_candidates=siblings,
-            approved=approved,
+            library_pairs=library_pairs,
         )
         for target in distinct_targets
     ]
+
+
+def _assemble_and_resolve(
+    *,
+    unresolved: dict[str, int],
+    library_pairs: dict[str, Any],
+    identity_candidate: dict[str, str],
+    llm_result_by_value: dict[str, dict[str, Any]],
+    pattern_candidates: dict[str, list[tuple[str, _Chain]]],
+    llm_rejection_by_value: dict[str, str],
+    source_series: pd.Series,
+    target_series: pd.Series,
+    source_dates: pd.Series | None,
+    target_dates: pd.Series | None,
+    source_connector: str,
+    target_connector: str,
+    source_field: str,
+    target_field: str,
+    actor: str,
+) -> list[ValueMatch]:
+    """Assemble every distinct candidate target per still-unresolved value
+    (from whichever origins are non-empty — library/identity always, LLM/
+    pattern only when a caller actually ran that step) and resolve each via
+    :func:`_resolve_candidates`. Shared by :func:`pair_values` (all origins)
+    and :func:`pair_values_deterministic_only` (library+identity only, empty
+    dicts for the rest — no LLM step ever ran, so nothing here needs one)."""
+    matches: list[ValueMatch] = []
+    for value in list(unresolved):
+        row_count = unresolved.pop(value)
+        candidates: dict[str, list[tuple[str, _Chain]]] = {}
+
+        if value in library_pairs:
+            candidates.setdefault(library_pairs[value].target_value, []).append(("library", library_pairs[value].ops))
+        if value in identity_candidate:
+            candidates.setdefault(identity_candidate[value], []).append(("identity", []))
+        if value in llm_result_by_value:
+            info = llm_result_by_value[value]
+            candidates.setdefault(info["target"], []).append(("llm", info["chain"]))
+        for target, chain in pattern_candidates.get(value, []):
+            candidates.setdefault(target, []).append(("pattern", chain))
+
+        if not candidates:
+            if value in llm_rejection_by_value:
+                matches.append(
+                    ValueMatch(
+                        source_value=value,
+                        target_value=None,
+                        confidence=Confidence.NONE,
+                        rule="value_pairing.llm_rejected",
+                        evidence=llm_rejection_by_value[value],
+                        row_count=row_count,
+                    )
+                )
+            else:
+                matches.append(
+                    ValueMatch(
+                        source_value=value,
+                        target_value=None,
+                        confidence=Confidence.NONE,
+                        rule="value_pairing.unpaired",
+                        evidence=(
+                            "No identity match, library match, or LLM-proposed transform "
+                            "reproduced a target value."
+                        ),
+                        row_count=row_count,
+                    )
+                )
+            continue
+
+        matches.extend(
+            _resolve_candidates(
+                value=value,
+                row_count=row_count,
+                candidates=candidates,
+                source_series=source_series,
+                target_series=target_series,
+                source_dates=source_dates,
+                target_dates=target_dates,
+                source_connector=source_connector,
+                target_connector=target_connector,
+                source_field=source_field,
+                target_field=target_field,
+                actor=actor,
+                library_pairs=library_pairs,
+            )
+        )
+
+    return matches
+
+
+def pair_values_deterministic_only(
+    *,
+    source_field: str,
+    target_field: str,
+    source_series: pd.Series,
+    target_series: pd.Series,
+    source_connector: str,
+    target_connector: str,
+    source_dates: pd.Series | None = None,
+    target_dates: pd.Series | None = None,
+    actor: str = "system",
+) -> ValueMapping:
+    """Resolve every distinct ``source_field`` value using ONLY library lookup
+    + identity match — never an LLM call. Used by the live recipe-editing
+    pre-pass (see ``routes.live_pairing``) so editing a recipe step never
+    triggers an LLM run; only an explicit "Run AI-mapping" does that (via
+    :func:`pair_values`). Same resolution machinery as :func:`pair_values`
+    (:func:`_assemble_and_resolve`/:func:`_resolve_candidates`), just with no
+    LLM-derived or pattern-reused candidates ever in the mix.
+    """
+    source_counts = distinct_values(source_series)
+    target_values = set(distinct_values(target_series))
+
+    library_pairs = value_pair_store.lookup_pairs(
+        source_connector=source_connector,
+        target_connector=target_connector,
+        source_field=source_field,
+        target_field=target_field,
+    )
+    identity_candidate, _residual_source, _residual_target = identity_prepass(
+        set(source_counts), target_values
+    )
+
+    matches = _assemble_and_resolve(
+        unresolved=dict(source_counts),
+        library_pairs=library_pairs,
+        identity_candidate=identity_candidate,
+        llm_result_by_value={},
+        pattern_candidates={},
+        llm_rejection_by_value={},
+        source_series=source_series,
+        target_series=target_series,
+        source_dates=source_dates,
+        target_dates=target_dates,
+        source_connector=source_connector,
+        target_connector=target_connector,
+        source_field=source_field,
+        target_field=target_field,
+        actor=actor,
+    )
+    return ValueMapping(source_field=source_field, target_field=target_field, matches=matches)
 
 
 def pair_values(
@@ -294,12 +434,12 @@ def pair_values(
 ) -> ValueMapping:
     """Resolve every distinct ``source_field`` value to a ``target_field`` value.
 
-    Step order: look up any library-approved pairing (no LLM cost, no
-    re-verification) -> build every value's full candidate set (that approved
+    Step order: look up any stored library pairing (no LLM cost, no
+    re-verification) -> build every value's full candidate set (that stored
     pairing, plus identity, plus reused chains, plus fresh LLM chains, each
     mandatorily verified) -> resolve a sole candidate cheaply, or accept every
-    candidate when several compete for a value (see module docstring). An
-    approved library pairing is trusted immediately but is still only ONE
+    candidate when several compete for a value (see module docstring). A
+    stored library pairing is trusted immediately but is still only ONE
     candidate among however many a value turns out to have this run — it
     never suppresses a genuinely competing candidate (e.g. a coincidental
     identity match) the way an eager pop-and-return would.
@@ -311,17 +451,16 @@ def pair_values(
     source_counts = distinct_values(source_series)
     target_values = set(distinct_values(target_series))
 
-    matches: list[ValueMatch] = []
     unresolved: dict[str, int] = dict(source_counts)
 
-    # Step 0: library-first lookup. A human already reviewed and approved
-    # this exact pairing on a prior run, so it never costs an LLM call or a
+    # Step 0: library-first lookup. This exact pairing was already verified
+    # and stored on a prior run, so it never costs an LLM call or a
     # re-verification — but it is recorded as a CANDIDATE, not popped and
     # auto-accepted here, so it can never silently outrank or hide a
     # genuinely competing candidate for the same value discovered below (see
     # module docstring: a value can legitimately carry more than one verified
-    # candidate — an approved prior pairing is no exception to that rule).
-    approved = value_pair_store.lookup_approved(
+    # candidate — a stored prior pairing is no exception to that rule).
+    library_pairs = value_pair_store.lookup_pairs(
         source_connector=source_connector,
         target_connector=target_connector,
         source_field=source_field,
@@ -334,15 +473,15 @@ def pair_values(
     )
 
     # Step 2: Transformation Discovery (LLM). The LLM sees the COMPLETE
-    # source-value list minus only already-approved library values (a human
-    # decision, never re-litigated here) — deliberately INCLUDING values that
-    # already have an identity (exact) match, so it can identify a genuinely
-    # ADDITIONAL transform-based target for them (both must coexist per the
-    # rules — see prompt.py). It must never return the exact match itself;
-    # any candidate claiming target == source is dropped below regardless of
-    # what the model returns. Each proposal is an ordered chain; verification
-    # applies the FULL chain and checks only the final result.
-    llm_candidates_source = sorted(v for v in unresolved if v not in approved)
+    # source-value list minus only values already stored in the library —
+    # deliberately INCLUDING values that already have an identity (exact)
+    # match, so it can identify a genuinely ADDITIONAL transform-based target
+    # for them (both must coexist per the rules — see prompt.py). It must
+    # never return the exact match itself; any candidate claiming target ==
+    # source is dropped below regardless of what the model returns. Each
+    # proposal is an ordered chain; verification applies the FULL chain and
+    # checks only the final result.
+    llm_candidates_source = sorted(v for v in unresolved if v not in library_pairs)
     confirmed_chains: dict[tuple, dict[str, Any]] = {}
     llm_result_by_value: dict[str, dict[str, Any]] = {}
     llm_rejection_by_value: dict[str, str] = {}
@@ -428,65 +567,24 @@ def pair_values(
                 if ok and produced in target_values:
                     pattern_candidates.setdefault(value, []).append((produced, chain))
 
-    # Step 4: assemble every distinct candidate target per value and resolve.
-    for value in list(unresolved):
-        row_count = unresolved.pop(value)
-        candidates: dict[str, list[tuple[str, _Chain]]] = {}
-
-        if value in approved:
-            candidates.setdefault(approved[value].target_value, []).append(("library", approved[value].ops))
-        if value in identity_candidate:
-            candidates.setdefault(identity_candidate[value], []).append(("identity", []))
-        if value in llm_result_by_value:
-            info = llm_result_by_value[value]
-            candidates.setdefault(info["target"], []).append(("llm", info["chain"]))
-        for target, chain in pattern_candidates.get(value, []):
-            candidates.setdefault(target, []).append(("pattern", chain))
-
-        if not candidates:
-            if value in llm_rejection_by_value:
-                matches.append(
-                    ValueMatch(
-                        source_value=value,
-                        target_value=None,
-                        confidence=Confidence.NONE,
-                        rule="value_pairing.llm_rejected",
-                        evidence=llm_rejection_by_value[value],
-                        row_count=row_count,
-                    )
-                )
-            else:
-                matches.append(
-                    ValueMatch(
-                        source_value=value,
-                        target_value=None,
-                        confidence=Confidence.NONE,
-                        rule="value_pairing.unpaired",
-                        evidence=(
-                            "No identity match, library match, or LLM-proposed transform "
-                            "reproduced a target value."
-                        ),
-                        row_count=row_count,
-                    )
-                )
-            continue
-
-        matches.extend(
-            _resolve_candidates(
-                value=value,
-                row_count=row_count,
-                candidates=candidates,
-                source_series=source_series,
-                target_series=target_series,
-                source_dates=source_dates,
-                target_dates=target_dates,
-                source_connector=source_connector,
-                target_connector=target_connector,
-                source_field=source_field,
-                target_field=target_field,
-                actor=actor,
-                approved=approved,
-            )
-        )
+    # Step 4: assemble every distinct candidate target per value and resolve
+    # (shared with pair_values_deterministic_only — see _assemble_and_resolve).
+    matches = _assemble_and_resolve(
+        unresolved=unresolved,
+        library_pairs=library_pairs,
+        identity_candidate=identity_candidate,
+        llm_result_by_value=llm_result_by_value,
+        pattern_candidates=pattern_candidates,
+        llm_rejection_by_value=llm_rejection_by_value,
+        source_series=source_series,
+        target_series=target_series,
+        source_dates=source_dates,
+        target_dates=target_dates,
+        source_connector=source_connector,
+        target_connector=target_connector,
+        source_field=source_field,
+        target_field=target_field,
+        actor=actor,
+    )
 
     return ValueMapping(source_field=source_field, target_field=target_field, matches=matches)

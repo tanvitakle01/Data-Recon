@@ -1,9 +1,9 @@
 """LLM pairing prompt construction — pipeline step 3 (Transformation Discovery).
 
 Given the COMPLETE distinct source/target value lists (minus only values
-already covered by an approved library pairing — a human decision, never
-re-litigated here), the exact-match registry the deterministic identity
-pre-pass already found, and optional STM (mapping-sheet) context, asks the
+already covered by a stored library pairing), the exact-match registry the
+deterministic identity pre-pass already found, and optional STM
+(mapping-sheet) context, asks the
 LLM to propose ``{source_value, target_value, ops, reason}`` pairs, where
 ``ops`` is an ORDERED LIST of allow-listed transform steps — most real-world
 identifier transforms are more than one step (a prefix AND a suffix), so a

@@ -233,6 +233,42 @@ def test_build_shadow_source_is_deterministic_with_value_mappings():
     assert run1.held_out == run2.held_out
 
 
+def test_value_mapping_sees_post_transform_values():
+    """Ordering regression guard: the executor runs Filters -> Transforms ->
+    Value Mapping -> Aggregations, so value-pairing resolves whatever the
+    recipe's transforms produce, not the raw source value. Here the recipe
+    uppercases Material BEFORE value-mapping runs; the value_mapping's own
+    ValueMatch is keyed on the POST-transform value ("MAT-A"), which only
+    resolves if value-mapping truly runs after the transform."""
+    contract = _contract(
+        operations=[{"op": "uppercase", "field": "Material"}],
+        business_key=[{"source_field": "Material", "target_field": "PRDID"}],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
+        source_schema=["Material", "Qty"],
+        target_schema=["PRDID", "QTY"],
+        value_mappings=[
+            ValueMapping(
+                source_field="Material",
+                target_field="PRDID",
+                matches=[
+                    ValueMatch(
+                        source_value="MAT-A", target_value="MAT-A",
+                        confidence=Confidence.VERY_HIGH, rule="value_pairing.identity", evidence="e",
+                    ),
+                ],
+            ),
+        ],
+    )
+    raw = pd.DataFrame({"Material": ["mat-a"], "Qty": [10]})
+    built = build_shadow_source(contract, raw)
+
+    # If value-mapping ran BEFORE the transform, it would look up "mat-a" (no
+    # match record for it) and hold the row out entirely. Since it runs AFTER,
+    # it looks up "MAT-A" (the transform's output) and matches.
+    assert built.shadow_df["Material"].tolist() == ["MAT-A"]
+    assert built.held_out == []
+
+
 def test_reconciler_classifies_all_buckets():
     contract = _contract()
     shadow = pd.DataFrame({"id": ["A", "B", "C"], "qty": [10, 20, 30]})

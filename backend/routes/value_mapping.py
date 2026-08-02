@@ -69,8 +69,8 @@ async def run_value_mapping(request: Request) -> dict[str, Any]:
     Accepts either uploaded Excel files (`source_file`/`target_file`) or
     already-fetched JSON rows (`source_rows`/`target_rows`), matching the
     input modes of /automap and /reconcile. `source_connector`/`target_connector`
-    (e.g. "s4", "ibp", "excel") key the value-pair library so approved pairs
-    are only reused between the same connector pair. `mapping_sheet` (optional
+    (e.g. "s4", "ibp", "excel") key the value-pair library so pairs are only
+    reused between the same connector pair. `mapping_sheet` (optional
     JSON) is the parsed mapping-sheet payload, passed through as STM context
     for the LLM pairing step — a hint only, never load-bearing.
 

@@ -177,11 +177,11 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     created_at          TEXT NOT NULL
 );
 
--- Value-pair library: an approved source_value -> target_value pairing for one
--- Key field pair (e.g. Material -> PRDID), discovered by the LLM-pairing
--- pipeline and deterministically verified before it ever reaches PENDING here.
--- Only APPROVED rows are consulted by the pipeline's library-first lookup;
--- PENDING/REJECTED rows are audit trail only. Field mapping never lives here.
+-- Value-pair library: a source_value -> target_value pairing for one Key
+-- field pair (e.g. Material -> PRDID), discovered by the LLM-pairing pipeline
+-- and deterministically verified before it is ever stored here. Every stored
+-- row is consulted by the pipeline's library-first lookup — persisted
+-- automatically, no review step. Field mapping never lives here.
 CREATE TABLE IF NOT EXISTS value_pair_library (
     id                  TEXT PRIMARY KEY,
     source_connector    TEXT NOT NULL,
@@ -191,12 +191,9 @@ CREATE TABLE IF NOT EXISTS value_pair_library (
     source_value        TEXT NOT NULL,
     target_value        TEXT NOT NULL,
     ops_json            TEXT NOT NULL,
-    status              TEXT NOT NULL,
     evidence_json       TEXT NOT NULL,
     added_by            TEXT NOT NULL,
     added_on            TEXT NOT NULL,
-    reviewed_by         TEXT,
-    reviewed_on         TEXT,
     version             INTEGER NOT NULL,
     UNIQUE (source_connector, target_connector, source_field, target_field,
             source_value, target_value)
@@ -257,15 +254,14 @@ def _migrate_value_pair_library(conn: sqlite3.Connection) -> None:
         conn.execute(
             """INSERT INTO value_pair_library
                (id, source_connector, target_connector, source_field, target_field,
-                source_value, target_value, ops_json, status, evidence_json,
-                added_by, added_on, reviewed_by, reviewed_on, version)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source_value, target_value, ops_json, evidence_json,
+                added_by, added_on, version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 row["id"], row["source_connector"], row["target_connector"],
                 row["source_field"], row["target_field"], row["source_value"],
-                row["target_value"], ops_json, row["status"], row["evidence_json"],
-                row["added_by"], row["added_on"], row["reviewed_by"], row["reviewed_on"],
-                row["version"],
+                row["target_value"], ops_json, row["evidence_json"],
+                row["added_by"], row["added_on"], row["version"],
             ),
         )
     conn.execute("DROP TABLE value_pair_library_old")
@@ -308,21 +304,59 @@ def _migrate_value_pair_library_target_value(conn: sqlite3.Connection) -> None:
         conn.execute(
             """INSERT INTO value_pair_library
                (id, source_connector, target_connector, source_field, target_field,
-                source_value, target_value, ops_json, status, evidence_json,
-                added_by, added_on, reviewed_by, reviewed_on, version)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source_value, target_value, ops_json, evidence_json,
+                added_by, added_on, version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 r["id"], r["source_connector"], r["target_connector"],
                 r["source_field"], r["target_field"], r["source_value"],
-                r["target_value"], r["ops_json"], r["status"], r["evidence_json"],
-                r["added_by"], r["added_on"], r["reviewed_by"], r["reviewed_on"],
-                r["version"],
+                r["target_value"], r["ops_json"], r["evidence_json"],
+                r["added_by"], r["added_on"], r["version"],
             ),
         )
     conn.execute("DROP TABLE value_pair_library_old2")
     logger.info(
         "Migrated value_pair_library: %d row(s) moved to the (…, source_value, "
         "target_value) UNIQUE constraint.",
+        len(rows),
+    )
+
+
+def _migrate_value_pair_library_drop_approval_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration removing the retired manual-approval columns.
+
+    ``status``/``reviewed_by``/``reviewed_on`` supported a human approve/
+    reject workflow that has been removed — every stored pair is now
+    immediately reusable. ``CREATE TABLE IF NOT EXISTS`` never alters an
+    existing table, so a store created before this change keeps the old
+    columns; rebuilt on the current DDL exactly like the migrations above.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(value_pair_library)")}
+    if not cols or "status" not in cols:
+        return  # table doesn't exist yet, or already on the current schema
+
+    conn.execute("ALTER TABLE value_pair_library RENAME TO value_pair_library_old3")
+    conn.executescript(_MAIN_SCHEMA)  # recreates value_pair_library on the current DDL
+
+    rows = conn.execute("SELECT * FROM value_pair_library_old3").fetchall()
+    for r in rows:
+        conn.execute(
+            """INSERT INTO value_pair_library
+               (id, source_connector, target_connector, source_field, target_field,
+                source_value, target_value, ops_json, evidence_json,
+                added_by, added_on, version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                r["id"], r["source_connector"], r["target_connector"],
+                r["source_field"], r["target_field"], r["source_value"],
+                r["target_value"], r["ops_json"], r["evidence_json"],
+                r["added_by"], r["added_on"], r["version"],
+            ),
+        )
+    conn.execute("DROP TABLE value_pair_library_old3")
+    logger.info(
+        "Migrated value_pair_library: %d row(s) moved off the retired "
+        "status/reviewed_by/reviewed_on approval columns.",
         len(rows),
     )
 
@@ -339,6 +373,7 @@ def init_storage() -> None:
         conn.executescript(_MAIN_SCHEMA)
         _migrate_value_pair_library(conn)
         _migrate_value_pair_library_target_value(conn)
+        _migrate_value_pair_library_drop_approval_columns(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

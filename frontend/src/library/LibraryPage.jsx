@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Badge, Alert } from "@bristlecone/canopy";
-import { FiTrash2, FiRefreshCw, FiAlertTriangle, FiCheck, FiX } from "react-icons/fi";
+import { FiTrash2, FiRefreshCw, FiAlertTriangle } from "react-icons/fi";
 import api from "../services/api";
 import styles from "./library.module.css";
 
@@ -10,12 +10,6 @@ const PROV_BADGE = {
   groq: { label: "Groq", variant: "default" },
   openai: { label: "OpenAI", variant: "default" },
   manual: { label: "Manual", variant: "warning" },
-};
-
-const STATUS_BADGE = {
-  pending: { label: "Pending", variant: "warning" },
-  approved: { label: "Approved", variant: "success" },
-  rejected: { label: "Rejected", variant: "error" },
 };
 
 function fmtDate(s) {
@@ -227,16 +221,15 @@ function AttributeMappingSection({ onCount }) {
   );
 }
 
-// Approved value_pair_library rows are reused (no LLM call) by future runs'
-// library-first lookup (recon_engine.value_pairing.pipeline); PENDING rows
-// were proposed by a run's LLM pairing step and already deterministically
-// verified — approving/rejecting here only decides reuse by FUTURE runs.
+// value_pair_library rows are proposed by a run's LLM pairing step, already
+// deterministically verified, and persisted automatically — reused (no LLM
+// call) by future runs' library-first lookup (recon_engine.value_pairing.pipeline).
 function ValuePairsSection({ onCount }) {
   const [all, setAll] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
-  const [filters, setFilters] = useState({ source_connector: "", target_connector: "", status: "" });
+  const [filters, setFilters] = useState({ source_connector: "", target_connector: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -267,7 +260,6 @@ function ValuePairsSection({ onCount }) {
     return {
       source_connector: uniq("source_connector"),
       target_connector: uniq("target_connector"),
-      status: uniq("status"),
     };
   }, [all]);
 
@@ -275,18 +267,6 @@ function ValuePairsSection({ onCount }) {
     () => all.filter((p) => Object.entries(filters).every(([k, v]) => !v || p[k] === v)),
     [all, filters],
   );
-
-  const act = async (id, action) => {
-    setBusyId(id);
-    try {
-      await api.post(`/api/recon/value-pairs/${id}/${action}`);
-      await load();
-    } catch {
-      setError(`${action === "approve" ? "Approve" : "Reject"} failed.`);
-    } finally {
-      setBusyId(null);
-    }
-  };
 
   const remove = async (id) => {
     if (!window.confirm("Delete this stored value pair? This cannot be undone.")) return;
@@ -304,7 +284,7 @@ function ValuePairsSection({ onCount }) {
   const flush = async () => {
     if (
       !window.confirm(
-        "Flush the ENTIRE value-pair library?\n\nThis permanently deletes every stored value pair (pending, approved, and rejected) so future runs re-derive them via the LLM. This cannot be undone.",
+        "Flush the ENTIRE value-pair library?\n\nThis permanently deletes every stored value pair so future runs re-derive them via the LLM. This cannot be undone.",
       )
     )
       return;
@@ -334,13 +314,12 @@ function ValuePairsSection({ onCount }) {
 
       <div className="ct-card__body">
         <p className="wizard-field__help" style={{ marginTop: 0 }}>
-          LLM-proposed, deterministically-verified source→target value pairs (e.g. Material → PRDID).
-          Approved pairs are reused with no LLM call on future runs; pending pairs are still applied
-          to the run that proposed them, but need approval here to be reused.
+          LLM-proposed, deterministically-verified source→target value pairs (e.g. Material → PRDID),
+          persisted automatically and reused with no LLM call on future runs.
         </p>
 
         <div className={styles.filters}>
-          {["source_connector", "target_connector", "status"].map((key) => (
+          {["source_connector", "target_connector"].map((key) => (
             <label key={key} className={styles.filter}>
               <span className={styles.filterLabel}>{key.replace(/_/g, " ")}</span>
               <select
@@ -379,82 +358,49 @@ function ValuePairsSection({ onCount }) {
                 <th>Field</th>
                 <th>Value pair</th>
                 <th>Transform</th>
-                <th>Status</th>
                 <th>Added</th>
                 <th aria-label="Row actions" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((p) => {
-                const status = STATUS_BADGE[p.status] ?? { label: p.status, variant: "default" };
-                return (
-                  <tr key={p.id}>
-                    <td className={styles.connectors}>
-                      <span>{p.source_connector}</span>
-                      <span className={styles.arrow}>→</span>
-                      <span>{p.target_connector}</span>
-                    </td>
-                    <td>
-                      <code>{p.source_field}</code>
-                      <span className={styles.arrow}>→</span>
-                      <code>{p.target_field}</code>
-                    </td>
-                    <td>
-                      <code>{p.source_value}</code>
-                      <span className={styles.arrow}>→</span>
-                      <code>{p.target_value}</code>
-                    </td>
-                    <td className={styles.muted}>
-                      {(p.ops ?? []).map((s) => `${s.op}(${JSON.stringify(s.params)})`).join(" → ")}
-                    </td>
-                    <td>
-                      <Badge variant={status.variant}>{status.label}</Badge>
-                    </td>
-                    <td>
-                      <div>{p.added_by}</div>
-                      <div className={styles.muted}>{fmtDate(p.added_on)}</div>
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        {p.status === "pending" && (
-                          <>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="h-8 text-xs"
-                              onClick={() => act(p.id, "approve")}
-                              disabled={busyId === p.id}
-                              aria-label="Approve pair"
-                            >
-                              <FiCheck />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="h-8 text-xs"
-                              onClick={() => act(p.id, "reject")}
-                              disabled={busyId === p.id}
-                              aria-label="Reject pair"
-                            >
-                              <FiX />
-                            </Button>
-                          </>
-                        )}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-8 text-xs"
-                          onClick={() => remove(p.id)}
-                          disabled={busyId === p.id}
-                          aria-label="Delete pair"
-                        >
-                          <FiTrash2 />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((p) => (
+                <tr key={p.id}>
+                  <td className={styles.connectors}>
+                    <span>{p.source_connector}</span>
+                    <span className={styles.arrow}>→</span>
+                    <span>{p.target_connector}</span>
+                  </td>
+                  <td>
+                    <code>{p.source_field}</code>
+                    <span className={styles.arrow}>→</span>
+                    <code>{p.target_field}</code>
+                  </td>
+                  <td>
+                    <code>{p.source_value}</code>
+                    <span className={styles.arrow}>→</span>
+                    <code>{p.target_value}</code>
+                  </td>
+                  <td className={styles.muted}>
+                    {(p.ops ?? []).map((s) => `${s.op}(${JSON.stringify(s.params)})`).join(" → ")}
+                  </td>
+                  <td>
+                    <div>{p.added_by}</div>
+                    <div className={styles.muted}>{fmtDate(p.added_on)}</div>
+                  </td>
+                  <td>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-8 text-xs"
+                      onClick={() => remove(p.id)}
+                      disabled={busyId === p.id}
+                      aria-label="Delete pair"
+                    >
+                      <FiTrash2 />
+                    </Button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

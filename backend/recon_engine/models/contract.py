@@ -155,7 +155,7 @@ class ContractBody(BaseModel):
     target_type: str = Field(..., description="e.g. 'excel', 'ibp'.")
 
     # Operations applied to Raw_Source to derive the Shadow_Source. The engine
-    # runs them in a fixed pipeline (Value Mappings → Filters → Transformations
+    # runs them in a fixed pipeline (Filters → Transformations → Value Mappings
     # → Aggregations), preserving each op's relative order within its stage.
     operations: list[ContractOperation] = Field(default_factory=list)
 

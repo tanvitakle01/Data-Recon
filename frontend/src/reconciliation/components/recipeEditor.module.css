@@ -1,20 +1,16 @@
-/* Step-recipe editor: three panes — step list (left), selected-step config
-   (middle), live before/after preview (right). Collapses to stacked panes on
-   narrow viewports. Uses the wizard's surface tokens where possible. */
+/* Step-recipe editor: two panes — step list (left), selected-step config
+   (right). Collapses to stacked panes on narrow viewports. Uses the wizard's
+   surface tokens where possible. */
 
 .editor {
   display: grid;
-  /* Two columns: recipe steps (40%) · right column (60%). The right column is
-     split vertically so the live preview — the primary feedback surface — is
-     the largest area, with configuration above it. Never three narrow columns. */
+  /* Two columns: recipe steps (40%) · step configuration (60%). */
   grid-template-columns: 40% 60%;
   gap: 16px;
   align-items: stretch;
-  height: 78vh;
-  min-height: 560px;
+  min-height: 420px;
 }
 
-/* Right column: config (top ~36%) stacked over preview (bottom ~64%). */
 .rightCol {
   display: flex;
   flex-direction: column;
@@ -26,7 +22,6 @@
 @media (max-width: 1100px) {
   .editor {
     grid-template-columns: 1fr;
-    height: auto;
     min-height: 0;
   }
   .rightCol {
@@ -49,15 +44,8 @@
   overflow-y: auto;
 }
 
-/* Config: top of the right column — enough room to edit, doesn't dominate. */
+/* Config: fills the right column — the only pane there now. */
 .paneConfig {
-  flex: 0 0 36%;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-/* Live preview: bottom of the right column — the largest, always-visible area. */
-.panePreview {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -65,8 +53,7 @@
 
 @media (max-width: 1100px) {
   .paneSteps,
-  .paneConfig,
-  .panePreview {
+  .paneConfig {
     height: auto;
     flex: none;
     overflow-y: visible;
@@ -340,37 +327,8 @@
   margin-bottom: 5px;
 }
 
-.exprError {
-  color: #f87171;
-  font-size: 0.72rem;
-  margin-top: 4px;
-}
-
 .hint {
   font-size: 0.72rem;
   opacity: 0.6;
   margin: 4px 0 0;
-}
-
-/* ── preview ── */
-.previewPulse {
-  animation: recipePulse 0.9s ease;
-}
-
-@keyframes recipePulse {
-  0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.55); }
-  100% { box-shadow: 0 0 0 12px rgba(99, 102, 241, 0); }
-}
-
-.affected {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 8px;
-}
-
-.previewMeta {
-  font-size: 0.72rem;
-  opacity: 0.7;
-  margin-bottom: 6px;
 }

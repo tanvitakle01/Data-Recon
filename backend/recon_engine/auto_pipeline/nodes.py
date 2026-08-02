@@ -37,7 +37,6 @@ from backend.recon_engine.storage import (
     result_store,
     run_store,
     snapshot_store,
-    value_pair_store,
 )
 from backend.recon_engine.value_pairing import pair_values
 from backend.recon_engine.value_pairing.extraction import distinct_values
@@ -318,7 +317,7 @@ def _do_extract_unique_keys(state: AutoRunState) -> dict[str, Any]:
     }
 
 
-# ── step 6: LLM value-pairing + mandatory verification, then auto-approve ───
+# ── step 6: LLM value-pairing + mandatory verification ───────────────────────
 
 def _pair_values_or_raise(**kwargs: Any) -> ValueMapping:
     reset_llm_outcome()
@@ -330,12 +329,6 @@ def _pair_values_or_raise(**kwargs: Any) -> ValueMapping:
             f"{kwargs['source_field']!r} -> {kwargs['target_field']!r}."
         )
     return mapping
-
-
-def _auto_approve(mapping: ValueMapping, *, actor: str) -> None:
-    for match in mapping.matches:
-        if match.library_id:
-            value_pair_store.approve(match.library_id, actor=actor)
 
 
 def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
@@ -398,9 +391,6 @@ def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
         target_dates=target_dates,
         actor=actor,
     )
-
-    _auto_approve(product, actor=actor)
-    _auto_approve(location, actor=actor)
 
     return {
         "product_mapping": product.model_dump(mode="json"),

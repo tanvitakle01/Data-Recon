@@ -2,7 +2,7 @@
 
 Exercises: distinct-value extraction, the identity pre-pass, deterministic
 verification of an ORDERED chain of ops, and the full pipeline's outcomes —
-library-approved reuse, an uncontested identity match, a multi-step LLM chain
+library-reused pairings, an uncontested identity match, a multi-step LLM chain
 verified for one value and mechanically reused for another (no second LLM
 call), a rejected LLM claim, an ambiguous identity-vs-transform competition
 resolved by date-overlap corroboration, and a genuinely unpaired value. The
@@ -14,7 +14,6 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from backend.recon_engine.models.value_pair import ValuePairStatus
 from backend.recon_engine.storage import value_pair_store
 from backend.recon_engine.value_pairing import pipeline
 from backend.recon_engine.value_pairing.corroborate import corroboration_overlap
@@ -181,8 +180,8 @@ def test_pipeline_identity_match_resolves_without_any_llm_call(monkeypatch, conf
     assert match.target_value == "MAT-1"
 
 
-def test_pipeline_library_approved_pair_resolves_without_any_llm_call(monkeypatch, configured_llm):
-    approved = value_pair_store.propose(
+def test_pipeline_library_reused_pair_resolves_without_any_llm_call(monkeypatch, configured_llm):
+    value_pair_store.propose(
         source_connector="s4",
         target_connector="ibp",
         source_field="Material",
@@ -191,10 +190,9 @@ def test_pipeline_library_approved_pair_resolves_without_any_llm_call(monkeypatc
         target_value="PL5006",
         ops=[{"op": "prepend_prefix", "params": {"value": "PL"}}],
     )
-    value_pair_store.approve(approved.id, actor="reviewer")
 
     def _boom():
-        raise AssertionError("a library-approved value must never call the LLM")
+        raise AssertionError("a library-stored value must never call the LLM")
 
     monkeypatch.setattr(pipeline, "build_llm_client", _boom)
 
@@ -208,8 +206,77 @@ def test_pipeline_library_approved_pair_resolves_without_any_llm_call(monkeypatc
     )
     match = result.matches[0]
     assert match.confidence.value == "high"
-    assert match.rule == "value_pairing.library_approved"
+    assert match.rule == "value_pairing.library_reused"
     assert match.target_value == "PL5006"
+
+
+def test_deterministic_only_resolves_identity_match_without_any_llm_call(monkeypatch, configured_llm):
+    def _boom():
+        raise AssertionError("pair_values_deterministic_only must never call the LLM")
+
+    monkeypatch.setattr(pipeline, "build_llm_client", _boom)
+
+    result = pipeline.pair_values_deterministic_only(
+        source_field="Material",
+        target_field="PRDID",
+        source_series=_series(["MAT-1"]),
+        target_series=_series(["MAT-1"]),
+        source_connector="s4",
+        target_connector="ibp",
+    )
+    match = result.matches[0]
+    assert match.confidence.value == "very_high"
+    assert match.rule == "value_pairing.identity"
+    assert match.target_value == "MAT-1"
+
+
+def test_deterministic_only_resolves_library_pair_without_any_llm_call(monkeypatch, configured_llm):
+    value_pair_store.propose(
+        source_connector="s4",
+        target_connector="ibp",
+        source_field="Material",
+        target_field="PRDID",
+        source_value="5006",
+        target_value="PL5006",
+        ops=[{"op": "prepend_prefix", "params": {"value": "PL"}}],
+    )
+
+    def _boom():
+        raise AssertionError("pair_values_deterministic_only must never call the LLM")
+
+    monkeypatch.setattr(pipeline, "build_llm_client", _boom)
+
+    result = pipeline.pair_values_deterministic_only(
+        source_field="Material",
+        target_field="PRDID",
+        source_series=_series(["5006"]),
+        target_series=_series(["PL5006"]),
+        source_connector="s4",
+        target_connector="ibp",
+    )
+    match = result.matches[0]
+    assert match.confidence.value == "high"
+    assert match.rule == "value_pairing.library_reused"
+    assert match.target_value == "PL5006"
+
+
+def test_deterministic_only_leaves_a_value_unpaired_with_no_library_or_identity_hit(configured_llm):
+    # No LLM client configured/monkeypatched at all here — proves the residual
+    # path never even attempts one; a value with neither a library entry nor
+    # an identity match is reported unpaired, exactly like pair_values would
+    # for the same residual value if the LLM proposed nothing for it.
+    result = pipeline.pair_values_deterministic_only(
+        source_field="Material",
+        target_field="PRDID",
+        source_series=_series(["RAW-1"]),
+        target_series=_series(["PRD-1"]),
+        source_connector="s4",
+        target_connector="ibp",
+    )
+    match = result.matches[0]
+    assert match.confidence.value == "none"
+    assert match.rule == "value_pairing.unpaired"
+    assert match.target_value is None
 
 
 def test_pipeline_verifies_a_multistep_chain_and_reuses_it_for_another_value(monkeypatch, configured_llm):
@@ -254,7 +321,6 @@ def test_pipeline_verifies_a_multistep_chain_and_reuses_it_for_another_value(mon
 
     stored = value_pair_store.get(by_value["7000"].library_id)
     assert stored is not None
-    assert stored.status == ValuePairStatus.PENDING
     assert stored.ops == payload["pairs"][0]["ops"]
 
 
@@ -322,7 +388,7 @@ def test_pipeline_rejects_a_wrong_llm_claim(monkeypatch, configured_llm):
     assert match.target_value is None
 
     # A rejected claim is never written to the library.
-    assert value_pair_store.lookup_approved(
+    assert value_pair_store.lookup_pairs(
         source_connector="s4", target_connector="ibp", source_field="Material", target_field="PRDID"
     ) == {}
 

@@ -2,7 +2,7 @@ import { useState } from "react";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
-import { appendDatasetSide, buildMappingSheetPayload, cleanBusinessRules } from "../lib/payload";
+import { appendDatasetSide, cleanBusinessRules } from "../lib/payload";
 import {
   createBothSnapshots,
   createSnapshot,
@@ -36,66 +36,20 @@ function keysFromMapping(mapping) {
 function ReconciliationRunStep() {
   const { state, dispatch } = useWizard();
   const { source, target, comparisonType, transformationSpec, reconciliation } = state;
-  // The active contract depends on the mapping flow: Manual uses the approved
-  // `contract` (with a shadow fingerprint to verify); Deterministic uses its
-  // own auto-assembled `deterministicContract` and has no shadow-approval gate.
-  const isDeterministic = transformationSpec.mappingMode === "deterministic";
-  const approvedContract = isDeterministic
-    ? transformationSpec.deterministicContract
-    : transformationSpec.contract;
+  // The merged Mapping step always approves its combined recipe + AI-pairing
+  // state there before Continue advances here — so this is the only contract
+  // Results ever needs (no more separate Deterministic auto-compile path).
+  const approvedContract = transformationSpec.contract;
   const scriptApproval = transformationSpec.scriptApproval;
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [phase, setPhase] = useState(null); // "snapshots" | "run" | null
 
-  // Deterministic Mapping has no separate approval step on the Mapping page —
-  // the auto-assembled zero-operation contract (business_key/compare_fields
-  // from the confirmed field mapping + the VERY_HIGH/HIGH value mappings) is
-  // compiled and approved here, the first time this step actually runs.
-  const compileAndApproveDeterministicContract = async () => {
-    const { mapping, valueMappings } = transformationSpec;
-    const payload = {
-      mapping_sheet: buildMappingSheetPayload(null, mapping),
-      rules: "",
-      transformation_rules: [],
-      matching_rules: [],
-      filter_rules: [],
-      aggregation_rules: [],
-      business_key: (mapping?.mapping?.key_fields ?? []).map((f) => ({
-        source_field: f.source_col,
-        target_field: f.target_col,
-      })),
-      compare_fields: (mapping?.mapping?.compare_fields ?? []).map((f) => ({
-        source_field: f.source_col,
-        target_field: f.target_col,
-      })),
-      value_mappings: [valueMappings?.product, valueMappings?.location].filter(Boolean),
-      source_schema: source.dataset?.columns ?? [],
-      target_schema: target.dataset?.columns ?? [],
-      comparison_type: comparisonType?.id ?? "custom",
-      source_type: source.kind ?? "excel",
-      target_type: target.kind ?? "excel",
-      actor: "wizard-user",
-    };
-
-    const compileRes = await api.post("/api/recon/contracts/compile", payload);
-    const draft = compileRes.data?.draft;
-    const approveRes = await api.post("/api/recon/contracts/approve", {
-      draft,
-      approved_by: "wizard-user",
-    });
-    const detContract = approveRes.data?.contract;
-    dispatch({ type: WizardActions.SET_DETERMINISTIC_CONTRACT, contract: detContract });
-    return detContract;
-  };
-
   // Contract runtime path: immutable snapshots -> deterministic engine
-  // (Raw_Source + approved contract -> Shadow_Source vs Raw_Target). Reuses the
-  // snapshots created during Review Changes and passes the approved shadow
-  // fingerprint so the engine verifies the reconciled shadow is the reviewed
-  // one (409 -> the review must be redone). Falls back to fresh snapshots only
-  // if the review state is somehow absent.
+  // (Raw_Source + approved contract -> Shadow_Source vs Raw_Target). No
+  // shadow-fingerprint pinning — the merged Mapping step's Mapping Review is
+  // the review surface now, not a separate shadow-diff approval on this step.
   const runContractReconciliationStep = async (contract = approvedContract) => {
     let srcId = transformationSpec.sourceSnapshotId;
     let tgtId = transformationSpec.targetSnapshotId;
@@ -115,11 +69,7 @@ function ReconciliationRunStep() {
       contract,
       sourceSnapshotId: srcId,
       targetSnapshotId: tgtId,
-      // Deterministic runs have no reviewed shadow to pin; Manual runs verify
-      // the fingerprint the user approved in the inline Transformation Preview.
-      expectedShadowFingerprint: isDeterministic
-        ? null
-        : transformationSpec.shadowApproved ?? null,
+      expectedShadowFingerprint: null,
     });
 
     dispatch({
@@ -205,15 +155,6 @@ function ReconciliationRunStep() {
           `Source and target must be different datasets — ${identical}. ` +
             "Re-upload the correct file for one side before reconciling.",
         );
-      }
-
-      // Deterministic Mapping has no contract yet the first time this step
-      // runs (Continue on the Mapping page just advances here) — compile and
-      // approve it now, then run against it.
-      if (isDeterministic && !approvedContract) {
-        const detContract = await compileAndApproveDeterministicContract();
-        await runContractReconciliationStep(detContract);
-        return;
       }
 
       // With an approved contract or an approved transformation preview,
@@ -314,9 +255,7 @@ function ReconciliationRunStep() {
             ? ` · Transformation Rules ${approvedContract.contract_id} v${approvedContract.contract_version}`
             : scriptApproval
               ? ` · Approved transformation (${scriptApproval.approval_id})`
-              : isDeterministic
-                ? " · AI-mapping (VERY_HIGH/HIGH applied)"
-                : " · no transformation rules (direct comparison)"}
+              : " · no transformation rules (direct comparison)"}
         </span>
       </div>
 

@@ -1,6 +1,6 @@
-"""Coverage for the value-pair library management routes: list, approve,
-reject, delete, and the confirm-gated flush — mirrors test coverage of the
-attribute-mapping library routes (routes/library.py).
+"""Coverage for the value-pair library management routes: list, delete, and
+the confirm-gated flush — mirrors test coverage of the attribute-mapping
+library routes (routes/library.py).
 """
 
 from __future__ import annotations
@@ -38,32 +38,8 @@ def test_list_value_pairs_returns_proposed_rows(client):
     assert res.status_code == 200, res.text
     pairs = res.json()["pairs"]
     assert len(pairs) == 1
-    assert pairs[0]["status"] == "pending"
-
-
-def test_approve_marks_the_pair_approved(client):
-    pair = _propose()
-    res = client.post(f"/api/recon/value-pairs/{pair.id}/approve", params={"actor": "reviewer"})
-    assert res.status_code == 200, res.text
-    assert res.json()["pair"]["status"] == "approved"
-    assert res.json()["pair"]["reviewed_by"] == "reviewer"
-
-
-def test_reject_records_a_reason(client):
-    pair = _propose()
-    res = client.post(
-        f"/api/recon/value-pairs/{pair.id}/reject",
-        params={"actor": "reviewer", "reason": "wrong transform"},
-    )
-    assert res.status_code == 200, res.text
-    body = res.json()["pair"]
-    assert body["status"] == "rejected"
-    assert body["evidence"]["rejection_reason"] == "wrong transform"
-
-
-def test_approve_unknown_pair_404s(client):
-    res = client.post("/api/recon/value-pairs/nope/approve")
-    assert res.status_code == 404
+    assert pairs[0]["source_value"] == "5006"
+    assert pairs[0]["target_value"] == "PL5006"
 
 
 def test_delete_removes_a_pair(client):
@@ -71,6 +47,11 @@ def test_delete_removes_a_pair(client):
     res = client.delete(f"/api/recon/value-pairs/{pair.id}")
     assert res.status_code == 200, res.text
     assert client.get("/api/recon/value-pairs").json()["pairs"] == []
+
+
+def test_delete_unknown_pair_404s(client):
+    res = client.delete("/api/recon/value-pairs/nope")
+    assert res.status_code == 404
 
 
 def test_flush_requires_confirm(client):

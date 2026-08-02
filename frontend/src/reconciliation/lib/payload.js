@@ -52,8 +52,8 @@ export function resolveValueMappingFields(display) {
 // target datasets (no field exclusions — the pipeline may read columns that
 // aren't part of the confirmed field mapping at all), in the same
 // file-or-rows shape /automap and /reconcile use, plus the connector kinds
-// (key the value-pair library so approved pairs are only reused between the
-// same connector pair), the parsed mapping sheet (optional STM context for
+// (key the value-pair library so pairs are only reused between the same
+// connector pair), the parsed mapping sheet (optional STM context for
 // the LLM pairing step — a hint only, never load-bearing), and the resolved
 // product/location/date column names (see resolveValueMappingFields) so the
 // backend pairs whichever columns the confirmed mapping says play those
@@ -132,6 +132,19 @@ export function sampleRows(roleState, limit = 100) {
   const dataset = roleState?.dataset;
   if (!dataset) return [];
   if (Array.isArray(dataset.rows) && dataset.rows.length > 0) return dataset.rows.slice(0, limit);
+  if (Array.isArray(dataset.preview)) return dataset.preview;
+  return [];
+}
+
+// Like sampleRows, but NEVER caps a SAP/IBP-fetched dataset's full in-memory
+// rows — used by the live recipe-pairing pre-pass, which must see every
+// distinct value, not just a capped sample. Excel uploads still fall back to
+// the preview rows captured at upload time (the full file isn't held as JSON
+// client-side — only sent server-side via the raw File object elsewhere).
+export function fullOrPreviewRows(roleState) {
+  const dataset = roleState?.dataset;
+  if (!dataset) return [];
+  if (Array.isArray(dataset.rows) && dataset.rows.length > 0) return dataset.rows;
   if (Array.isArray(dataset.preview)) return dataset.preview;
   return [];
 }

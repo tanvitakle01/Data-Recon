@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
@@ -8,9 +7,11 @@ import {
   buildMappingSheetPayload,
   buildValueMappingFormData,
   cleanAggregationRules,
+  fullOrPreviewRows,
   mergeGeneratedMapping,
   missingValueMappingRequirements,
   rebuildMapping,
+  resolveValueMappingFields,
   sampleRows,
 } from "../lib/payload";
 import { detectFieldRole } from "../lib/fieldRoleAliases";
@@ -18,41 +19,54 @@ import StepShell from "../components/StepShell";
 import MappingEditor from "../components/MappingEditor";
 import RecipeEditor from "../components/RecipeEditor";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
-import ShadowPreviewPanel from "../components/ShadowPreviewPanel";
+import MappingReviewDrawer from "../components/MappingReviewDrawer";
 import { serializeOperations } from "../lib/recipeModel";
-import { Button, Alert, Badge } from "@bristlecone/canopy";
+import { Button, Alert } from "@bristlecone/canopy";
 
 // Distinct-VALUE summary of the AI-mapping (value-pairing) run, across both
-// resolved sides (product/location) — mirrors MappingReviewPage's own
-// summarizeMapping/splitMatches so the two screens never disagree. A source
-// value with two accepted candidates is one matched value, not two; "review"
-// counts library-reusable proposals that haven't been approved/rejected yet
-// (that decision only lives inside Mapping Review's own session state, so
-// from here everything with a library_id is still "awaiting").
+// resolved sides (product/location) — mirrors MappingReviewBody's own
+// splitMatches so the two surfaces never disagree. A source value with two
+// accepted candidates is one matched value, not two.
 function summarizePairing(valueMappings) {
   if (!valueMappings) return null;
   const sides = [valueMappings.product, valueMappings.location].filter(Boolean);
   const matchedValues = new Set();
   const unmatchedValues = new Set();
-  const reviewIds = new Set();
   for (const side of sides) {
     for (const m of side?.matches ?? []) {
       if (m.target_value != null) matchedValues.add(m.source_value);
       else unmatchedValues.add(m.source_value);
-      if (m.rule === "value_pairing.llm_verified" && m.library_id) reviewIds.add(m.library_id);
     }
   }
   const matched = matchedValues.size;
   const total = matched + unmatchedValues.size;
-  return { matched, total, awaiting: reviewIds.size };
+  return { matched, total };
+}
+
+// Merges a fresh, LLM-free live-prepass result into the current valueMappings
+// side, per source_value — never regressing a value that a real "Run
+// AI-mapping" already resolved via the LLM back down to "unpaired" or a
+// cheaper match. ValueMatch.rule already encodes provenance:
+// "value_pairing.identity"/"library_reused" are cheap/deterministic (safe to
+// recompute every time); "llm_verified"/"pattern_reused" required an actual
+// LLM call, so those are preserved verbatim. A value the recipe edit changed
+// or removed simply won't appear under its old identity in `fresh` — that's
+// correct, not a regression, since that exact string no longer exists.
+function mergeLivePrepass(prevMapping, freshMapping) {
+  if (!freshMapping) return prevMapping ?? null;
+  const prevByValue = new Map((prevMapping?.matches ?? []).map((m) => [m.source_value, m]));
+  const merged = freshMapping.matches.map((fresh) => {
+    const prev = prevByValue.get(fresh.source_value);
+    const prevWasLlmDerived = prev && /llm_verified|pattern_reused/.test(prev.rule);
+    return prevWasLlmDerived ? prev : fresh;
+  });
+  return { ...freshMapping, matches: merged };
 }
 
 function TransformationSpecStep() {
   const { state, dispatch } = useWizard();
-  const navigate = useNavigate();
   const { source, target, comparisonType, transformationSpec } = state;
   const {
-    mappingMode,
     parsedMappingSheet,
     aggregationRules,
     recipe,
@@ -62,23 +76,8 @@ function TransformationSpecStep() {
     useScriptTransformations,
   } = transformationSpec;
 
-  const setMappingMode = (mode) =>
-    dispatch({ type: WizardActions.SET_MAPPING_MODE, mappingMode: mode });
-
   const sourceColumns = useMemo(() => source.dataset?.columns ?? [], [source.dataset]);
   const targetColumns = useMemo(() => target.dataset?.columns ?? [], [target.dataset]);
-  // Stable identities so the recipe's live preview only refetches on a real
-  // change (recipe/selection/data), not on every unrelated parent re-render.
-  const sourceSample = useMemo(() => sampleRows(source), [source]);
-  const recipePreviewContext = useMemo(
-    () => ({
-      comparison_type: comparisonType?.id ?? "custom",
-      source_type: source.kind ?? "excel",
-      target_type: target.kind ?? "excel",
-      target_schema: targetColumns,
-    }),
-    [comparisonType, source.kind, target.kind, targetColumns],
-  );
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState(null);
   // Non-blocking notice from the inference call: a provider-failover message
@@ -92,6 +91,9 @@ function TransformationSpecStep() {
   // when every AI provider was unavailable (spec points 5 & 6).
   const [providerNotice, setProviderNotice] = useState(null);
   const [approveLoading, setApproveLoading] = useState(false);
+  // Mapping Review: closed by default, opens as a right-side slide-out drawer
+  // that overlays the Recipe Editor rather than replacing it in place.
+  const [reviewOpen, setReviewOpen] = useState(false);
   // Signature of the (source, target) datasets we last auto-mapped. When the
   // user re-uploads or re-fetches, the dataset id changes and the reducer
   // clears the stale mapping, so a new signature re-triggers auto-mapping
@@ -103,8 +105,8 @@ function TransformationSpecStep() {
     `${tgt?.dataset?.datasetId ?? tgt?.dataset?.fetchedAt ?? ""}`;
 
   // Feature flag (USE_SCRIPT_TRANSFORMATIONS): fetched once to decide whether
-  // Section D is the contract-based flow or the Transformation Preview +
-  // Approval flow. Defaults to the contract flow if the check fails.
+  // the script-transformation flow (TransformationPreviewPanel) is available
+  // alongside the recipe/AI-mapping flow below.
   useEffect(() => {
     if (useScriptTransformations !== null) return;
     let cancelled = false;
@@ -221,7 +223,7 @@ function TransformationSpecStep() {
     return () => clearTimeout(id);
   }, [mapping, source, target, runInference]);
 
-  // ── deterministic value mapping (Material->PRDID, ProductionPlant->LOCID) ──
+  // ── AI value pairing (Material->PRDID, ProductionPlant->LOCID) ────────────
   const missingValueMappingReqs = useMemo(
     () => missingValueMappingRequirements(mapping?.display),
     [mapping],
@@ -259,12 +261,87 @@ function TransformationSpecStep() {
     }
   };
 
-  // ── deterministic reconciliation (Flow 1) ─────────────────────────────────
-  // Deterministic Mapping no longer compiles/runs a contract inline on this
-  // step — Continue takes the user to the Results step, which compiles,
-  // approves, and runs the deterministic contract there (see
-  // ReconciliationRunStep). This just gates Continue on the mapping being done.
-  const canRunDeterministicRecon = Boolean(valueMappings) && missingValueMappingReqs.length === 0;
+  // ── live, LLM-free pairing pre-pass ────────────────────────────────────────
+  // Keeps Mapping Review current as the recipe changes, without ever
+  // triggering an LLM call — only the "Run AI-mapping" button above does
+  // that. Runs the CURRENT recipe (filters/transforms only — the backend
+  // drops any aggregate op) against the FULL current source dataset, then
+  // resolves values via library lookup + identity match only. A ref (not a
+  // dependency) tracks the latest valueMappings so the merge always has the
+  // current baseline without making this effect depend on its own output.
+  const liveSourceRows = useMemo(() => fullOrPreviewRows(source), [source]);
+  const liveTargetRows = useMemo(() => fullOrPreviewRows(target), [target]);
+  const valueMappingsRef = useRef(valueMappings);
+  useEffect(() => {
+    valueMappingsRef.current = valueMappings;
+  }, [valueMappings]);
+  const livePrepassTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (livePrepassTimerRef.current) clearTimeout(livePrepassTimerRef.current);
+    if (!canRunValueMapping) return;
+    const resolved = resolveValueMappingFields(mapping?.display);
+    if (!resolved.product && !resolved.location) return;
+
+    let cancelled = false;
+    livePrepassTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await api.post("/api/recon/value-mapping/live-prepass", {
+          source_rows: liveSourceRows,
+          target_rows: liveTargetRows,
+          operations: serializeOperations(recipe ?? []),
+          source_schema: sourceColumns,
+          target_schema: targetColumns,
+          comparison_type: comparisonType?.id ?? "custom",
+          source_connector: source.kind ?? "excel",
+          target_connector: target.kind ?? "excel",
+          ...(resolved.product
+            ? {
+                source_product_field: resolved.product.source,
+                target_product_field: resolved.product.target,
+              }
+            : {}),
+          ...(resolved.location
+            ? {
+                source_location_field: resolved.location.source,
+                target_location_field: resolved.location.target,
+              }
+            : {}),
+          ...(resolved.date
+            ? { source_date_field: resolved.date.source, target_date_field: resolved.date.target }
+            : {}),
+        });
+        if (cancelled) return;
+        const prev = valueMappingsRef.current;
+        dispatch({
+          type: WizardActions.SET_VALUE_MAPPINGS,
+          valueMappings: {
+            product: mergeLivePrepass(prev?.product, res.data?.product),
+            location: mergeLivePrepass(prev?.location, res.data?.location),
+          },
+        });
+      } catch {
+        // Best-effort live feedback only — a transient failure here never
+        // blocks the recipe editor or a real "Run AI-mapping".
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      if (livePrepassTimerRef.current) clearTimeout(livePrepassTimerRef.current);
+    };
+  }, [
+    recipe,
+    mapping,
+    liveSourceRows,
+    liveTargetRows,
+    sourceColumns,
+    targetColumns,
+    canRunValueMapping,
+    comparisonType,
+    source.kind,
+    target.kind,
+    dispatch,
+  ]);
 
   // ── contract lifecycle: compile → validate → approve ──────────────────────
   const validateDraft = useCallback(
@@ -337,9 +414,12 @@ function TransformationSpecStep() {
     [parsedMappingSheet, mapping, source, target, comparisonType, mappingKeyFields, mappingCompareFields],
   );
 
-  // The DraftContract the recipe authors: operations straight from the recipe
-  // (no compiler runs) + the human-owned field mapping + structured aggregation
-  // rules — exactly the shape /compile would return.
+  // The DraftContract this page authors: recipe operations + the human-owned
+  // field mapping + structured aggregation rules + whatever AI-mapping has
+  // resolved so far — exactly the shape /compile would return. The executor
+  // runs operations (filters/transforms) BEFORE value_mappings (see
+  // engine.executor.build_shadow_source), so the recipe pre-processes the raw
+  // values and value-pairing resolves whatever it produces.
   const buildRecipeDraft = () => ({
     comparison_type: comparisonType?.id ?? "custom",
     source_type: source.kind ?? "excel",
@@ -348,19 +428,17 @@ function TransformationSpecStep() {
     aggregation_rules: cleanAggregationRules(aggregationRules),
     business_key: mappingKeyFields(),
     compare_fields: mappingCompareFields(),
-    // Manual flow never applies deterministic value mappings — those belong to
-    // the Deterministic flow.
-    value_mappings: [],
+    value_mappings: [valueMappings?.product, valueMappings?.location].filter(Boolean),
     source_schema: source.dataset?.columns ?? [],
     target_schema: target.dataset?.columns ?? [],
     options: { case_insensitive: true, trim_whitespace: true },
     compiler: "recipe",
   });
 
-  // Single CTA for the Manual contract flow: validate the recipe-authored draft
-  // (Gate 1/2), then approve it — which hands off to the existing shadow-curtain
-  // approval flow (ShadowPreviewPanel keys off the approved contract). Gate
-  // internals stay hidden; only a concise error surfaces if validation fails.
+  // Single CTA covering the combined recipe + AI-pairing state: validate the
+  // draft (Gate 1/2), then approve it. Gate internals stay hidden; only a
+  // concise error surfaces if validation fails. Approval is the gate Results
+  // depends on — Continue only advances once this succeeds.
   const approveTransformations = async () => {
     if (!source.dataset || !target.dataset) return;
     setApproveLoading(true);
@@ -398,348 +476,172 @@ function TransformationSpecStep() {
     Boolean(source.dataset && target.dataset) &&
     (mapping?.mapping?.key_fields?.length ?? 0) > 0;
 
-  // The run happens inline on this page only for the Manual contract flow (via
-  // ShadowPreviewPanel), so the generic Continue is hidden there — advancement
-  // is via "Run Reconciliation". Deterministic Mapping and the Manual script
-  // flow both advance to Results via Continue — the run itself (and, for
-  // Deterministic, the contract compile/approve) happens on the Results step.
-  const runsInline = mappingMode === "manual" && !useScriptTransformations;
-  const hideContinue = mappingMode === null || runsInline;
-  // Deterministic Mapping must have a completed value-mapping run before
-  // Continue advances to Results (Results compiles the contract from it).
-  const canContinueStep = mappingMode === "deterministic" ? canRunDeterministicRecon : true;
+  // Editing the recipe/aggregations after approval invalidates the prior
+  // approval so Approve re-enables for the changed steps.
+  const invalidateApproval = () => {
+    if (contract) dispatch({ type: WizardActions.SET_DRAFT_CONTRACT, draftContract: null });
+  };
+
+  // Continue advances to Results, which compiles/runs the approved contract
+  // (see ReconciliationRunStep) — so it's gated on having one, same as the
+  // script-transformation flow is gated on its own approval.
+  const canContinueStep = useScriptTransformations ? true : Boolean(contract);
 
   return (
-    <StepShell
-      stepKey="transformationSpec"
-      canContinue={canContinueStep}
-      hideContinue={hideContinue}
-    >
-      {/* Mapping-method chooser (no method picked yet) */}
-      {mappingMode === null && (
-        <section className="wizard-section">
-          <h3 className="wizard-section__title">Choose a mapping method</h3>
-          <p className="wizard-field__help">
-            Pick how the source is aligned to the target. You can switch methods later without losing
-            either one's progress.
-          </p>
-          <div className="wizard-option-grid">
-            <button
-              type="button"
-              className="wizard-option-card"
-              onClick={() => setMappingMode("manual")}
-            >
-              <span className="wizard-option-card__label">Manual Mapping</span>
-              <span className="wizard-option-card__meta">
-                Field mapping · transformation recipe · reviewed shadow preview
-              </span>
-            </button>
-            <button
-              type="button"
-              className="wizard-option-card"
-              onClick={() => setMappingMode("deterministic")}
-            >
-              <span className="wizard-option-card__label">AI-mapping</span>
-              <span className="wizard-option-card__meta">
-                Tiered value matching · VERY_HIGH/HIGH applied · no transformation rules
-              </span>
-            </button>
-          </div>
-        </section>
-      )}
+    <StepShell stepKey="transformationSpec" canContinue={canContinueStep}>
+      <MappingEditor
+        mapping={mapping}
+        sourceColumns={sourceColumns}
+        targetColumns={targetColumns}
+        loading={mapLoading}
+        error={mapError}
+        notice={mapNotice}
+        onChange={(next) =>
+          dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
+        }
+        onRegenerate={() => {
+          mappedSignatureRef.current = datasetSignature(source, target);
+          // Regenerate always drops to the LLM (tier 2) and relabels, even
+          // if a library entry exists — the user asked for a fresh inference.
+          runInference({ preserveEdits: true, forceLlm: true });
+        }}
+      />
 
-      {mappingMode !== null && (
-        <button type="button" className="wizard-link" onClick={() => setMappingMode(null)}>
-          ← Change mapping method
-        </button>
-      )}
-
-      {/* ── Flow 1: Deterministic Mapping ──────────────────────────────────
-          Field mapping + Run Deterministic Mapping + View Mapping Review only.
-          Continue advances to Results, where the contract is compiled,
-          approved, and run. No mapping sheet, rules, transformations,
-          aggregation, or transformation-rules approval block. */}
-      {mappingMode === "deterministic" && (
-        <div className="ct-col">
-          <p className="wizard-field__help" style={{ marginTop: 0 }}>
-            Confirm the source-to-target field mapping used for AI-mapping. Each row's
-            "Business Field" is auto-detected from the column names (e.g. "SKU" or "Material Code" →
-            Product / Material) — tag it manually if a required field isn't recognized. AI-mapping
-            needs a Product/Material and Plant/Location pair confirmed as Key, plus a
-            Date/Period pair as Key and a Quantity pair as Compare.
-          </p>
-
-          <div className="ct-kpi-grid">
-            <div className="ct-kpi-card">
-              <p className="ct-kpi-card__label">Columns mapped</p>
-              <div className="ct-kpi-card__row">
-                <span className="ct-kpi-card__value">{mapping?.display?.length ?? 0}</span>
-              </div>
-            </div>
-            <div className="ct-kpi-card">
-              <p className="ct-kpi-card__label">Key fields</p>
-              <div className="ct-kpi-card__row">
-                <span className="ct-kpi-card__value">{keyFieldNames.length}</span>
-                {keyFieldNames.length > 0 && (
-                  <span className="ct-kpi-card__sub">{keyFieldNames.join(", ")}</span>
-                )}
-              </div>
-            </div>
-            {pairing && (
-              <div className="ct-kpi-card">
-                <p className="ct-kpi-card__label">Values paired</p>
-                <div className="ct-kpi-card__row">
-                  <span
-                    className="ct-kpi-card__value"
-                    style={{ color: pairing.total ? "var(--bcone-orange)" : "var(--ink)" }}
-                  >
-                    {pairing.total ? `${Math.round((pairing.matched / pairing.total) * 100)}%` : "—"}
-                  </span>
-                  <span className="ct-kpi-card__sub">
-                    {pairing.matched} of {pairing.total}
-                  </span>
-                </div>
-              </div>
-            )}
-            {pairing && (
-              <div className="ct-kpi-card">
-                <p className="ct-kpi-card__label">Awaiting approval</p>
-                <div className="ct-kpi-card__row">
-                  <span className="ct-kpi-card__value" style={{ color: "var(--bcone-orange)" }}>
-                    {pairing.awaiting}
-                  </span>
-                  <span className="ct-kpi-card__sub">for future reuse</span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="ct-grid">
-            <MappingEditor
-              mapping={mapping}
-              sourceColumns={sourceColumns}
-              targetColumns={targetColumns}
-              loading={mapLoading}
-              error={mapError}
-              notice={mapNotice}
-              onChange={(next) =>
-                dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
-              }
-              onRegenerate={() => {
-                mappedSignatureRef.current = datasetSignature(source, target);
-                // Regenerate always drops to the LLM (tier 2) and relabels, even
-                // if a library entry exists — the user asked for a fresh inference.
-                runInference({ preserveEdits: true, forceLlm: true });
-              }}
-            />
-
-            <div className="ct-col">
-              <section className="ct-card">
-                <div className="ct-card__head">
-                  <h3 className="ct-card__title">Datasets in scope</h3>
-                </div>
-                {[
-                  { role: "Source", side: source },
-                  { role: "Target", side: target },
-                ].map(({ role, side }) => (
-                  <div className="ct-scope-side" key={role}>
-                    <div className="ct-scope-side__head">
-                      <span className="ct-scope-side__role">{role}</span>
-                      {side.dataset && (
-                        <Badge variant="success" dot>
-                          {side.kind === "s4" ? "SAP S/4HANA" : side.kind === "ibp" ? "SAP IBP" : "Excel/CSV"}
-                        </Badge>
-                      )}
-                    </div>
-                    {side.dataset ? (
-                      <>
-                        <p className="ct-scope-side__name">{side.dataset.filename}</p>
-                        <p className="ct-scope-side__detail mono">
-                          {side.dataset.rowCount} rows · {side.dataset.colCount} columns
-                        </p>
-                      </>
-                    ) : (
-                      <p className="ct-scope-side__detail">No dataset loaded.</p>
-                    )}
-                  </div>
-                ))}
-              </section>
-
-              <section className="ct-card">
-                <div className="ct-card__head">
-                  <h3 className="ct-card__title">Value pairing</h3>
-                  <span className="ct-card__spacer" />
-                  {pairing && pairing.awaiting > 0 && (
-                    <Badge variant="warning">{pairing.awaiting} awaiting approval</Badge>
-                  )}
-                </div>
-                <div className="ct-card__body">
-                  {pairing && pairing.total > 0 && (
-                    <div className="ct-pairing-bar">
-                      <span
-                        style={{
-                          width: `${(pairing.matched / pairing.total) * 100}%`,
-                          background: "var(--bcone-green)",
-                        }}
-                      />
-                      <span
-                        style={{
-                          width: `${((pairing.total - pairing.matched) / pairing.total) * 100}%`,
-                          background: "var(--bcone-red)",
-                        }}
-                      />
-                    </div>
-                  )}
-                  <p className="wizard-field__help" style={{ marginTop: 0 }}>
-                    {pairing
-                      ? pairing.total > 0
-                        ? `${pairing.matched} of ${pairing.total} distinct values paired (${Math.round((pairing.matched / pairing.total) * 100)}%). ${pairing.total - pairing.matched} value${pairing.total - pairing.matched === 1 ? "" : "s"} have no target and will be reported as mismatches.`
-                        : "AI-mapping ran but found no distinct values to pair yet."
-                      : "Run AI-mapping to pair distinct source values (e.g. Material, Plant) against the target."}
-                  </p>
-                  <Button
-                    type="button"
-                    variant={valueMappings ? "outline" : "primary"}
-                    onClick={
-                      valueMappings
-                        ? () => navigate("/reconciliation/transformation-spec/mapping-review")
-                        : runValueMapping
-                    }
-                    disabled={!valueMappings && (!canRunValueMapping || valueMappingLoading)}
-                    title={
-                      !valueMappings && missingValueMappingReqs.length
-                        ? "Tag a field mapping row as these Business Fields first: " +
-                          missingValueMappingReqs
-                            .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
-                            .join("; ")
-                        : undefined
-                    }
-                    style={{ width: "100%" }}
-                  >
-                    {valueMappings
-                      ? "Open mapping review"
-                      : valueMappingLoading
-                        ? "Matching…"
-                        : "Run AI-mapping"}
-                  </Button>
-                  {valueMappings && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={runValueMapping}
-                      disabled={!canRunValueMapping || valueMappingLoading}
-                      style={{ width: "100%", marginTop: 8 }}
-                    >
-                      {valueMappingLoading ? "Matching…" : "Re-run AI-mapping"}
-                    </Button>
-                  )}
-                  {valueMappingError && <Alert variant="error">{valueMappingError}</Alert>}
-                  {valueMappingSuccess && !valueMappingError && (
-                    <Alert variant="success">
-                      AI-mapping complete. Open "Open mapping review" to inspect the tiers, or
-                      continue to run reconciliation on the Results step.
-                    </Alert>
-                  )}
-                </div>
-              </section>
-            </div>
+      <div className="ct-kpi-grid">
+        <div className="ct-kpi-card">
+          <p className="ct-kpi-card__label">Columns mapped</p>
+          <div className="ct-kpi-card__row">
+            <span className="ct-kpi-card__value">{mapping?.display?.length ?? 0}</span>
           </div>
         </div>
-      )}
+        <div className="ct-kpi-card">
+          <p className="ct-kpi-card__label">Key fields</p>
+          <div className="ct-kpi-card__row">
+            <span className="ct-kpi-card__value">{keyFieldNames.length}</span>
+            {keyFieldNames.length > 0 && (
+              <span className="ct-kpi-card__sub">{keyFieldNames.join(", ")}</span>
+            )}
+          </div>
+        </div>
+        {pairing && (
+          <div className="ct-kpi-card">
+            <p className="ct-kpi-card__label">Values paired</p>
+            <div className="ct-kpi-card__row">
+              <span
+                className="ct-kpi-card__value"
+                style={{ color: pairing.total ? "var(--bcone-orange)" : "var(--ink)" }}
+              >
+                {pairing.total ? `${Math.round((pairing.matched / pairing.total) * 100)}%` : "—"}
+              </span>
+              <span className="ct-kpi-card__sub">
+                {pairing.matched} of {pairing.total}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
 
-      {/* ── Flow 2: Manual Mapping ─────────────────────────────────────────
-          Field mapping → transformation recipe → single Approve CTA → the
-          existing shadow-curtain approval. The Transformation Recipe is the
-          only place operations are authored (no mapping-sheet upload here, no
-          separate aggregation card — both live elsewhere / in the recipe). */}
-      {mappingMode === "manual" && (
-        <>
-          {/* Field Mapping — confirmed FIRST, before authoring any transforms.
-              MappingEditor renders its own card (title + actions + table). */}
-          <MappingEditor
-            mapping={mapping}
-            sourceColumns={sourceColumns}
-            targetColumns={targetColumns}
-            loading={mapLoading}
-            error={mapError}
-            notice={mapNotice}
-            onChange={(next) =>
-              dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
+      <section className="ct-card">
+        <div className="ct-card__head">
+          <h3 className="ct-card__title">Value pairing</h3>
+        </div>
+        <div className="ct-card__body">
+          <p className="wizard-field__help" style={{ marginTop: 0 }}>
+            {pairing
+              ? pairing.total > 0
+                ? `${pairing.matched} of ${pairing.total} distinct values paired (${Math.round((pairing.matched / pairing.total) * 100)}%). ${pairing.total - pairing.matched} value${pairing.total - pairing.matched === 1 ? "" : "s"} have no target and will be reported as mismatches.`
+                : "AI-mapping ran but found no distinct values to pair yet."
+              : "Run AI-mapping to pair distinct source values (e.g. Material, Plant) against the target — reflects the recipe's current output."}
+          </p>
+          <Button
+            type="button"
+            variant="primary"
+            onClick={runValueMapping}
+            disabled={!canRunValueMapping || valueMappingLoading}
+            title={
+              missingValueMappingReqs.length
+                ? "Tag a field mapping row as these Business Fields first: " +
+                  missingValueMappingReqs
+                    .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
+                    .join("; ")
+                : undefined
             }
-            onRegenerate={() => {
-              mappedSignatureRef.current = datasetSignature(source, target);
-              // Regenerate always drops to the LLM (tier 2) and relabels, even
-              // if a library entry exists — the user asked for a fresh inference.
-              runInference({ preserveEdits: true, forceLlm: true });
-            }}
-          />
-
-          {/* Transformation Recipe — the SOLE authoring surface for operations[]
-              (filters, transforms, aggregations), with a live preview. */}
-          <section className="wizard-section">
-            <h3 className="wizard-section__title">Transformation Recipe</h3>
-            <p className="wizard-field__help">
-              Build an ordered list of transformation steps — each step is one operation applied to
-              the source. Drag to reorder within a phase (Filters → Transforms → Aggregations); the
-              live preview shows the dataset after each enabled step. What you see is exactly what runs.
-            </p>
-            <RecipeEditor
-              steps={recipe ?? []}
-              onChange={(next) => {
-                dispatch({ type: WizardActions.SET_RECIPE, recipe: next });
-                // Editing the recipe invalidates a prior approval — reset it so
-                // the Approve CTA re-enables for the changed steps.
-                if (contract) {
-                  dispatch({ type: WizardActions.SET_DRAFT_CONTRACT, draftContract: null });
-                }
-              }}
-              sourceColumns={sourceColumns}
-              sourceSample={sourceSample}
-              previewContext={recipePreviewContext}
-              onDraftSteps={draftStepsFromDescription}
-            />
-          </section>
-
-          {/* Script-transformation flow keeps its own preview/approval panel. */}
-          {useScriptTransformations && <TransformationPreviewPanel />}
-
-          {/* Footer — one primary CTA. No gate diagnostics, no JSON viewer. */}
-          {!useScriptTransformations && (
-            <section className="wizard-section">
-              <div className="contract-actions">
-                <Button
-                  type="button"
-                  variant="primary"
-                  size="lg"
-                  onClick={approveTransformations}
-                  disabled={!canApprove || approveLoading || Boolean(contract)}
-                >
-                  {approveLoading
-                    ? "Approving…"
-                    : contract
-                      ? "✓ Transformation Rules Approved"
-                      : "Approve Transformation Rules"}
-                </Button>
-              </div>
-              {!canApprove && !contract && (
-                <p className="wizard-field__help">
-                  Confirm at least one Key field mapping above to approve.
-                </p>
-              )}
-              {contractError && (
-                <Alert variant="error" style={{ marginTop: 12 }}>{contractError}</Alert>
-              )}
-              {providerNotice && (
-                <Alert variant="info" style={{ marginTop: 12 }}>{providerNotice}</Alert>
-              )}
-            </section>
+            style={{ width: "100%" }}
+          >
+            {valueMappingLoading ? "Matching…" : valueMappings ? "Re-run AI-mapping" : "Run AI-mapping"}
+          </Button>
+          {valueMappingError && <Alert variant="error">{valueMappingError}</Alert>}
+          {valueMappingSuccess && !valueMappingError && (
+            <Alert variant="success">
+              AI-mapping complete. Expand Mapping Review below to inspect the tiers.
+            </Alert>
           )}
+        </div>
+      </section>
 
-          {/* Inline shadow preview + approval + Run (contract engine only).
-              Renders nothing until the contract is approved. */}
-          {!useScriptTransformations && <ShadowPreviewPanel />}
-        </>
+      <button
+        type="button"
+        className="ct-mapping-review-fab"
+        aria-expanded={reviewOpen}
+        onClick={() => setReviewOpen(true)}
+      >
+        Mapping Review
+        <span className="ct-mapping-review-fab__hint">
+          {pairing ? `${pairing.matched}/${pairing.total} paired` : "Inspect values"}
+        </span>
+      </button>
+
+      <section className="wizard-section">
+        <h3 className="wizard-section__title">Transformation Recipe</h3>
+        <p className="wizard-field__help">
+          Build an ordered list of transformation steps — each step is one operation applied to
+          the source before AI-mapping pairs the resulting values. Drag to reorder within a phase
+          (Filters → Transforms → Aggregations).
+        </p>
+        <RecipeEditor
+          steps={recipe ?? []}
+          onChange={(next) => {
+            dispatch({ type: WizardActions.SET_RECIPE, recipe: next });
+            invalidateApproval();
+          }}
+          sourceColumns={sourceColumns}
+          onDraftSteps={draftStepsFromDescription}
+        />
+      </section>
+
+      <MappingReviewDrawer open={reviewOpen} onClose={() => setReviewOpen(false)} />
+
+      {useScriptTransformations && <TransformationPreviewPanel />}
+
+      {!useScriptTransformations && (
+        <section className="wizard-section">
+          <div className="contract-actions">
+            <Button
+              type="button"
+              variant="primary"
+              size="lg"
+              onClick={approveTransformations}
+              disabled={!canApprove || approveLoading || Boolean(contract)}
+            >
+              {approveLoading
+                ? "Approving…"
+                : contract
+                  ? "✓ Transformation Rules Approved"
+                  : "Approve Transformation Rules"}
+            </Button>
+          </div>
+          {!canApprove && !contract && (
+            <p className="wizard-field__help">
+              Confirm at least one Key field mapping above to approve.
+            </p>
+          )}
+          {contractError && (
+            <Alert variant="error" style={{ marginTop: 12 }}>{contractError}</Alert>
+          )}
+          {providerNotice && (
+            <Alert variant="info" style={{ marginTop: 12 }}>{providerNotice}</Alert>
+          )}
+        </section>
       )}
     </StepShell>
   );

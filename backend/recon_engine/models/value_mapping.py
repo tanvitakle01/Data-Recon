@@ -80,11 +80,10 @@ class ValueMatch(BaseModel):
     # had parseable dates). A ranking/labeling hint for the reviewer only —
     # never a filter that suppresses a candidate.
     corroboration: bool | None = None
-    # Set only when this match came from a freshly-verified LLM pairing that was
-    # written to the `value_pair_library` store as PENDING (see
-    # `recon_engine.value_pairing.pipeline`). Lets the review UI call the
-    # approve/reject endpoints for exactly this row. `None` for identity
-    # pre-pass hits, library-approved reuse, or anything already final.
+    # Set only when this match came from a freshly-verified LLM pairing that
+    # was persisted to the `value_pair_library` store (see
+    # `recon_engine.value_pairing.pipeline`). `None` for identity pre-pass
+    # hits, library-reused pairings, or anything else already final.
     library_id: str | None = None
 
 

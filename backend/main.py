@@ -54,6 +54,7 @@ from backend.routes.date_alignment_preview import router as date_alignment_previ
 from backend.routes.comparison_types import router as comparison_types_router
 from backend.routes.contracts import router as contracts_router
 from backend.routes.value_mapping import router as value_mapping_router
+from backend.routes.live_pairing import router as live_pairing_router
 from backend.routes.value_pairs import router as value_pairs_router
 from backend.routes.mapping_infer import router as mapping_infer_router
 from backend.routes.entity_join import router as entity_join_router
@@ -122,6 +123,7 @@ app.include_router(date_alignment_preview_router)
 app.include_router(comparison_types_router)
 app.include_router(contracts_router)
 app.include_router(value_mapping_router)
+app.include_router(live_pairing_router)
 app.include_router(value_pairs_router)
 app.include_router(mapping_infer_router)
 app.include_router(library_router)

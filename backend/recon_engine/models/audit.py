@@ -37,8 +37,6 @@ class AuditAction(str, Enum):
     LIBRARY_FLUSHED = "library_flushed"
     # Value-pair library (LLM-pairing pipeline)
     VALUE_PAIR_PROPOSED = "value_pair_proposed"
-    VALUE_PAIR_APPROVED = "value_pair_approved"
-    VALUE_PAIR_REJECTED = "value_pair_rejected"
     VALUE_PAIR_DELETED = "value_pair_deleted"
     VALUE_PAIR_LIBRARY_FLUSHED = "value_pair_library_flushed"
 

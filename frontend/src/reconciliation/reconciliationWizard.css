@@ -1082,16 +1082,6 @@
   color: var(--muted);
 }
 
-.mapping-review__actions {
-  display: flex;
-  gap: 6px;
-}
-
-.mapping-review__decision {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
-}
 
 .mapping-review__subtitle {
   margin: 24px 0 8px;
@@ -1986,6 +1976,117 @@
   flex-direction: column;
   gap: 8px;
 }
+/* Mapping Review's launcher on the merged Mapping step — pinned to the
+   viewport's top-right (not the in-flow document), so it stays reachable no
+   matter how far the Recipe Editor below has been scrolled. Opens the
+   right-side drawer (.ct-drawer below) without disturbing the editor. Sits
+   under the app's sticky 52px top header (see appLayout.module.css). */
+.ct-mapping-review-fab {
+  position: fixed;
+  top: 68px;
+  right: 24px;
+  z-index: 1002;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+.ct-mapping-review-fab:hover {
+  border-color: var(--border-strong);
+}
+.ct-mapping-review-fab__hint {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+}
+@media (max-width: 720px) {
+  .ct-mapping-review-fab { top: 60px; right: 12px; padding: 0 12px; }
+  .ct-mapping-review-fab__hint { display: none; }
+}
+
+/* Mapping Review right-side slide-out panel — a viewport-fixed drawer, not an
+   in-page collapse, so it overlays the Recipe Editor rather than replacing it. */
+.ct-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 1000;
+}
+.ct-drawer-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ct-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(760px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+  z-index: 1001;
+}
+.ct-drawer.is-open {
+  transform: translateX(0);
+}
+.ct-drawer__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ct-drawer__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.ct-drawer__close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.ct-drawer__close:hover {
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+.ct-drawer__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px;
+}
+
 .ct-runmode-toggle {
   display: flex;
   border: 1px solid var(--border-strong);

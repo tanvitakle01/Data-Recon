@@ -263,29 +263,27 @@ def build_shadow_source(
 ) -> ShadowBuildResult:
     """Execute the contract to produce the Shadow_Source, in a fixed pipeline:
 
-        0. Value Mapping   (contract.value_mappings + key completeness) —
-           auto-apply confident (VERY_HIGH/HIGH) identifier value maps; hold
-           out everything else (MEDIUM/NONE/OUT_OF_SCOPE, no match record, or
-           a missing key field) so it never reaches the join.
-        1. Filters        (FILTER ops)          — drop rows on RAW source values
-        2. Transformations (TRANSFORM ops)      — reshape values, in order
+        0. Filters        (FILTER ops)          — drop rows on RAW source values
+        1. Transformations (TRANSFORM ops)      — reshape values, in order
+        2. Value Mapping   (contract.value_mappings + key completeness) —
+           auto-apply confident (VERY_HIGH/HIGH) identifier value maps, against
+           the RECIPE-CLEANED values above (not the raw ones); hold out
+           everything else (MEDIUM/NONE/OUT_OF_SCOPE, no match record, or a
+           missing key field) so it never reaches the join.
         3. Aggregations   (AGGREGATE ops, then ``aggregation_rules``)
 
     Ordering is enforced here rather than trusting the order the compiler emitted
-    operations, so "value-map before filter before transform before aggregate"
-    always holds. Relative order within a stage is preserved. Compare ops are
-    ignored here — the reconciler uses them. Raw_Source is never mutated.
+    operations, so "filter before transform before value-map before aggregate"
+    always holds — the recipe is a pre-processing/normalization pass over the
+    raw values, and value-pairing resolves whatever the recipe produces (e.g. a
+    transform step fixing a typo'd Plant code changes what value-pairing sees).
+    Relative order within a stage is preserved. Compare ops are ignored here —
+    the reconciler uses them. Raw_Source is never mutated.
     """
     df = raw_source_df.reset_index(drop=True).copy()
     df[POS_COL] = range(len(df))
     # pos value -> list of originating raw row ids
     lineage: dict[int, list[int]] = {i: [i] for i in range(len(df))}
-
-    # ── 0. Value Mapping + key completeness ──
-    held_out: list[dict[str, Any]] = []
-    if contract.business_key:
-        df, keep_mask, held_out = _apply_value_mappings(df, contract)
-        df = df.loc[keep_mask].reset_index(drop=True)
 
     # Bucket ops by stage, preserving relative order within each stage.
     # Disabled steps are authored but inert — skipped entirely so they neither
@@ -303,13 +301,19 @@ def build_shadow_source(
             aggregates.append((spec, op))
         # COMPARE ops: skipped (reconciler-only).
 
-    # ── 1. Filters ──
+    # ── 0. Filters ──
     for spec, op in filters:
         df = spec.func(df, op.field, op.params)
 
-    # ── 2. Transformations ──
+    # ── 1. Transformations ──
     for spec, op in transforms:
         df = spec.func(df, op.field, op.params)
+
+    # ── 2. Value Mapping + key completeness ──
+    held_out: list[dict[str, Any]] = []
+    if contract.business_key:
+        df, keep_mask, held_out = _apply_value_mappings(df, contract)
+        df = df.loc[keep_mask].reset_index(drop=True)
 
     # ── 3. Aggregations ──
     for spec, op in aggregates:
