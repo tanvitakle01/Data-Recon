@@ -31,8 +31,12 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [
-      // /theme subpath must be listed before the exact-match bare specifier.
+      // /theme and /package.json subpaths must be listed before the exact-match
+      // bare specifier. /package.json lets the app read Canopy's real version
+      // number (e.g. for the sidebar footer) without a fragile relative path
+      // reaching outside this app's root.
       { find: '@bristlecone/canopy/theme', replacement: resolveApp(`${canopyRoot}/theme/index.ts`) },
+      { find: '@bristlecone/canopy/package.json', replacement: resolveApp('../canopyDesign/package.json') },
       { find: /^@bristlecone\/canopy$/, replacement: resolveApp(`${canopyRoot}/index.ts`) },
       // Canopy's external deps -> this app's node_modules.
       ...canopyDeps.map((dep) => ({

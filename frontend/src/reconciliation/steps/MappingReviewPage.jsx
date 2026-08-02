@@ -1,33 +1,35 @@
-// Mapping Review — reached from the Mapping step's "View Mapping Review"
-// button on the Deterministic flow. NOT one of the 5 numbered wizard steps: it
-// never touches state.step, so the stepper keeps showing Step 4 "Mapping" as
-// current throughout.
+// Mapping Review — reached from the Mapping step's "Open mapping review"
+// button on the Deterministic (AI-mapping) flow. NOT one of the 5 numbered
+// wizard steps: it never touches state.step, so the stepper keeps showing
+// Step 4 "Mapping" as current throughout.
 //
-// Layout, top to bottom: (1) two small pie charts summarizing matched vs.
-// unmatched counts per field pair, (2) one search box that finds a value
-// across BOTH field pairs' Material/PRDID/Plant/LOCID columns at once with
+// Layout, top to bottom: (1) a KPI strip (distinct values / paired / unpaired
+// / awaiting approval, computed across both field pairs), (2) one search box
+// that finds a value across BOTH field pairs' columns at once with
 // Excel/document "Find" semantics (Enter / search-icon = jump to next match,
-// wrapping), (3) the two field-pairing sections themselves, each collapsible
-// (collapsed by default) and auto-expanded when a search match lands inside.
+// wrapping), (3) one combined "Paired values" card and one combined
+// "Unpaired values" card spanning both field pairs — always visible, no
+// accordion.
 //
 // Shows this run's value-pairing results: paired values (identity match,
 // library-approved reuse, or a freshly LLM-proposed-and-verified transform)
-// with a collapsed-by-default transform detail, and unpaired values with the
-// reason (including why a claimed pairing was rejected by verification).
+// with a Transform detail toggle, and unpaired values with the reason
+// (including why a claimed pairing was rejected by verification).
 // Freshly-verified LLM pairs (rule "value_pairing.llm_verified") carry a
 // `library_id` and get an inline Approve/Reject action — that decision only
 // controls reuse by FUTURE runs (POST /api/recon/value-pairs/{id}/approve|
 // reject); it never blocks THIS run, which already applied the verified pair
 // to the shadow source per the existing HIGH-confidence auto-apply policy.
+// Decisions live here (lifted out of the old per-section component) purely so
+// the "Awaiting approval" KPI reflects them in real time.
 //
 // No changes to pairing data, verification logic, or confidence scoring here
 // — this file is layout and search interaction only.
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWizard } from "../context/useWizard";
-import { Button, Badge, EmptyState, CollapsibleSection } from "@bristlecone/canopy";
+import { Button, Badge, EmptyState } from "@bristlecone/canopy";
 import { Search } from "lucide-react";
-import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { TIER_BADGE_VARIANT } from "../lib/badgeVariants";
 import api from "../../services/api";
 
@@ -53,7 +55,9 @@ function CorroborationBadge({ corroboration }) {
   return <Badge variant="default">No signal</Badge>;
 }
 
-// Collapsed-by-default: `PL5006@S67900 › prepend "PL", append "@S67900"`.
+// Collapsed-by-default: `PL5006@S67900 › prepend "PL", append "@S67900"`. Kept
+// as a toggle (not "minimal clicks" territory — this is per-row supplementary
+// evidence, not information the review itself depends on).
 function TransformDetail({ evidence }) {
   const [open, setOpen] = useState(false);
   return (
@@ -71,75 +75,19 @@ function TransformDetail({ evidence }) {
 }
 
 // A distinct source value split into paired/unpaired matches, one row per
-// value-mapping "match" record — used both to render the tables and to build
-// the flat, document-ordered search index in MappingReviewPage.
-function splitMatches(mapping) {
-  const matches = mapping?.matches ?? [];
+// value-mapping "match" record, tagged with which field pair it belongs to —
+// used to build one combined table across both pairs instead of two separate
+// sections.
+function splitMatches(mapping, pairLabel) {
+  const matches = (mapping?.matches ?? []).map((m) => ({ ...m, pairLabel }));
   const paired = matches.filter((m) => m.target_value != null);
   const unpaired = matches.filter((m) => m.target_value == null);
   return { matches, paired, unpaired };
 }
 
-// Distinct-VALUE counts (not row counts) — a source value with two accepted
-// candidates (see value_pairing.pipeline) is one matched value, not two.
-function summarizeMapping(mapping) {
-  const matches = mapping?.matches ?? [];
-  const matched = new Set(
-    matches.filter((m) => m.target_value != null).map((m) => m.source_value)
-  ).size;
-  const unmatched = new Set(
-    matches.filter((m) => m.target_value == null).map((m) => m.source_value)
-  ).size;
-  return { matched, unmatched };
-}
-
-// Two small pie charts (Material↔PRDID, Plant↔LOCID): matched vs. unmatched.
-// Every slice is labeled with its literal count both on the wedge and in the
-// caption underneath — colour alone never carries the number.
-function MatchSummaryChart({ title, matched, unmatched }) {
-  const total = matched + unmatched;
-  const data = [
-    { name: "Matched", value: matched, color: "var(--match)" },
-    { name: "Unmatched", value: unmatched, color: "var(--missing)" },
-  ];
-
-  return (
-    <div className="mapping-review__chart">
-      <div className="mapping-review__chart-title">{title}</div>
-      {total === 0 ? (
-        <p className="wizard-field__help">No values yet.</p>
-      ) : (
-        <>
-          <div className="mapping-review__chart-figure">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={data}
-                  dataKey="value"
-                  nameKey="name"
-                  innerRadius={36}
-                  outerRadius={58}
-                  paddingAngle={2}
-                  label={({ value }) => value}
-                  labelLine={false}
-                >
-                  {data.map((d) => (
-                    <Cell key={d.name} fill={d.color} />
-                  ))}
-                </Pie>
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="mapping-review__chart-caption">
-            <span className="mapping-review__chart-swatch" style={{ background: "var(--match)" }} />
-            {matched} matched
-            <span className="mapping-review__chart-swatch" style={{ background: "var(--missing)" }} />
-            {unmatched} unmatched
-          </div>
-        </>
-      )}
-    </div>
-  );
+function pairLabelFor(mapping, fallback) {
+  if (!mapping) return fallback;
+  return `${mapping.source_field} → ${mapping.target_field}`;
 }
 
 // One search box covering both field-pairing sections at once — Excel/
@@ -194,7 +142,7 @@ function SearchBar({ query, onQueryChange, onFind, matchCount, activePos }) {
   );
 }
 
-function PairRow({ match, decision, busy, onDecision, rowState, rowRef }) {
+function PairedRow({ match, decision, busy, onDecision, rowState, rowRef }) {
   const reviewable = match.rule === "value_pairing.llm_verified" && match.library_id && !decision;
   // More than one verified candidate for this source value (see
   // value_pairing.pipeline — every candidate is accepted, never forced to a
@@ -208,13 +156,12 @@ function PairRow({ match, decision, busy, onDecision, rowState, rowRef }) {
         : undefined;
   return (
     <tr ref={rowRef} className={rowClass}>
-      <td>{match.source_value}</td>
-      <td>
+      <td className="mono">{match.pairLabel}</td>
+      <td className="mono">{match.source_value}</td>
+      <td className="mono">
         {match.target_value}
         {siblings.length > 0 && (
-          <p className="mapping-review__detail-text">
-            Also candidate for: {siblings.join(", ")}
-          </p>
+          <p className="mapping-review__detail-text">Also candidate for: {siblings.join(", ")}</p>
         )}
       </td>
       <td>
@@ -226,7 +173,7 @@ function PairRow({ match, decision, busy, onDecision, rowState, rowRef }) {
       <td>
         <TransformDetail evidence={match.evidence} />
       </td>
-      <td>
+      <td style={{ textAlign: "right" }}>
         {decision && (
           <span className="mapping-review__decision">
             {decision === "approved" ? "Approved" : "Rejected"}
@@ -257,20 +204,49 @@ function PairRow({ match, decision, busy, onDecision, rowState, rowRef }) {
   );
 }
 
-// One field pair's review section: paired values (with reviewable transform
-// detail) and unpaired values (with the reason a value has no target).
-// `paired`/`unpaired` are computed once by the parent (it needs them too, to
-// build the cross-section search index) rather than recomputed here.
-function FieldPairingSection({
-  sectionKey,
-  title,
-  mapping,
-  paired,
-  unpaired,
-  getRowState,
-  registerRowRef,
-  forceOpenGen,
-}) {
+// Real, data-derived classification (no fabricated categories): a value with
+// candidates was ambiguous (several equally-accepted matches, none chosen);
+// with none, nothing on the target side could be derived at all.
+function UnpairedRow({ match, rowState, rowRef }) {
+  const ambiguous = match.candidates?.length > 0;
+  const rowClass =
+    rowState === "active"
+      ? "mapping-review__row--active-match"
+      : rowState === "match"
+        ? "mapping-review__row--match"
+        : ambiguous
+          ? "mapping-review__ambiguous-row"
+          : undefined;
+  return (
+    <tr ref={rowRef} className={rowClass}>
+      <td className="mono">{match.pairLabel}</td>
+      <td className="mono">{match.source_value}</td>
+      <td>
+        <Badge variant={ambiguous ? "warning" : "error"}>{ambiguous ? "Ambiguous" : "No candidate"}</Badge>
+      </td>
+      <td>
+        {match.evidence}
+        {ambiguous && (
+          <ul className="mapping-review__candidates">
+            {match.candidates.map((c) => (
+              <li key={c}>Candidate: {c}</li>
+            ))}
+          </ul>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function MappingReviewPage() {
+  const { state } = useWizard();
+  const navigate = useNavigate();
+  const { valueMappings } = state.transformationSpec;
+
+  const backToMapping = () => navigate("/reconciliation/transformation-spec");
+
+  // ── Approve/reject decisions: lifted here (not per-section) so the
+  // "Awaiting approval" KPI reflects them live. ────────────────────────────
   const [decisions, setDecisions] = useState({}); // library_id -> "approved" | "rejected"
   const [busyId, setBusyId] = useState(null);
   const [actionError, setActionError] = useState(null);
@@ -288,167 +264,52 @@ function FieldPairingSection({
     }
   };
 
-  if (!mapping) {
-    return (
-      <section className="wizard-section">
-        <h3 className="wizard-section__title">{title}</h3>
-        <EmptyState title="No result for this field pair." />
-      </section>
-    );
-  }
-
-  const badge = (
-    <div className="contract-summary section-tier-strip">
-      <Badge variant="default">Paired: {paired.length}</Badge>
-      <Badge variant="default">Unpaired: {unpaired.length}</Badge>
-    </div>
-  );
-
-  return (
-    <CollapsibleSection
-      // Remounting with a fresh key when forceOpenGen bumps is how a search
-      // match forces this section open — CollapsibleSection only takes an
-      // uncontrolled `defaultOpen`, so a key change + defaultOpen=true is how
-      // the parent programmatically re-opens it (see MappingReviewPage).
-      key={`${sectionKey}-${forceOpenGen}`}
-      defaultOpen={forceOpenGen > 0}
-      title={`${title}: ${mapping.source_field} → ${mapping.target_field}`}
-      badge={badge}
-      className="mapping-review__section"
-    >
-      {actionError && <p className="wizard-field__help">{actionError}</p>}
-
-      <div className="surface-elevated mapping-editor__table-wrap">
-        <table className="table-elevated mapping-editor__table">
-          <thead>
-            <tr>
-              <th>Source Value</th>
-              <th>Target Value</th>
-              <th>Origin</th>
-              <th>Corroboration</th>
-              <th>Transform</th>
-              <th>Review</th>
-            </tr>
-          </thead>
-          <tbody>
-            {paired.map((m, i) => {
-              const id = `${sectionKey}-paired-${i}`;
-              return (
-                <PairRow
-                  key={id}
-                  match={m}
-                  decision={m.library_id ? decisions[m.library_id] : undefined}
-                  busy={busyId === m.library_id}
-                  onDecision={decide}
-                  rowState={getRowState(id)}
-                  rowRef={registerRowRef(id)}
-                />
-              );
-            })}
-            {paired.length === 0 && (
-              <tr>
-                <td colSpan={6} className="wizard-field__help">
-                  No values paired yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <h4 className="mapping-review__subtitle">Unpaired ({unpaired.length})</h4>
-      <div className="surface-elevated mapping-editor__table-wrap">
-        <table className="table-elevated mapping-editor__table">
-          <thead>
-            <tr>
-              <th>Source Value</th>
-              <th>Reason</th>
-            </tr>
-          </thead>
-          <tbody>
-            {unpaired.map((m, i) => {
-              const id = `${sectionKey}-unpaired-${i}`;
-              const rowState = getRowState(id);
-              const classes = [
-                m.candidates?.length ? "mapping-review__ambiguous-row" : null,
-                rowState === "active" ? "mapping-review__row--active-match" : null,
-                rowState === "match" ? "mapping-review__row--match" : null,
-              ]
-                .filter(Boolean)
-                .join(" ") || undefined;
-              return (
-                <tr key={id} ref={registerRowRef(id)} className={classes}>
-                  <td>{m.source_value}</td>
-                  <td>
-                    {m.evidence}
-                    {m.candidates?.length > 0 && (
-                      <ul className="mapping-review__candidates">
-                        {m.candidates.map((c) => (
-                          <li key={c}>Candidate: {c}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-            {unpaired.length === 0 && (
-              <tr>
-                <td colSpan={2} className="wizard-field__help">
-                  Every value paired.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </CollapsibleSection>
-  );
-}
-
-function MappingReviewPage() {
-  const { state } = useWizard();
-  const navigate = useNavigate();
-  const { valueMappings } = state.transformationSpec;
-
-  const backToMapping = () => navigate("/reconciliation/transformation-spec");
-
-  // ── Search across both sections at once (Material/PRDID/Plant/LOCID) ─────
-  // Hooks must run unconditionally, so this lives above the `!valueMappings`
-  // early return below even though it renders nothing until data exists.
+  // ── Combined rows across both field pairs — hooks must run unconditionally,
+  // so this lives above the `!valueMappings` early return below even though it
+  // renders nothing until data exists. ─────────────────────────────────────
+  const productLabel = pairLabelFor(valueMappings?.product, "Material pair");
+  const locationLabel = pairLabelFor(valueMappings?.location, "Plant pair");
   const productSplit = useMemo(
-    () => splitMatches(valueMappings?.product),
-    [valueMappings]
+    () => splitMatches(valueMappings?.product, productLabel),
+    [valueMappings, productLabel]
   );
   const locationSplit = useMemo(
-    () => splitMatches(valueMappings?.location),
-    [valueMappings]
+    () => splitMatches(valueMappings?.location, locationLabel),
+    [valueMappings, locationLabel]
+  );
+  const allPaired = useMemo(
+    () => [...productSplit.paired, ...locationSplit.paired],
+    [productSplit, locationSplit]
+  );
+  const allUnpaired = useMemo(
+    () => [...productSplit.unpaired, ...locationSplit.unpaired],
+    [productSplit, locationSplit]
   );
 
-  // One flat, document-ordered (product section, then location section; paired
-  // before unpaired within each) list of every searchable row — this order is
-  // what "first match" / "next match" wraps over.
+  const kpis = useMemo(() => {
+    const total = allPaired.length + allUnpaired.length;
+    const awaiting = [...productSplit.matches, ...locationSplit.matches].filter(
+      (m) => m.rule === "value_pairing.llm_verified" && m.library_id && !decisions[m.library_id]
+    ).length;
+    return { total, paired: allPaired.length, unpaired: allUnpaired.length, awaiting };
+  }, [allPaired, allUnpaired, productSplit.matches, locationSplit.matches, decisions]);
+
+  // One flat, document-ordered (paired before unpaired) list of every
+  // searchable row — this order is what "first match" / "next match" wraps
+  // over, and what the jump-to-row scroll targets.
   const flatRows = useMemo(() => {
     const rows = [];
-    const push = (sectionKey, type, list) => {
-      list.forEach((m, i) => rows.push({ id: `${sectionKey}-${type}-${i}`, sectionKey, match: m }));
-    };
-    push("product", "paired", productSplit.paired);
-    push("product", "unpaired", productSplit.unpaired);
-    push("location", "paired", locationSplit.paired);
-    push("location", "unpaired", locationSplit.unpaired);
+    allPaired.forEach((m, i) => rows.push({ id: `paired-${i}`, match: m }));
+    allUnpaired.forEach((m, i) => rows.push({ id: `unpaired-${i}`, match: m }));
     return rows;
-  }, [productSplit, locationSplit]);
+  }, [allPaired, allUnpaired]);
 
   const [query, setQuery] = useState("");
   const [activePos, setActivePos] = useState(-1);
-  const [forceOpen, setForceOpen] = useState({ product: 0, location: 0 });
   const rowNodes = useRef(new Map()); // row id -> <tr> DOM node
 
   const normalizedQuery = query.trim().toLowerCase();
 
-  // Checks all four fields (Material, PRDID, Plant, LOCID) in one query —
-  // whichever pair of source/target names a section actually uses.
   const matches = useMemo(() => {
     if (!normalizedQuery) return [];
     return flatRows.filter(({ match }) => {
@@ -459,9 +320,7 @@ function MappingReviewPage() {
   }, [flatRows, normalizedQuery]);
 
   // A changed query invalidates the current position — the next Enter/click
-  // jumps to the FIRST match of the new query, per Find semantics. Reset
-  // happens right in the change handler (not a `useEffect`) so it's just a
-  // synchronous part of handling the keystroke, not a derived side effect.
+  // jumps to the FIRST match of the new query, per Find semantics.
   const handleQueryChange = useCallback((value) => {
     setQuery(value);
     setActivePos(-1);
@@ -491,36 +350,17 @@ function MappingReviewPage() {
     []
   );
 
-  // Tracks whether we've already forced a section open this session — a plain
-  // ref, not state, so updating it never itself triggers a render. Without
-  // this, every "next match" press within an already-open section would bump
-  // `forceOpen` and remount the whole CollapsibleSection (see
-  // FieldPairingSection's key trick) for no visible benefit, flickering the
-  // table. We only need the forced remount the FIRST time a match lands in a
-  // given section.
-  const openedSections = useRef({ product: false, location: false });
-
-  const jumpTo = useCallback(
-    (pos) => {
-      const target = matches[pos];
-      if (!target) return;
-      if (!openedSections.current[target.sectionKey]) {
-        openedSections.current[target.sectionKey] = true;
-        setForceOpen((prev) => ({ ...prev, [target.sectionKey]: prev[target.sectionKey] + 1 }));
-      }
-      requestAnimationFrame(() => {
-        rowNodes.current.get(target.id)?.scrollIntoView({ behavior: "smooth", block: "center" });
-      });
-    },
-    [matches]
-  );
-
   const handleFind = useCallback(() => {
     if (!matches.length) return;
     const next = activePos < 0 ? 0 : (activePos + 1) % matches.length;
     setActivePos(next);
-    jumpTo(next);
-  }, [matches, activePos, jumpTo]);
+    const target = matches[next];
+    if (target) {
+      requestAnimationFrame(() => {
+        rowNodes.current.get(target.id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  }, [matches, activePos]);
 
   if (!valueMappings) {
     return (
@@ -545,9 +385,6 @@ function MappingReviewPage() {
     );
   }
 
-  const productSummary = summarizeMapping(valueMappings.product);
-  const locationSummary = summarizeMapping(valueMappings.location);
-
   return (
     <section className="wizard-step wizard-step--canvas">
       <header className="wizard-step__header">
@@ -559,18 +396,44 @@ function MappingReviewPage() {
         </p>
       </header>
 
-      <div className="wizard-step__body">
-        <div className="mapping-review__summary">
-          <MatchSummaryChart
-            title="Material ↔ PRDID"
-            matched={productSummary.matched}
-            unmatched={productSummary.unmatched}
-          />
-          <MatchSummaryChart
-            title="Plant ↔ LOCID"
-            matched={locationSummary.matched}
-            unmatched={locationSummary.unmatched}
-          />
+      <div className="wizard-step__body ct-col">
+        <div className="ct-kpi-grid">
+          <div className="ct-kpi-card">
+            <p className="ct-kpi-card__label">Distinct values</p>
+            <div className="ct-kpi-card__row">
+              <span className="ct-kpi-card__value">{kpis.total}</span>
+              <span className="ct-kpi-card__sub">in scope</span>
+            </div>
+          </div>
+          <div className="ct-kpi-card">
+            <p className="ct-kpi-card__label">Paired</p>
+            <div className="ct-kpi-card__row">
+              <span className="ct-kpi-card__value" style={{ color: "var(--match)" }}>
+                {kpis.paired}
+              </span>
+              <span className="ct-kpi-card__sub">
+                {kpis.total ? `${Math.round((kpis.paired / kpis.total) * 100)}%` : "—"}
+              </span>
+            </div>
+          </div>
+          <div className="ct-kpi-card">
+            <p className="ct-kpi-card__label">Unpaired</p>
+            <div className="ct-kpi-card__row">
+              <span className="ct-kpi-card__value" style={{ color: "var(--missing)" }}>
+                {kpis.unpaired}
+              </span>
+              <span className="ct-kpi-card__sub">become mismatches</span>
+            </div>
+          </div>
+          <div className="ct-kpi-card">
+            <p className="ct-kpi-card__label">Awaiting approval</p>
+            <div className="ct-kpi-card__row">
+              <span className="ct-kpi-card__value" style={{ color: "var(--bcone-orange)" }}>
+                {kpis.awaiting}
+              </span>
+              <span className="ct-kpi-card__sub">for future reuse</span>
+            </div>
+          </div>
         </div>
 
         <SearchBar
@@ -581,26 +444,87 @@ function MappingReviewPage() {
           activePos={activePos}
         />
 
-        <FieldPairingSection
-          sectionKey="product"
-          title="Material"
-          mapping={valueMappings.product}
-          paired={productSplit.paired}
-          unpaired={productSplit.unpaired}
-          getRowState={getRowState}
-          registerRowRef={registerRowRef}
-          forceOpenGen={forceOpen.product}
-        />
-        <FieldPairingSection
-          sectionKey="location"
-          title="Plant"
-          mapping={valueMappings.location}
-          paired={locationSplit.paired}
-          unpaired={locationSplit.unpaired}
-          getRowState={getRowState}
-          registerRowRef={registerRowRef}
-          forceOpenGen={forceOpen.location}
-        />
+        {actionError && <p className="wizard-field__help">{actionError}</p>}
+
+        <section className="ct-card">
+          <div className="ct-card__head">
+            <h3 className="ct-card__title">Paired values</h3>
+          </div>
+          <div className="ct-table-wrap">
+            <table className="ct-table">
+              <thead>
+                <tr>
+                  <th>Field pair</th>
+                  <th>Source value</th>
+                  <th>Target value</th>
+                  <th>Origin</th>
+                  <th>Dates</th>
+                  <th>Transform</th>
+                  <th style={{ textAlign: "right" }}>Reuse</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allPaired.map((m, i) => {
+                  const id = `paired-${i}`;
+                  return (
+                    <PairedRow
+                      key={id}
+                      match={m}
+                      decision={m.library_id ? decisions[m.library_id] : undefined}
+                      busy={busyId === m.library_id}
+                      onDecision={decide}
+                      rowState={getRowState(id)}
+                      rowRef={registerRowRef(id)}
+                    />
+                  );
+                })}
+                {allPaired.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="wizard-field__help">
+                      No values paired yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="ct-card">
+          <div className="ct-card__head">
+            <h3 className="ct-card__title">Unpaired values</h3>
+            {allUnpaired.length > 0 && <Badge variant="error">{allUnpaired.length}</Badge>}
+            <span className="ct-card__spacer" />
+            <span className="ct-card__hint">Each unpaired value becomes a reported mismatch</span>
+          </div>
+          <div className="ct-table-wrap">
+            <table className="ct-table">
+              <thead>
+                <tr>
+                  <th>Field pair</th>
+                  <th>Source value</th>
+                  <th>Reason</th>
+                  <th>What it means</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allUnpaired.map((m, i) => {
+                  const id = `unpaired-${i}`;
+                  return (
+                    <UnpairedRow key={id} match={m} rowState={getRowState(id)} rowRef={registerRowRef(id)} />
+                  );
+                })}
+                {allUnpaired.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="wizard-field__help">
+                      Every value paired.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
 
       <footer className="wizard-step__footer">

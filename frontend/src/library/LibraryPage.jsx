@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Badge } from "@bristlecone/canopy";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Button, Badge, Alert } from "@bristlecone/canopy";
 import { FiTrash2, FiRefreshCw, FiAlertTriangle, FiCheck, FiX } from "react-icons/fi";
 import api from "../services/api";
 import styles from "./library.module.css";
@@ -30,7 +30,7 @@ function isKeyRole(role) {
 
 // Reconciled field (column→column) mappings — reused automatically when the
 // same source + target column set reappears.
-function AttributeMappingSection() {
+function AttributeMappingSection({ onCount }) {
   const [all, setAll] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -50,9 +50,16 @@ function AttributeMappingSection() {
     }
   }, []);
 
+  const didInit = useRef(false);
   useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
     load();
   }, [load]);
+
+  useEffect(() => {
+    onCount?.(all.length);
+  }, [all, onCount]);
 
   // Filter options come from the full snapshot so narrowing one filter never
   // hides the others' choices.
@@ -102,59 +109,59 @@ function AttributeMappingSection() {
   };
 
   return (
-    <div>
-      <div className={styles.header}>
-        <div>
-          <h1 className={styles.title}>Mapping Library</h1>
-          <p className={styles.subtitle}>
-            Reconciled field (column→column) mappings, reused automatically when the same
-            source + target column set reappears. Field mapping only — value mapping lives in the
-            Value Pair Library below.
-          </p>
-        </div>
-        <div className={styles.headerActions}>
-          <Button type="button" variant="ghost" onClick={load} disabled={loading}>
-            <FiRefreshCw /> Refresh
-          </Button>
-          <Button type="button" variant="destructive" onClick={flush} disabled={loading || !all.length}>
-            <FiAlertTriangle /> Flush library
-          </Button>
-        </div>
+    <section className="ct-card">
+      <div className="ct-card__head">
+        <h3 className="ct-card__title">Field mappings</h3>
+        <span className="ct-card__spacer" />
+        <Button type="button" variant="outline" size="sm" onClick={load} disabled={loading}>
+          <FiRefreshCw /> Refresh
+        </Button>
+        <Button type="button" variant="destructive" size="sm" onClick={flush} disabled={loading || !all.length}>
+          <FiAlertTriangle /> Flush library
+        </Button>
       </div>
 
-      <div className={styles.filters}>
-        {["source_connector", "target_connector", "comparison_type"].map((key) => (
-          <label key={key} className={styles.filter}>
-            <span className={styles.filterLabel}>{key.replace(/_/g, " ")}</span>
-            <select
-              className={styles.select}
-              value={filters[key]}
-              onChange={(e) => setFilters((f) => ({ ...f, [key]: e.target.value }))}
-            >
-              <option value="">All</option>
-              {options[key].map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </label>
-        ))}
-      </div>
-
-      {error && <p className={styles.error}>{error}</p>}
-
-      {loading && !all.length ? (
-        <p className={styles.empty}>Loading…</p>
-      ) : !rows.length ? (
-        <p className={styles.empty}>
-          {all.length
-            ? "No mappings match the current filters."
-            : "The library is empty. Complete a reconciliation run to store its field mapping here."}
+      <div className="ct-card__body">
+        <p className="wizard-field__help" style={{ marginTop: 0 }}>
+          Reconciled field (column→column) mappings, reused automatically when the same source +
+          target column set reappears. Field mapping only — value mapping lives in the Value Pairs
+          tab.
         </p>
-      ) : (
-        <div className="surface-elevated">
-          <table className={`table-elevated ${styles.table}`}>
+
+        <div className={styles.filters}>
+          {["source_connector", "target_connector", "comparison_type"].map((key) => (
+            <label key={key} className={styles.filter}>
+              <span className={styles.filterLabel}>{key.replace(/_/g, " ")}</span>
+              <select
+                className={styles.select}
+                value={filters[key]}
+                onChange={(e) => setFilters((f) => ({ ...f, [key]: e.target.value }))}
+              >
+                <option value="">All</option>
+                {options[key].map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+
+        {error && <Alert variant="error">{error}</Alert>}
+        {loading && !all.length && <p className={styles.empty}>Loading…</p>}
+        {!loading && !rows.length && (
+          <p className={styles.empty}>
+            {all.length
+              ? "No mappings match the current filters."
+              : "The library is empty. Complete a reconciliation run to store its field mapping here."}
+          </p>
+        )}
+      </div>
+
+      {rows.length > 0 && (
+        <div className="ct-table-wrap">
+          <table className="ct-table">
             <thead>
               <tr>
                 <th>Source → Target</th>
@@ -216,7 +223,7 @@ function AttributeMappingSection() {
           </table>
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -224,7 +231,7 @@ function AttributeMappingSection() {
 // library-first lookup (recon_engine.value_pairing.pipeline); PENDING rows
 // were proposed by a run's LLM pairing step and already deterministically
 // verified — approving/rejecting here only decides reuse by FUTURE runs.
-function ValuePairsSection() {
+function ValuePairsSection({ onCount }) {
   const [all, setAll] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -244,9 +251,16 @@ function ValuePairsSection() {
     }
   }, []);
 
+  const didInit = useRef(false);
   useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
     load();
   }, [load]);
+
+  useEffect(() => {
+    onCount?.(all.length);
+  }, [all, onCount]);
 
   const options = useMemo(() => {
     const uniq = (key) => Array.from(new Set(all.map((p) => p[key]).filter(Boolean))).sort();
@@ -306,59 +320,59 @@ function ValuePairsSection() {
   };
 
   return (
-    <div className={styles.section}>
-      <div className={styles.header}>
-        <div>
-          <h2 className={styles.sectionTitle}>Value Pair Library</h2>
-          <p className={styles.subtitle}>
-            LLM-proposed, deterministically-verified source→target value pairs (e.g. Material →
-            PRDID). Approved pairs are reused with no LLM call on future runs; pending pairs still
-            applied to the run that proposed them, but need approval here to be reused.
-          </p>
-        </div>
-        <div className={styles.headerActions}>
-          <Button type="button" variant="ghost" onClick={load} disabled={loading}>
-            <FiRefreshCw /> Refresh
-          </Button>
-          <Button type="button" variant="destructive" onClick={flush} disabled={loading || !all.length}>
-            <FiAlertTriangle /> Flush library
-          </Button>
-        </div>
+    <section className="ct-card">
+      <div className="ct-card__head">
+        <h3 className="ct-card__title">Value pairs</h3>
+        <span className="ct-card__spacer" />
+        <Button type="button" variant="outline" size="sm" onClick={load} disabled={loading}>
+          <FiRefreshCw /> Refresh
+        </Button>
+        <Button type="button" variant="destructive" size="sm" onClick={flush} disabled={loading || !all.length}>
+          <FiAlertTriangle /> Flush library
+        </Button>
       </div>
 
-      <div className={styles.filters}>
-        {["source_connector", "target_connector", "status"].map((key) => (
-          <label key={key} className={styles.filter}>
-            <span className={styles.filterLabel}>{key.replace(/_/g, " ")}</span>
-            <select
-              className={styles.select}
-              value={filters[key]}
-              onChange={(e) => setFilters((f) => ({ ...f, [key]: e.target.value }))}
-            >
-              <option value="">All</option>
-              {options[key].map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </label>
-        ))}
-      </div>
-
-      {error && <p className={styles.error}>{error}</p>}
-
-      {loading && !all.length ? (
-        <p className={styles.empty}>Loading…</p>
-      ) : !rows.length ? (
-        <p className={styles.empty}>
-          {all.length
-            ? "No value pairs match the current filters."
-            : "The value-pair library is empty. Run Deterministic Mapping to propose pairs here."}
+      <div className="ct-card__body">
+        <p className="wizard-field__help" style={{ marginTop: 0 }}>
+          LLM-proposed, deterministically-verified source→target value pairs (e.g. Material → PRDID).
+          Approved pairs are reused with no LLM call on future runs; pending pairs are still applied
+          to the run that proposed them, but need approval here to be reused.
         </p>
-      ) : (
-        <div className="surface-elevated">
-          <table className={`table-elevated ${styles.table}`}>
+
+        <div className={styles.filters}>
+          {["source_connector", "target_connector", "status"].map((key) => (
+            <label key={key} className={styles.filter}>
+              <span className={styles.filterLabel}>{key.replace(/_/g, " ")}</span>
+              <select
+                className={styles.select}
+                value={filters[key]}
+                onChange={(e) => setFilters((f) => ({ ...f, [key]: e.target.value }))}
+              >
+                <option value="">All</option>
+                {options[key].map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+
+        {error && <Alert variant="error">{error}</Alert>}
+        {loading && !all.length && <p className={styles.empty}>Loading…</p>}
+        {!loading && !rows.length && (
+          <p className={styles.empty}>
+            {all.length
+              ? "No value pairs match the current filters."
+              : "The value-pair library is empty. Run Deterministic Mapping to propose pairs here."}
+          </p>
+        )}
+      </div>
+
+      {rows.length > 0 && (
+        <div className="ct-table-wrap">
+          <table className="ct-table">
             <thead>
               <tr>
                 <th>Source → Target</th>
@@ -445,15 +459,43 @@ function ValuePairsSection() {
           </table>
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
 export default function LibraryPage() {
+  const [tab, setTab] = useState("fields");
+  const [fieldCount, setFieldCount] = useState(0);
+  const [valueCount, setValueCount] = useState(0);
+
   return (
     <div className={styles.page}>
-      <AttributeMappingSection />
-      <ValuePairsSection />
+      <div className={styles.header}>
+        <div>
+          <h1 className={styles.title}>Mapping Library</h1>
+          <p className={styles.subtitle}>
+            Stored field mappings and value pairs, reused automatically when the same connector
+            pair and dataset type reappear.
+          </p>
+        </div>
+      </div>
+
+      <div className="ct-tabs">
+        <button type="button" className={tab === "fields" ? "is-active" : ""} onClick={() => setTab("fields")}>
+          Field mappings<span className="ct-tabs button__count">{fieldCount}</span>
+        </button>
+        <button type="button" className={tab === "values" ? "is-active" : ""} onClick={() => setTab("values")}>
+          Value pairs<span className="ct-tabs button__count">{valueCount}</span>
+        </button>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        {tab === "fields" ? (
+          <AttributeMappingSection onCount={setFieldCount} />
+        ) : (
+          <ValuePairsSection onCount={setValueCount} />
+        )}
+      </div>
     </div>
   );
 }

@@ -87,44 +87,45 @@ function MappingEditor({
   const removeRow = (index) => commit(display.filter((_, i) => i !== index));
 
   return (
-    <div className="mapping-editor">
-      <div className="mapping-editor__head">
-        <div>
-          <p className="wizard-field__help">
-            Confirm the source-to-target field mapping. Adjust the target column or role for any row,
-            or add a row for a missing pairing. "Business Field" is auto-detected from the column names
-            for Deterministic Mapping — retag it if a required field wasn't recognized.
-          </p>
-        </div>
-        <div className="mapping-editor__head-actions">
-          <Button type="button" variant="ghost" onClick={addRow} disabled={loading}>
-            + Add mapping row
-          </Button>
-          <Button type="button" variant="outline" onClick={onRegenerate} disabled={loading}>
-            {loading ? "Mapping…" : "Regenerate mapping"}
-          </Button>
-        </div>
+    <section className="ct-card">
+      <div className="ct-card__head">
+        <h3 className="ct-card__title">Field mapping</h3>
+        <span className="ct-card__spacer" />
+        <Button type="button" variant="outline" size="sm" onClick={addRow} disabled={loading}>
+          + Add row
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={onRegenerate} disabled={loading}>
+          {loading ? "Mapping…" : "Regenerate"}
+        </Button>
       </div>
 
-      {error && <Alert variant="error" style={{ marginTop: 8 }}>{error}</Alert>}
-      {notice && !error && <Alert variant="info" style={{ marginTop: 8 }}>{notice}</Alert>}
-      {loading && !display.length && (
-        <div style={{ display: "grid", gap: 8, marginTop: 8 }} aria-label="Inferring column mapping…">
-          <Skeleton style={{ height: 32 }} />
-          <Skeleton style={{ height: 32 }} />
-          <Skeleton style={{ height: 32 }} />
-        </div>
-      )}
-      {!loading && !display.length && !error && (
-        <EmptyState
-          title="No field mapping yet"
-          description="No field mapping could be generated. Regenerate once the data is available, or use “Add mapping row” to build the field mapping manually."
-        />
-      )}
+      <div className="ct-card__body">
+        <p className="wizard-field__help" style={{ marginTop: 0 }}>
+          Confirm the source-to-target field mapping. Adjust the target column or role for any row,
+          or add a row for a missing pairing. "Business Field" is auto-detected from the column names
+          for Deterministic Mapping — retag it if a required field wasn't recognized.
+        </p>
+
+        {error && <Alert variant="error">{error}</Alert>}
+        {notice && !error && <Alert variant="info">{notice}</Alert>}
+        {loading && !display.length && (
+          <div style={{ display: "grid", gap: 8 }} aria-label="Inferring column mapping…">
+            <Skeleton style={{ height: 32 }} />
+            <Skeleton style={{ height: 32 }} />
+            <Skeleton style={{ height: 32 }} />
+          </div>
+        )}
+        {!loading && !display.length && !error && (
+          <EmptyState
+            title="No field mapping yet"
+            description="No field mapping could be generated. Regenerate once the data is available, or use “Add row” to build the field mapping manually."
+          />
+        )}
+      </div>
 
       {display.length > 0 && (
-        <div className="surface-elevated mapping-editor__table-wrap">
-          <table className="table-elevated mapping-editor__table">
+        <div className="ct-table-wrap">
+          <table className="ct-table">
             <thead>
               <tr>
                 <th>Source Field</th>
@@ -210,7 +211,7 @@ function MappingEditor({
           </table>
         </div>
       )}
-    </div>
+    </section>
   );
 }
 

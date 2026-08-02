@@ -1,9 +1,8 @@
 /* ============================================================================
    Reconciliation wizard styling. Reads entirely through the design tokens
    defined in index.css so light/dark themes and the single accent/status
-   palette stay consistent with the rest of the app. The persistent step
-   navigator now lives in the app sidebar (WizardSidebarNav / .wsb-* below);
-   the old in-page .wizard-stepper rail has been removed.
+   palette stay consistent with the rest of the app. The step navigator is
+   the horizontal .ct-stepbar rendered in StepShell, above each step's cards.
 
    Colour discipline:
      - brand / interactive / selection  -> --accent family
@@ -73,6 +72,79 @@
 
 .wizard-step__body {
   margin-top: 24px;
+}
+
+/* ── Horizontal step bar — replaces the old sidebar step list; sits above
+   the cards, directly under the page header, matching the Enterprise UI
+   mock's step-progress pattern. ── */
+.ct-stepbar {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  margin-top: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.ct-stepbar__step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 16px 0 0;
+  margin-right: 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ct-stepbar__step.is-active {
+  border-bottom-color: var(--accent);
+}
+.ct-stepbar__step:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.ct-stepbar__mk {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  font-size: 9.5px;
+  font-weight: 900;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+}
+.ct-stepbar__step.is-done .ct-stepbar__mk {
+  border-color: var(--match);
+  background: var(--match);
+  color: #fff;
+}
+.ct-stepbar__step.is-active .ct-stepbar__mk {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.ct-stepbar__label {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.ct-stepbar__step.is-active .ct-stepbar__label {
+  font-weight: 700;
+  color: var(--accent);
+}
+.ct-stepbar__step.is-done .ct-stepbar__label {
+  font-weight: 700;
+  color: var(--ink);
+}
+.ct-stepbar__detail {
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .wizard-step__footer {
@@ -1385,295 +1457,6 @@
 .curtain__tag--left { left: 8px; }
 .curtain__tag--right { right: 8px; }
 
-/* ============================================================================
-   Wizard step navigator — lives in the persistent app sidebar, nested under
-   the "Reconciliation Engine" nav item (WizardSidebarNav, rendered inside
-   .contextNav of AppLayout). Global
-   (non-module) classes so the component can reference them by string. Reads
-   through tokens; supports the expanded list and the collapsed icon rail.
-   ============================================================================ */
-.wsb {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 10px 4px;
-}
-.wsb--collapsed {
-  padding: 8px 6px 4px;
-  align-items: stretch;
-}
-
-/* Section labels ("Steps", "Context", "Jump to") */
-.wsb__label {
-  margin: 10px 6px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  /* Reconciliation Engine substep region — themed to the sidebar's sub color. */
-  color: var(--sb-sub, #ffffff);
-  opacity: 1;
-}
-.wsb__label:first-child { margin-top: 2px; }
-
-/* ---- Step list ---- */
-.wsb__steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.wsb-step {
-  position: relative;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--sb-sub, #bbb9ab);
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-}
-/* Basalt-black glow/highlight; substep text stays visible. */
-.wsb-step:hover:not(:disabled) {
-  background: var(--sb-hover-bg, rgba(30, 30, 30, 0.32));
-  color: var(--sb-sub, #bbb9ab);
-  box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
-}
-.wsb-step:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(237, 231, 225, 0.35);
-}
-.wsb-step:disabled {
-  cursor: not-allowed;
-  color: var(--sb-sub, #bbb9ab);
-  opacity: 0.55;
-}
-
-/* Step marker (number / check) */
-.wsb-step__mk {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex: none;
-  border-radius: var(--radius-pill);
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(187, 185, 171, 0.14);
-  color: var(--sb-sub, #bbb9ab);
-  border: 1px solid rgba(187, 185, 171, 0.3);
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
-}
-
-.wsb-step__label {
-  flex: 1 1 auto;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.wsb-step__glyph {
-  width: 15px;
-  height: 15px;
-  flex: none;
-  color: var(--sb-sub, #ffffff);
-  opacity: 1;
-}
-
-/* Completed step: green marker + check */
-.wsb-step.is-complete .wsb-step__mk {
-  background: var(--match-bg);
-  color: var(--match);
-  border-color: var(--match-bd);
-}
-
-/* Locked step: de-emphasised */
-.wsb-step.is-locked .wsb-step__label { color: var(--sb-sub, #bbb9ab); }
-.wsb-step.is-locked .wsb-step__mk { opacity: 0.6; }
-
-/* Active step: basalt highlight + a cream bar/marker so the current substep
-   reads brighter than the resting #BBB9AB items. */
-.wsb-step.is-active {
-  background: var(--sb-active-bg, rgba(30, 30, 30, 0.46));
-  color: #ffffff;
-  font-weight: 700;
-  box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
-}
-.wsb-step.is-active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 3px;
-  border-radius: var(--radius-pill);
-  background: #ffffff;
-}
-.wsb-step.is-active .wsb-step__mk {
-  background: #ffffff;
-  color: var(--sb-bg, #143d4a);
-  border-color: transparent;
-}
-.wsb-step.is-active .wsb-step__glyph { color: #ffffff; opacity: 1; }
-
-/* ---- Context summary (expanded only) ---- */
-.wsb-ctx {
-  margin: 2px 0 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.wsb-ctx__row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 0 6px;
-}
-.wsb-ctx__k {
-  flex: 0 0 52px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--sb-sub, #ffffff);
-  opacity: 1;
-}
-.wsb-ctx__v {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--sb-sub, #bbb9ab);
-  overflow-wrap: anywhere;
-}
-.wsb-ctx__mode {
-  font-weight: 500;
-  color: var(--sb-sub, #bbb9ab);
-  opacity: 0.75;
-}
-.wsb-ctx__mono {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--sb-sub, #bbb9ab);
-  opacity: 0.75;
-}
-
-/* ---- Quick links ---- */
-.wsb__rail-div {
-  height: 1px;
-  margin: 8px 6px;
-  background: rgba(187, 185, 171, 0.24);
-}
-.wsb__links {
-  list-style: none;
-  margin: 0 0 4px;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.wsb-link {
-  position: relative;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--sb-sub, #bbb9ab);
-  font-size: 12.5px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-}
-.wsb-link:hover {
-  background: var(--sb-hover-bg, rgba(30, 30, 30, 0.32));
-  color: #ffffff;
-  box-shadow: var(--sb-glow, 0 2px 12px rgba(30, 30, 30, 0.42));
-}
-.wsb-link:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(237, 231, 225, 0.35);
-}
-.wsb-link__ic {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  color: var(--sb-sub, #bbb9ab);
-}
-.wsb-link:hover .wsb-link__ic { color: #ffffff; }
-.wsb-link__label {
-  flex: 1 1 auto;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ============================================================================
-   Collapsed rail: icon-only, centered, labels hidden, tooltips on hover.
-   ============================================================================ */
-.wsb--collapsed .wsb__label,
-.wsb--collapsed .wsb-step__label,
-.wsb--collapsed .wsb-step__glyph,
-.wsb--collapsed .wsb-link__label {
-  display: none;
-}
-.wsb--collapsed .wsb-step,
-.wsb--collapsed .wsb-link {
-  justify-content: center;
-  padding: 8px 0;
-  gap: 0;
-}
-.wsb--collapsed .wsb-step.is-active::before { left: -6px; }
-
-/* Tooltip for the collapsed rail (mirrors the app-nav tooltip treatment). */
-.wsb--collapsed .wsb-step::after,
-.wsb--collapsed .wsb-link::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  left: calc(100% + 12px);
-  top: 50%;
-  transform: translateY(-50%) translateX(-4px);
-  background: var(--sb-hover, #1e1e1e);
-  color: var(--sb-main, #ede7e1);
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  box-shadow: var(--shadow-2);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
-  z-index: 60;
-}
-.wsb--collapsed .wsb-step:hover::after,
-.wsb--collapsed .wsb-step:focus-visible::after,
-.wsb--collapsed .wsb-link:hover::after,
-.wsb--collapsed .wsb-link:focus-visible::after {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(-50%) translateX(0);
-}
-
 /* ── Mapping Sheet Upload (Step 1) — the primary action on this step ─────
    Progressive disclosure: upload card -> compact file chip + 5-line summary
    -> two collapsed accordions (Detection Details, Additional Instructions —
@@ -2024,6 +1807,355 @@
   background: var(--surface-2, rgba(0, 0, 0, 0.03));
   border-radius: var(--radius-md);
   padding: 6px 10px;
+}
+
+/* ── Step 1 (Dataset type) — Enterprise UI layout ─────────────────────────
+   Two-column grid (mapping sheet + pre-flight left, run configuration
+   right), compact card headers and tables. Reads entirely through the same
+   tokens as the rest of the wizard, including --bcone-* which already match
+   this design's palette 1:1. ────────────────────────────────────────────── */
+.ct-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .ct-grid { grid-template-columns: 1fr; }
+}
+
+.ct-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.ct-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.ct-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ct-card__title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.ct-card__spacer {
+  flex: 1 1 auto;
+}
+
+.ct-card__hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ct-card__body {
+  padding: 14px;
+}
+
+.ct-card__body--flush {
+  padding: 4px 0;
+}
+
+.ct-card__body--stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ct-mapping-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ct-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.ct-file-row__icon {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: var(--accent);
+}
+.ct-file-row__name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ct-file-row__meta {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Horizontal-only overflow — never a vertical scroll box. Preview/table data
+   here is already row-capped by the backend, so there's nothing to clip. */
+.ct-table-wrap {
+  overflow-x: auto;
+}
+
+.ct-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.ct-table th {
+  text-align: left;
+  padding: 6px 12px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ct-table td {
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--border);
+}
+.ct-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Pre-flight checks: real-signal checklist rows (no timings) ── */
+.ct-preflight-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.ct-preflight-row:last-child {
+  border-bottom: none;
+}
+.ct-preflight-row__mk {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex: none;
+}
+.ct-preflight-row__icon.is-pass { color: var(--match); }
+.ct-preflight-row__icon.is-warn { color: var(--medium); }
+.ct-preflight-row__icon.is-pending { color: var(--muted); fill: var(--muted); }
+.ct-preflight-row__name {
+  flex: 0 0 auto;
+  min-width: 160px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.ct-preflight-row__detail {
+  flex: 1 1 auto;
+  color: var(--muted);
+}
+
+/* ── Run mode: segmented Manual/Automatic control ── */
+.ct-runmode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ct-runmode-toggle {
+  display: flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.ct-runmode-toggle button {
+  flex: 1;
+  height: 34px;
+  border: none;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ct-runmode-toggle button + button {
+  border-left: 1px solid var(--border-strong);
+}
+.ct-runmode-toggle button.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.ct-runmode-toggle button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ── KPI strip (Step 4 Mapping, Deterministic flow) ── */
+.ct-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+.ct-kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  padding: 11px 14px;
+}
+.ct-kpi-card__label {
+  margin: 0 0 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ct-kpi-card__row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.ct-kpi-card__value {
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ct-kpi-card__sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ── Datasets-in-scope card (Step 4 right column) ── */
+.ct-scope-side {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.ct-scope-side:last-child {
+  border-bottom: none;
+}
+.ct-scope-side__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.ct-scope-side__role {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ct-scope-side__name {
+  margin: 0 0 3px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.ct-scope-side__detail {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ── Value pairing progress bar (Step 4 right column) ── */
+.ct-pairing-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+/* ── Segmented outcome tabs (Results page) ── */
+.ct-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.ct-tabs button {
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+}
+.ct-tabs button.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+.ct-tabs button__count {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* ── Results KPI band (5-up, hairline dividers, proportion bar) ── */
+.ct-kpi-band {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+.ct-kpi-band__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+.ct-kpi-band__cell {
+  padding: 13px 16px;
+  border-right: 1px solid var(--border);
+}
+.ct-kpi-band__cell:last-child {
+  border-right: none;
+}
+.ct-kpi-band__value {
+  font-size: 26px;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ct-kpi-band__note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.ct-kpi-band__bar {
+  display: flex;
+  height: 5px;
+  border-top: 1px solid var(--border);
 }
 
 /* ── Mapping Card (Step 4) ───────────────────────────────────────────────── */

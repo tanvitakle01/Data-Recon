@@ -20,7 +20,32 @@ import RecipeEditor from "../components/RecipeEditor";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
 import ShadowPreviewPanel from "../components/ShadowPreviewPanel";
 import { serializeOperations } from "../lib/recipeModel";
-import { Button, Alert } from "@bristlecone/canopy";
+import { Button, Alert, Badge } from "@bristlecone/canopy";
+
+// Distinct-VALUE summary of the AI-mapping (value-pairing) run, across both
+// resolved sides (product/location) — mirrors MappingReviewPage's own
+// summarizeMapping/splitMatches so the two screens never disagree. A source
+// value with two accepted candidates is one matched value, not two; "review"
+// counts library-reusable proposals that haven't been approved/rejected yet
+// (that decision only lives inside Mapping Review's own session state, so
+// from here everything with a library_id is still "awaiting").
+function summarizePairing(valueMappings) {
+  if (!valueMappings) return null;
+  const sides = [valueMappings.product, valueMappings.location].filter(Boolean);
+  const matchedValues = new Set();
+  const unmatchedValues = new Set();
+  const reviewIds = new Set();
+  for (const side of sides) {
+    for (const m of side?.matches ?? []) {
+      if (m.target_value != null) matchedValues.add(m.source_value);
+      else unmatchedValues.add(m.source_value);
+      if (m.rule === "value_pairing.llm_verified" && m.library_id) reviewIds.add(m.library_id);
+    }
+  }
+  const matched = matchedValues.size;
+  const total = matched + unmatchedValues.size;
+  return { matched, total, awaiting: reviewIds.size };
+}
 
 function TransformationSpecStep() {
   const { state, dispatch } = useWizard();
@@ -203,6 +228,7 @@ function TransformationSpecStep() {
   );
   const canRunValueMapping =
     Boolean(source.dataset && target.dataset) && missingValueMappingReqs.length === 0;
+  const pairing = useMemo(() => summarizePairing(valueMappings), [valueMappings]);
 
   const runValueMapping = async () => {
     const formData = buildValueMappingFormData(source, target, parsedMappingSheet, mapping?.display);
@@ -273,6 +299,10 @@ function TransformationSpecStep() {
         target_field: f.target_col,
       })),
     [mapping],
+  );
+  const keyFieldNames = useMemo(
+    () => mappingKeyFields().map((f) => f.source_field),
+    [mappingKeyFields],
   );
 
   // Optional AI convenience: turn a plain-language description into recipe steps
@@ -430,16 +460,61 @@ function TransformationSpecStep() {
           approved, and run. No mapping sheet, rules, transformations,
           aggregation, or transformation-rules approval block. */}
       {mappingMode === "deterministic" && (
-        <>
-          <section className="wizard-section">
-            <h3 className="wizard-section__title">Field Mapping</h3>
-            <p className="wizard-field__help">
-              Confirm the source-to-target field mapping used for AI-mapping. Each row's
-              "Business Field" is auto-detected from the column names (e.g. "SKU" or "Material Code" →
-              Product / Material) — tag it manually if a required field isn't recognized. AI-mapping
-              needs a Product/Material and Plant/Location pair confirmed as Key, plus a
-              Date/Period pair as Key and a Quantity pair as Compare.
-            </p>
+        <div className="ct-col">
+          <p className="wizard-field__help" style={{ marginTop: 0 }}>
+            Confirm the source-to-target field mapping used for AI-mapping. Each row's
+            "Business Field" is auto-detected from the column names (e.g. "SKU" or "Material Code" →
+            Product / Material) — tag it manually if a required field isn't recognized. AI-mapping
+            needs a Product/Material and Plant/Location pair confirmed as Key, plus a
+            Date/Period pair as Key and a Quantity pair as Compare.
+          </p>
+
+          <div className="ct-kpi-grid">
+            <div className="ct-kpi-card">
+              <p className="ct-kpi-card__label">Columns mapped</p>
+              <div className="ct-kpi-card__row">
+                <span className="ct-kpi-card__value">{mapping?.display?.length ?? 0}</span>
+              </div>
+            </div>
+            <div className="ct-kpi-card">
+              <p className="ct-kpi-card__label">Key fields</p>
+              <div className="ct-kpi-card__row">
+                <span className="ct-kpi-card__value">{keyFieldNames.length}</span>
+                {keyFieldNames.length > 0 && (
+                  <span className="ct-kpi-card__sub">{keyFieldNames.join(", ")}</span>
+                )}
+              </div>
+            </div>
+            {pairing && (
+              <div className="ct-kpi-card">
+                <p className="ct-kpi-card__label">Values paired</p>
+                <div className="ct-kpi-card__row">
+                  <span
+                    className="ct-kpi-card__value"
+                    style={{ color: pairing.total ? "var(--bcone-orange)" : "var(--ink)" }}
+                  >
+                    {pairing.total ? `${Math.round((pairing.matched / pairing.total) * 100)}%` : "—"}
+                  </span>
+                  <span className="ct-kpi-card__sub">
+                    {pairing.matched} of {pairing.total}
+                  </span>
+                </div>
+              </div>
+            )}
+            {pairing && (
+              <div className="ct-kpi-card">
+                <p className="ct-kpi-card__label">Awaiting approval</p>
+                <div className="ct-kpi-card__row">
+                  <span className="ct-kpi-card__value" style={{ color: "var(--bcone-orange)" }}>
+                    {pairing.awaiting}
+                  </span>
+                  <span className="ct-kpi-card__sub">for future reuse</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="ct-grid">
             <MappingEditor
               mapping={mapping}
               sourceColumns={sourceColumns}
@@ -458,45 +533,119 @@ function TransformationSpecStep() {
               }}
             />
 
-            <div className="contract-actions" style={{ marginTop: 10 }}>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={runValueMapping}
-                disabled={!canRunValueMapping || valueMappingLoading}
-                title={
-                  missingValueMappingReqs.length
-                    ? "Tag a field mapping row as these Business Fields first: " +
-                      missingValueMappingReqs
-                        .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
-                        .join("; ")
-                    : undefined
-                }
-              >
-                {valueMappingLoading ? "Matching…" : "Run AI-mapping"}
-              </Button>
-              {valueMappings && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => navigate("/reconciliation/transformation-spec/mapping-review")}
-                >
-                  View Mapping Review
-                </Button>
-              )}
+            <div className="ct-col">
+              <section className="ct-card">
+                <div className="ct-card__head">
+                  <h3 className="ct-card__title">Datasets in scope</h3>
+                </div>
+                {[
+                  { role: "Source", side: source },
+                  { role: "Target", side: target },
+                ].map(({ role, side }) => (
+                  <div className="ct-scope-side" key={role}>
+                    <div className="ct-scope-side__head">
+                      <span className="ct-scope-side__role">{role}</span>
+                      {side.dataset && (
+                        <Badge variant="success" dot>
+                          {side.kind === "s4" ? "SAP S/4HANA" : side.kind === "ibp" ? "SAP IBP" : "Excel/CSV"}
+                        </Badge>
+                      )}
+                    </div>
+                    {side.dataset ? (
+                      <>
+                        <p className="ct-scope-side__name">{side.dataset.filename}</p>
+                        <p className="ct-scope-side__detail mono">
+                          {side.dataset.rowCount} rows · {side.dataset.colCount} columns
+                        </p>
+                      </>
+                    ) : (
+                      <p className="ct-scope-side__detail">No dataset loaded.</p>
+                    )}
+                  </div>
+                ))}
+              </section>
+
+              <section className="ct-card">
+                <div className="ct-card__head">
+                  <h3 className="ct-card__title">Value pairing</h3>
+                  <span className="ct-card__spacer" />
+                  {pairing && pairing.awaiting > 0 && (
+                    <Badge variant="warning">{pairing.awaiting} awaiting approval</Badge>
+                  )}
+                </div>
+                <div className="ct-card__body">
+                  {pairing && pairing.total > 0 && (
+                    <div className="ct-pairing-bar">
+                      <span
+                        style={{
+                          width: `${(pairing.matched / pairing.total) * 100}%`,
+                          background: "var(--bcone-green)",
+                        }}
+                      />
+                      <span
+                        style={{
+                          width: `${((pairing.total - pairing.matched) / pairing.total) * 100}%`,
+                          background: "var(--bcone-red)",
+                        }}
+                      />
+                    </div>
+                  )}
+                  <p className="wizard-field__help" style={{ marginTop: 0 }}>
+                    {pairing
+                      ? pairing.total > 0
+                        ? `${pairing.matched} of ${pairing.total} distinct values paired (${Math.round((pairing.matched / pairing.total) * 100)}%). ${pairing.total - pairing.matched} value${pairing.total - pairing.matched === 1 ? "" : "s"} have no target and will be reported as mismatches.`
+                        : "AI-mapping ran but found no distinct values to pair yet."
+                      : "Run AI-mapping to pair distinct source values (e.g. Material, Plant) against the target."}
+                  </p>
+                  <Button
+                    type="button"
+                    variant={valueMappings ? "outline" : "primary"}
+                    onClick={
+                      valueMappings
+                        ? () => navigate("/reconciliation/transformation-spec/mapping-review")
+                        : runValueMapping
+                    }
+                    disabled={!valueMappings && (!canRunValueMapping || valueMappingLoading)}
+                    title={
+                      !valueMappings && missingValueMappingReqs.length
+                        ? "Tag a field mapping row as these Business Fields first: " +
+                          missingValueMappingReqs
+                            .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
+                            .join("; ")
+                        : undefined
+                    }
+                    style={{ width: "100%" }}
+                  >
+                    {valueMappings
+                      ? "Open mapping review"
+                      : valueMappingLoading
+                        ? "Matching…"
+                        : "Run AI-mapping"}
+                  </Button>
+                  {valueMappings && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={runValueMapping}
+                      disabled={!canRunValueMapping || valueMappingLoading}
+                      style={{ width: "100%", marginTop: 8 }}
+                    >
+                      {valueMappingLoading ? "Matching…" : "Re-run AI-mapping"}
+                    </Button>
+                  )}
+                  {valueMappingError && <Alert variant="error">{valueMappingError}</Alert>}
+                  {valueMappingSuccess && !valueMappingError && (
+                    <Alert variant="success">
+                      AI-mapping complete. Open "Open mapping review" to inspect the tiers, or
+                      continue to run reconciliation on the Results step.
+                    </Alert>
+                  )}
+                </div>
+              </section>
             </div>
-            {valueMappingError && (
-              <Alert variant="error" style={{ marginTop: 12 }}>{valueMappingError}</Alert>
-            )}
-            {valueMappingSuccess && !valueMappingError && (
-              <Alert variant="success" style={{ marginTop: 12 }}>
-                AI-mapping complete. Open "View Mapping Review" to inspect the tiers, or
-                continue to run reconciliation on the Results step.
-              </Alert>
-            )}
-          </section>
-        </>
+          </div>
+        </div>
       )}
 
       {/* ── Flow 2: Manual Mapping ─────────────────────────────────────────
@@ -506,27 +655,25 @@ function TransformationSpecStep() {
           separate aggregation card — both live elsewhere / in the recipe). */}
       {mappingMode === "manual" && (
         <>
-          {/* Field Mapping — confirmed FIRST, before authoring any transforms. */}
-          <section className="wizard-section">
-            <h3 className="wizard-section__title">Field Mapping</h3>
-            <MappingEditor
-              mapping={mapping}
-              sourceColumns={sourceColumns}
-              targetColumns={targetColumns}
-              loading={mapLoading}
-              error={mapError}
-              notice={mapNotice}
-              onChange={(next) =>
-                dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
-              }
-              onRegenerate={() => {
-                mappedSignatureRef.current = datasetSignature(source, target);
-                // Regenerate always drops to the LLM (tier 2) and relabels, even
-                // if a library entry exists — the user asked for a fresh inference.
-                runInference({ preserveEdits: true, forceLlm: true });
-              }}
-            />
-          </section>
+          {/* Field Mapping — confirmed FIRST, before authoring any transforms.
+              MappingEditor renders its own card (title + actions + table). */}
+          <MappingEditor
+            mapping={mapping}
+            sourceColumns={sourceColumns}
+            targetColumns={targetColumns}
+            loading={mapLoading}
+            error={mapError}
+            notice={mapNotice}
+            onChange={(next) =>
+              dispatch({ type: WizardActions.SET_TRANSFORMATION_MAPPING, mapping: next })
+            }
+            onRegenerate={() => {
+              mappedSignatureRef.current = datasetSignature(source, target);
+              // Regenerate always drops to the LLM (tier 2) and relabels, even
+              // if a library entry exists — the user asked for a fresh inference.
+              runInference({ preserveEdits: true, forceLlm: true });
+            }}
+          />
 
           {/* Transformation Recipe — the SOLE authoring surface for operations[]
               (filters, transforms, aggregations), with a live preview. */}

@@ -4,6 +4,31 @@ import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import { getVisibleSteps } from "../steps/stepConfig";
 
+// Human label for a connector kind — kept local since it's a one-line lookup.
+const CONNECTOR_LABEL = {
+  excel: "Excel",
+  csv: "CSV",
+  s4: "S/4HANA",
+  ibp: "SAP IBP",
+  ecc: "SAP ECC",
+  bw: "SAP BW",
+};
+
+// Small, real (never fabricated) sub-label shown under a step's name in the
+// horizontal step bar — whatever's already confirmed for that step, or
+// nothing yet.
+function stepDetail(state, key) {
+  if (key === "comparisonType") return state.comparisonType?.label ?? "";
+  if (key === "source") return CONNECTOR_LABEL[state.source?.kind] ?? "";
+  if (key === "target") return CONNECTOR_LABEL[state.target?.kind] ?? "";
+  if (key === "transformationSpec") {
+    const mode = state.transformationSpec?.mappingMode;
+    return mode === "manual" ? "Manual" : mode === "deterministic" ? "AI-mapping" : "";
+  }
+  if (key === "reconciliation") return state.reconciliation ? "Completed" : "";
+  return "";
+}
+
 function StepShell({
   stepKey,
   children,
@@ -31,6 +56,13 @@ function StepShell({
     navigate(`/reconciliation/${target.path}`);
   };
 
+  // Jumping via the step bar (unlike Back/Continue, which only ever move to an
+  // adjacent step) can target any step, so it needs its own lock check.
+  const jumpToStep = (target) => {
+    if (state.stepStatus[target.key] === "locked") return;
+    goToStep(target);
+  };
+
   const handleBack = () => {
     if (prevStep) goToStep(prevStep);
   };
@@ -49,6 +81,29 @@ function StepShell({
         <h2 className="wizard-step__title">{step?.label}</h2>
         <p className="wizard-step__desc">{step?.description}</p>
       </header>
+
+      <nav className="ct-stepbar" aria-label="Wizard steps">
+        {steps.map((s, i) => {
+          const status = state.stepStatus[s.key];
+          const isActive = s.key === stepKey;
+          const done = status === "complete";
+          const detail = stepDetail(state, s.key);
+          return (
+            <button
+              key={s.key}
+              type="button"
+              className={`ct-stepbar__step ${isActive ? "is-active" : ""} ${done ? "is-done" : ""}`}
+              onClick={() => jumpToStep(s)}
+              disabled={status === "locked"}
+              aria-current={isActive ? "step" : undefined}
+            >
+              <span className="ct-stepbar__mk">{done ? "✓" : i + 1}</span>
+              <span className="ct-stepbar__label">{s.label}</span>
+              {!isActive && detail && <span className="ct-stepbar__detail">{detail}</span>}
+            </button>
+          );
+        })}
+      </nav>
 
       <div className="wizard-step__body">{children}</div>
 

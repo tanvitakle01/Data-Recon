@@ -13,8 +13,8 @@ import {
   joinSummary,
   sheetEntityJoin,
 } from "../lib/entityJoinSpec";
-import { Badge, Select, Button, Alert, CollapsibleSection } from "@bristlecone/canopy";
-import { Upload, FileSpreadsheet, X, Loader2 } from "lucide-react";
+import { Badge, Select, Button, Alert } from "@bristlecone/canopy";
+import { Upload, FileSpreadsheet, X, Loader2, Check, AlertTriangle, Circle } from "lucide-react";
 
 // Elapsed-time display for Auto mode: purely client-side (no backend job
 // status is polled fast enough to drive a smooth tick) — starts the moment
@@ -73,97 +73,6 @@ function UploadDropzone({ onPick, onDropFile, loading }) {
       <Button variant="primary" onClick={onPick} loading={loading} disabled={loading}>
         {loading ? "Reading sheet…" : "Upload Mapping Sheet"}
       </Button>
-    </div>
-  );
-}
-
-// ── File chip (filled state) ──────────────────────────────────────────────
-// Replaces the upload button once a file exists: name, status, Remove — and
-// nothing else. Everything else on this step reacts to this file's result.
-function FileChip({ name, loading, detected, onRemove }) {
-  const statusClass = loading ? "is-busy" : detected ? "is-detected" : "is-plain";
-  return (
-    <div className="wizard-file-chip">
-      
-      <FileSpreadsheet className="wizard-file-chip__icon" aria-hidden />
-      <span className="wizard-file-chip__name" title={name}>
-        {name}
-      </span>
-      <span className={`wizard-file-chip__status ${statusClass}`}>
-        {loading && <Loader2 size={12} className="animate-spin" aria-hidden />}
-        {loading ? "Analyzing…" : detected ? "Auto-detected" : "Uploaded"}
-      </span>
-      <button type="button" className="wizard-file-chip__remove" onClick={onRemove}>
-        <X size={14} aria-hidden />
-        Remove
-      </button>
-    </div>
-  );
-}
-
-// ── Auto-detected summary ─────────────────────────────────────────────────
-// The default, always-visible readout — five lines, no prose. Everything
-// more detailed lives behind "Detection Details" below.
-function AutoDetectedSummary({ state, identification }) {
-  const source = identification.source;
-  const target = identification.target;
-  const sourceSpec = effectiveEntityJoin(state, "source");
-  const targetSpec = effectiveEntityJoin(state, "target");
-
-  const planningArea = sourceSpec?.planningArea || targetSpec?.planningArea || null;
-  const planningNeeded =
-    !planningArea && Boolean(sourceSpec?.ambiguous?.length || targetSpec?.ambiguous?.length);
-
-  const sourceEntityLabel = sourceSpec?.entities?.length
-    ? sourceSpec.entities.length > 1
-      ? `${sourceSpec.entities[0]} + ${sourceSpec.entities.length - 1} more`
-      : sourceSpec.entities[0]
-    : null;
-
-  const fieldCount = (source?.fields?.length ?? 0) + (target?.fields?.length ?? 0);
-
-  return (
-    <div className="wizard-summary">
-      <div className="wizard-summary__row">
-        <span className="wizard-summary__label">Source connector</span>
-        {source?.kind ? (
-          <Badge variant="success" dot>
-            {source.label}
-          </Badge>
-        ) : (
-          <Badge variant="warning">Not identified</Badge>
-        )}
-      </div>
-      <div className="wizard-summary__row">
-        <span className="wizard-summary__label">Target connector</span>
-        {target?.kind ? (
-          <Badge variant="success" dot>
-            {target.label}
-          </Badge>
-        ) : (
-          <Badge variant="warning">Not identified</Badge>
-        )}
-      </div>
-      {(planningArea || planningNeeded) && (
-        <div className="wizard-summary__row">
-          <span className="wizard-summary__label">Planning area</span>
-          {planningArea ? (
-            <span className="wizard-summary__value">{planningArea}</span>
-          ) : (
-            <span className="wizard-summary__warn">Needed — name it in Additional Instructions</span>
-          )}
-        </div>
-      )}
-      {sourceEntityLabel && (
-        <div className="wizard-summary__row">
-          <span className="wizard-summary__label">Source entity</span>
-          <span className="wizard-summary__value">{sourceEntityLabel}</span>
-        </div>
-      )}
-      <div className="wizard-summary__row">
-        <span className="wizard-summary__label">Fields identified</span>
-        <span className="wizard-summary__value">{fieldCount}</span>
-      </div>
     </div>
   );
 }
@@ -315,6 +224,89 @@ function DetectionDetails({ state, identification }) {
       ))}
     </div>
   );
+}
+
+// ── Pre-flight checks (Step 1) ────────────────────────────────────────────
+// Every row is derived from data the wizard already has in hand (the sheet
+// identification response and its entity/join specs) — no connectivity pings
+// or timings are simulated, since nothing in this backend measures those.
+function PreflightRow({ status, name, detail }) {
+  const icon =
+    status === "pass" ? (
+      <Check size={15} className="ct-preflight-row__icon is-pass" aria-hidden />
+    ) : status === "warn" ? (
+      <AlertTriangle size={15} className="ct-preflight-row__icon is-warn" aria-hidden />
+    ) : (
+      <Circle size={10} className="ct-preflight-row__icon is-pending" aria-hidden />
+    );
+  return (
+    <div className="ct-preflight-row">
+      <span className="ct-preflight-row__mk">{icon}</span>
+      <span className="ct-preflight-row__name">{name}</span>
+      <span className="ct-preflight-row__detail">{detail}</span>
+    </div>
+  );
+}
+
+function buildPreflightRows({ identification, sheetError, sourceSpec, targetSpec, canAuto, canContinueManual }) {
+  if (!identification) {
+    return [
+      {
+        status: "pending",
+        name: "Mapping sheet parsed",
+        detail: "Upload a mapping sheet to begin.",
+      },
+    ];
+  }
+
+  const rows = [];
+
+  rows.push({
+    status: sheetError ? "fail" : "pass",
+    name: "Mapping sheet parsed",
+    detail: sheetError
+      ? sheetError
+      : `${identification.parsed?.headers?.length ?? 0} columns · ${identification.parsed?.rows?.length ?? 0} rows`,
+  });
+
+  rows.push({
+    status: identification.source?.kind ? "pass" : "warn",
+    name: "Source system identified",
+    detail: identification.source?.kind
+      ? `${identification.source.label}${identification.source.confidence ? ` · ${identification.source.confidence} confidence` : ""}`
+      : "Not identified — select the source connector manually on Step 2.",
+  });
+
+  rows.push({
+    status: identification.target?.kind ? "pass" : "warn",
+    name: "Target system identified",
+    detail: identification.target?.kind
+      ? `${identification.target.label}${identification.target.confidence ? ` · ${identification.target.confidence} confidence` : ""}`
+      : "Not identified — select the target connector manually on Step 3.",
+  });
+
+  const unresolvedCount = (sourceSpec?.unresolved?.length ?? 0) + (targetSpec?.unresolved?.length ?? 0);
+  const ambiguousCount = (sourceSpec?.ambiguous?.length ?? 0) + (targetSpec?.ambiguous?.length ?? 0);
+  rows.push({
+    status: unresolvedCount || ambiguousCount ? "warn" : "pass",
+    name: "Entities resolve",
+    detail:
+      unresolvedCount || ambiguousCount
+        ? `${unresolvedCount} unresolved, ${ambiguousCount} ambiguous — resolve in Additional Instructions.`
+        : "All named entities exist on their connector.",
+  });
+
+  rows.push({
+    status: canAuto ? "pass" : canContinueManual ? "warn" : "pending",
+    name: "Ready to run",
+    detail: canAuto
+      ? "Both sides identified — Automatic is available."
+      : canContinueManual
+        ? "Continue manually through Source, Target and Mapping."
+        : "Select a dataset type to continue.",
+  });
+
+  return rows;
 }
 
 function ComparisonTypeStep() {
@@ -608,63 +600,290 @@ function ComparisonTypeStep() {
     }
   };
 
+  // ── Run mode: segmented Manual/Automatic selector + a single Start action,
+  // matching the Enterprise UI layout. Selecting a mode doesn't act by
+  // itself — Start still calls the exact same handleManualContinue /
+  // startAutoRun as before. ──────────────────────────────────────────────
+  const [runModeChoice, setRunModeChoice] = useState("manual");
+  // Falls back to Manual whenever Automatic isn't actually available, rather
+  // than syncing it via an effect (there's nothing external to synchronize
+  // with — it's a pure function of state already in hand).
+  const runMode = runModeChoice === "auto" && !canAuto ? "manual" : runModeChoice;
+
+  const sourceSpec = effectiveEntityJoin(state, "source");
+  const targetSpec = effectiveEntityJoin(state, "target");
+  const preflightRows = useMemo(
+    () => buildPreflightRows({ identification, sheetError, sourceSpec, targetSpec, canAuto, canContinueManual }),
+    [identification, sheetError, sourceSpec, targetSpec, canAuto, canContinueManual]
+  );
+
+  const fileMetaText = identification
+    ? [
+        identification.sheet?.size != null ? `${Math.round(identification.sheet.size / 1024)} KB` : null,
+        identification.parsed?.rows ? `${identification.parsed.rows.length} rows` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
+
   return (
     <StepShell stepKey="comparisonType" hideContinue>
-      {/* ── Mapping Sheet Upload: the primary action on this step ── */}
-      <div className="wizard-field wizard-mapping-upload">
-        <label className="wizard-field__label">Mapping Sheet</label>
-        <p className="wizard-field__help">
-          Upload a mapping workbook to auto-detect the source/target connectors, fields, entities
-          and join.
-        </p>
+      <div className="ct-grid">
+        {/* ══ Left column: Mapping sheet + Pre-flight checks ══ */}
+        <div className="ct-col">
+          <section className="ct-card">
+            <div className="ct-card__head">
+              <h3 className="ct-card__title">Mapping sheet</h3>
+              <span className="ct-card__spacer" />
+              {hasIdentification && (
+                <Badge variant="success" dot>
+                  Detected
+                </Badge>
+              )}
+            </div>
+            <div className="ct-card__body">
+              <input
+                ref={sheetInputRef}
+                type="file"
+                accept={SHEET_ACCEPT}
+                style={{ display: "none" }}
+                onChange={(e) => handleSheetFile(e.target.files?.[0] ?? null)}
+              />
 
-        <input
-          ref={sheetInputRef}
-          type="file"
-          accept={SHEET_ACCEPT}
-          style={{ display: "none" }}
-          onChange={(e) => handleSheetFile(e.target.files?.[0] ?? null)}
-        />
+              {!identification ? (
+                <>
+                  <p className="wizard-field__help" style={{ marginTop: 0 }}>
+                    Upload a mapping workbook to auto-detect the source/target connectors, fields,
+                    entities and join.
+                  </p>
+                  <UploadDropzone
+                    onPick={() => sheetInputRef.current?.click()}
+                    onDropFile={handleSheetFile}
+                    loading={sheetLoading}
+                  />
+                </>
+              ) : (
+                <div className="ct-mapping-body">
+                  <div className="ct-file-row">
+                    <FileSpreadsheet className="ct-file-row__icon" aria-hidden />
+                    <span className="ct-file-row__name" title={identification.sheet?.name}>
+                      {identification.sheet?.name ?? "mapping sheet"}
+                    </span>
+                    {fileMetaText && <span className="ct-file-row__meta mono">{fileMetaText}</span>}
+                    <span className="ct-card__spacer" />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => sheetInputRef.current?.click()}
+                      disabled={sheetLoading}
+                    >
+                      {sheetLoading ? (
+                        <Loader2 size={12} className="animate-spin" aria-hidden />
+                      ) : (
+                        "Replace"
+                      )}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={clearSheet} disabled={sheetLoading}>
+                      <X size={12} aria-hidden />
+                      Remove
+                    </Button>
+                  </div>
 
-        {!identification ? (
-          <UploadDropzone
-            onPick={() => sheetInputRef.current?.click()}
-            onDropFile={handleSheetFile}
-            loading={sheetLoading}
-          />
-        ) : (
-          <div className="wizard-mapping-upload__body">
-            <FileChip
-              name={identification.sheet?.name ?? "mapping sheet"}
-              loading={sheetLoading}
-              detected={hasIdentification}
-              onRemove={clearSheet}
-            />
+                  {hasIdentification && (
+                    <table className="ct-table">
+                      <thead>
+                        <tr>
+                          <th>Side</th>
+                          <th>System</th>
+                          <th>Confidence</th>
+                          <th>Entities</th>
+                          <th>Join</th>
+                          <th>Fields</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          { title: "Source", side: identification.source, spec: sourceSpec },
+                          { title: "Target", side: identification.target, spec: targetSpec },
+                        ].map(({ title, side, spec }) => {
+                          const join = spec ? joinSummary(spec) : null;
+                          return (
+                            <tr key={title}>
+                              <td>{title}</td>
+                              <td>{side?.kind ? side.label : "Not identified"}</td>
+                              <td>
+                                {side?.kind ? (
+                                  <Badge variant="success" dot>
+                                    {side.confidence ?? "—"}
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="warning">Unknown</Badge>
+                                )}
+                              </td>
+                              <td className="mono">
+                                {spec?.entities?.length ? spec.entities.join(", ") : "—"}
+                              </td>
+                              <td>
+                                {!spec || spec.entities.length < 2
+                                  ? "Single entity"
+                                  : `${join.typeLabel} join on ${join.keysLabel}`}
+                              </td>
+                              <td style={{ textAlign: "right" }}>{side?.fields?.length ?? 0}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
 
-            {hasIdentification && <AutoDetectedSummary state={state} identification={identification} />}
+                  {identification.degraded && identification.degraded_reason && (
+                    <Alert variant="warning">{identification.degraded_reason}</Alert>
+                  )}
+                </div>
+              )}
 
-            {identification.degraded && identification.degraded_reason && (
-              <Alert variant="warning" style={{ marginTop: 8 }}>
-                {identification.degraded_reason}
-              </Alert>
-            )}
+              {sheetError && <Alert variant="error">{sheetError}</Alert>}
+            </div>
+          </section>
 
-            {hasIdentification && (
-              <CollapsibleSection title="Detection Details" className="wizard-collapsible">
+          {/* Detection details: its own always-visible card — no click needed
+              to see confidence/evidence/join reasoning. */}
+          {hasIdentification && (
+            <section className="ct-card">
+              <div className="ct-card__head">
+                <h3 className="ct-card__title">Detection details</h3>
+              </div>
+              <div className="ct-card__body">
                 <DetectionDetails state={state} identification={identification} />
-              </CollapsibleSection>
-            )}
+              </div>
+            </section>
+          )}
 
-            {/* ── Additional Instructions: the single free-text fallback, collapsed
-                like the other advanced sections until the user opts in ── */}
-            <CollapsibleSection
-              title="Additional Instructions"
-              subtitle="Optional"
-              className="wizard-collapsible"
-              badge={instructionsText ? <Badge variant="teal">Set</Badge> : null}
-            >
+          <section className="ct-card">
+            <div className="ct-card__head">
+              <h3 className="ct-card__title">Pre-flight checks</h3>
+            </div>
+            <div className="ct-card__body ct-card__body--flush">
+              {preflightRows.map((row) => (
+                <PreflightRow key={row.name} {...row} />
+              ))}
+            </div>
+          </section>
+        </div>
+
+        {/* ══ Right column: Run configuration ══ */}
+        <div className="ct-col">
+          <section className="ct-card">
+            <div className="ct-card__head">
+              <h3 className="ct-card__title">Run configuration</h3>
+            </div>
+            <div className="ct-card__body ct-card__body--stack">
+              <div className="wizard-field" style={{ maxWidth: "none" }}>
+                <label className="wizard-field__label" htmlFor="comparison-type-select">
+                  Dataset Type
+                </label>
+                <Select
+                  id="comparison-type-select"
+                  value={selectedId}
+                  onChange={handleChange}
+                  options={[
+                    { value: "", label: "Select a dataset type…" },
+                    ...COMPARISON_TYPES.map((option) => ({ value: option.id, label: option.label })),
+                  ]}
+                />
+                {state.comparisonType && (
+                  <div className="wizard-dataset-summary">
+                    <Badge variant="success">Selected</Badge>
+                    <span>{state.comparisonType.label}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Run mode: segmented Manual/Automatic + single Start action ── */}
+              <div className="ct-runmode">
+                <p className="wizard-field__label">Run mode</p>
+
+                {autoRunning ? (
+                  <div className="wizard-auto-progress">
+                    <Loader2 size={16} className="animate-spin" aria-hidden />
+                    <span className="wizard-auto-progress__step">
+                      {AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
+                    </span>
+                    <span className="wizard-auto-progress__timer">{formatElapsed(autoElapsedMs)}</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="ct-runmode-toggle">
+                      <button
+                        type="button"
+                        className={runMode === "manual" ? "is-active" : ""}
+                        onClick={() => setRunModeChoice("manual")}
+                      >
+                        Manual
+                      </button>
+                      <button
+                        type="button"
+                        className={runMode === "auto" ? "is-active" : ""}
+                        onClick={() => canAuto && setRunModeChoice("auto")}
+                        disabled={!canAuto}
+                      >
+                        Automatic
+                      </button>
+                    </div>
+                    <p className="wizard-field__help">
+                      {runMode === "auto"
+                        ? "Run all steps automatically and land on Results."
+                        : "Step through source, target and mapping with approval at each step."}
+                    </p>
+                    {runMode === "auto" && !canAuto && (
+                      <p className="wizard-field__help">
+                        Requires the mapping sheet to resolve both source and target systems.
+                      </p>
+                    )}
+                    <Button
+                      variant="primary"
+                      onClick={runMode === "auto" ? startAutoRun : handleManualContinue}
+                      disabled={runMode === "auto" ? !canAuto : !canContinueManual}
+                    >
+                      {runMode === "auto" ? "Start automatic run" : "Start manual run"}
+                    </Button>
+                  </>
+                )}
+
+                {!autoRunning && autoElapsedMs > 0 && !autoError && (
+                  <p className="wizard-field__help">Last Auto run took {formatElapsed(autoElapsedMs)}.</p>
+                )}
+
+                {autoError && (
+                  <Alert variant="error">
+                    {autoFailedStep ? `Auto mode failed at "${AUTO_STEP_LABELS[autoFailedStep] ?? autoFailedStep}": ` : ""}
+                    {autoError}
+                    <div className="wizard-instructions__actions" style={{ marginTop: 8 }}>
+                      <Button variant="secondary" size="sm" onClick={startAutoRun}>
+                        Retry Auto
+                      </Button>
+                      <button type="button" className="wizard-link" onClick={handleManualContinue}>
+                        Switch to Manual
+                      </button>
+                    </div>
+                  </Alert>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* Additional instructions: its own always-visible card, not hidden
+              behind a click — optional, but never out of sight. */}
+          <section className="ct-card">
+            <div className="ct-card__head">
+              <h3 className="ct-card__title">Additional instructions</h3>
+              <span className="ct-card__hint">Optional</span>
+              <span className="ct-card__spacer" />
+              {instructionsText && <Badge variant="teal">Set</Badge>}
+            </div>
+            <div className="ct-card__body">
               <div className="wizard-instructions">
-                <p className="wizard-field__help">
+                <p className="wizard-field__help" style={{ marginTop: 0 }}>
                   Describe S/4 entities, the IBP planning area, joins, or mapping overrides in plain
                   language.
                 </p>
@@ -693,105 +912,11 @@ function ComparisonTypeStep() {
                     </button>
                   )}
                 </div>
-                {instrError && (
-                  <Alert variant="error" style={{ marginTop: 8 }}>
-                    {instrError}
-                  </Alert>
-                )}
+                {instrError && <Alert variant="error">{instrError}</Alert>}
               </div>
-            </CollapsibleSection>
-          </div>
-        )}
-
-        {sheetError && (
-          <Alert variant="error" style={{ marginTop: 8 }}>
-            {sheetError}
-          </Alert>
-        )}
-      </div>
-
-      {/* ── Dataset Type ── */}
-      <div className="wizard-field">
-        <label className="wizard-field__label" htmlFor="comparison-type-select">
-          Dataset Type
-        </label>
-        <Select
-          id="comparison-type-select"
-          value={selectedId}
-          onChange={handleChange}
-          options={[
-            { value: "", label: "Select a dataset type…" },
-            ...COMPARISON_TYPES.map((option) => ({ value: option.id, label: option.label })),
-          ]}
-        />
-      </div>
-
-      {state.comparisonType && (
-        <div className="wizard-dataset-summary">
-          <Badge variant="success">Selected</Badge>
-          <span>{state.comparisonType.label}</span>
-        </div>
-      )}
-
-      {/* ── Auto/Manual: replaces the generic Continue button ── */}
-      <div className="wizard-field wizard-run-mode">
-        <label className="wizard-field__label">How should this run proceed?</label>
-
-        {autoRunning ? (
-          <div className="wizard-auto-progress">
-            <Loader2 size={16} className="animate-spin" aria-hidden />
-            <span className="wizard-auto-progress__step">
-              {AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
-            </span>
-            <span className="wizard-auto-progress__timer">{formatElapsed(autoElapsedMs)}</span>
-          </div>
-        ) : (
-          <div className="wizard-source-choice">
-            <button
-              type="button"
-              className="wizard-choice-card"
-              onClick={handleManualContinue}
-              disabled={!canContinueManual}
-            >
-              <span className="wizard-choice-card__label">Manual</span>
-              <span className="wizard-choice-card__meta">
-                Step through source, target and mapping with approval at each step
-              </span>
-            </button>
-            <button
-              type="button"
-              className="wizard-choice-card"
-              onClick={startAutoRun}
-              disabled={!canAuto}
-            >
-              <span className="wizard-choice-card__label">Auto</span>
-              <span className="wizard-choice-card__meta">
-                {canAuto
-                  ? "Run all steps automatically and land on Results"
-                  : "Requires the mapping sheet to resolve both source and target systems"}
-              </span>
-            </button>
-          </div>
-        )}
-
-        {!autoRunning && autoElapsedMs > 0 && !autoError && (
-          <p className="wizard-field__help">Last Auto run took {formatElapsed(autoElapsedMs)}.</p>
-        )}
-
-        {autoError && (
-          <Alert variant="error" style={{ marginTop: 8 }}>
-            {autoFailedStep ? `Auto mode failed at "${AUTO_STEP_LABELS[autoFailedStep] ?? autoFailedStep}": ` : ""}
-            {autoError}
-            <div className="wizard-instructions__actions" style={{ marginTop: 8 }}>
-              <Button variant="secondary" size="sm" onClick={startAutoRun}>
-                Retry Auto
-              </Button>
-              <button type="button" className="wizard-link" onClick={handleManualContinue}>
-                Switch to Manual
-              </button>
             </div>
-          </Alert>
-        )}
+          </section>
+        </div>
       </div>
     </StepShell>
   );

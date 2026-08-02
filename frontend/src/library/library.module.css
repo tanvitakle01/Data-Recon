@@ -25,12 +25,6 @@
   margin: 0;
 }
 
-.headerActions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
 .filters {
   display: flex;
   flex-wrap: wrap;
@@ -58,19 +52,6 @@
   background: var(--color-surface, #fff);
   color: inherit;
   font-size: 0.875rem;
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-}
-
-.table th,
-.table td {
-  text-align: left;
-  padding: 10px 12px;
-  vertical-align: top;
 }
 
 .connectors {
@@ -114,18 +95,3 @@
   text-align: center;
 }
 
-.error {
-  color: var(--color-danger, #dc2626);
-  font-size: 0.875rem;
-  margin-bottom: 12px;
-}
-
-.section {
-  margin-top: 40px;
-}
-
-.sectionTitle {
-  font-size: 1.125rem;
-  font-weight: 600;
-  margin: 0 0 4px;
-}

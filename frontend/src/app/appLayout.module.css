@@ -1,37 +1,78 @@
 /* ============================================================================
-   App shell — one persistent, collapsible sidebar on every page.
-   Expanded (labels) ⇄ collapsed (icon rail). On the reconciliation wizard the
-   sidebar also carries the step navigator, context summary, and quick links
-   (see WizardSidebarNav). All color reads through the global tokens.
+   App shell — a persistent top header (brand only — search/env/notifications/
+   user-profile all omitted, since none of them are backed by real data in
+   this app) above a collapsible sidebar + main content row. Expanded (labels)
+   ⇄ collapsed (icon rail). The reconciliation wizard's own step navigator
+   lives in-page (StepShell's .ct-stepbar), not in this sidebar. All color
+   reads through the global tokens.
    ============================================================================ */
 .shell {
   width: 100%;
   min-height: 100vh;
   display: flex;
+  flex-direction: column;
   background: var(--ground);
 }
 
+/* ---- Top header: brand only ---- */
+.topHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 16px 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  flex: 0 0 auto;
+}
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  text-decoration: none;
+  color: var(--ink);
+}
+.brandDivider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  flex: 0 0 auto;
+}
+.brandText {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* ---- Body row: sidebar + main, below the header ---- */
+.body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .sidebar {
-  /* Sidebar theme (scoped — does NOT touch global app tokens). Defined here so
-     both the main nav (this file) and the nested wizard substeps (.wsb-* in
-     reconciliationWizard.css) inherit identical colors in collapsed + expanded
-     states.
+  /* Sidebar theme (scoped — does NOT touch global app tokens).
        --sb-bg    #143D4A  Teal (solid sidebar background)
-       --sb-main  #EDE7E1  main nav items, icons, logo
-       --sb-sub   #FFFFFF  Reconciliation Engine substeps + their icons
-       --sb-hover #1E1E1E  Basalt Black hover glow/highlight */
+       --sb-main  #EDE7E1  nav items, icons
+       --sb-hover #1E1E1E  hover glow/highlight */
   --sb-bg: #143d4a;
   --sb-main: #ede7e1;
-  --sb-sub: #ffffff;
   --sb-hover: #1e1e1e;
   --sb-hairline: rgba(237, 231, 225, 0.14);
-  --sb-hover-bg: rgba(30, 30, 30, 0.32);
-  --sb-active-bg: rgba(30, 30, 30, 0.46);
+  --sb-hover-bg: rgba(255, 255, 255, 0.07);
+  --sb-active-bg: rgba(33, 166, 189, 0.22);
   --sb-glow: 0 0 0 1px rgba(30, 30, 30, 0.55), 0 2px 12px rgba(30, 30, 30, 0.42);
 
   position: sticky;
-  top: 0;
-  height: 100vh;
+  top: 52px;
+  height: calc(100vh - 52px);
   display: flex;
   flex-direction: column;
   background: var(--sb-bg);
@@ -45,51 +86,17 @@
 .sidebarExpanded { width: 268px; }
 .sidebarCollapsed { width: 68px; }
 
-/* ---- Top: brand + collapse toggle ---- */
+/* ---- Top of sidebar: collapse toggle only (brand moved to the header) ---- */
 .sidebarTop {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  padding: 14px 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--sb-hairline);
-  min-height: 60px;
+  min-height: 44px;
 }
-.brandRow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  text-decoration: none;
-  color: var(--sb-main);
-  flex: 1 1 auto;
-}
-.brandLogo {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-md);
-  flex: 0 0 auto;
-  background: var(--sb-main);
-  color: var(--sb-bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  font-size: 15px;
-  font-family: var(--mono);
-}
-.brandText {
-  font-weight: 700;
-  font-size: 14px;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 1;
-  transition: opacity var(--dur-fast) var(--ease);
-}
-.sidebarCollapsed .brandText { opacity: 0; width: 0; }
-.sidebarCollapsed .brandRow { justify-content: center; flex: 1 1 auto; }
-.sidebarCollapsed .sidebarTop { padding: 14px 0; flex-direction: column; gap: 10px; }
+.sidebarCollapsed .sidebarTop { justify-content: center; padding: 10px 0; }
 
 .collapseBtn {
   width: 30px;
@@ -111,7 +118,7 @@
 
 .mobileCloseBtn { display: none; }
 
-/* ---- Scroll region: app section nav + contextual wizard steps ---- */
+/* ---- Scroll region: app section nav ---- */
 .navMain {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -127,20 +134,19 @@
 
 .navGroup { display: flex; flex-direction: column; }
 
-/* Wizard step navigator nested under the "Reconciliation Engine" item — a
-   left rule + indent signal that the steps belong to that section rather than
-   being top-level navigation. Removed when collapsed so the icon rail stays
-   aligned. */
-.contextNav {
-  margin: 2px 4px 8px 22px;
-  padding-left: 6px;
-  border-left: 1px solid var(--sb-hairline);
+/* Section label ("Reconcile" / "Operate" / "Govern") */
+.navSection { margin-top: 12px; }
+.navSection:first-of-type { margin-top: 4px; }
+.navSectionLabel {
+  margin: 0 0 4px;
+  padding: 0 8px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(237, 231, 225, 0.4);
 }
-.sidebarCollapsed .contextNav {
-  margin: 2px 0 6px;
-  padding-left: 0;
-  border-left: none;
-}
+.sidebarCollapsed .navSectionLabel { display: none; }
 
 .item {
   position: relative;
@@ -155,12 +161,12 @@
   font-size: 13.5px;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-/* Basalt-black glow/highlight; icon + label stay cream for legibility. */
+/* Hover glow; icon + label stay cream for legibility. */
 .item:hover { background: var(--sb-hover-bg); color: var(--sb-main); box-shadow: var(--sb-glow); }
 .item:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(237, 231, 225, 0.35); }
 .itemActive {
   background: var(--sb-active-bg);
-  color: var(--sb-main);
+  color: #ffffff;
   font-weight: 650;
 }
 .itemActive::before {
@@ -171,12 +177,14 @@
   bottom: 8px;
   width: 3px;
   border-radius: 999px;
-  background: var(--sb-main);
+  background: var(--accent);
 }
 .itemIconWrap { width: 22px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
 .itemIcon { width: 18px; height: 18px; }
 .itemLabel {
   margin-left: 11px;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 13.5px;
   white-space: nowrap;
   overflow: hidden;
@@ -184,12 +192,27 @@
   opacity: 1;
   transition: opacity var(--dur-fast) var(--ease);
 }
+.itemBadge {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--bcone-orange);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .sidebarCollapsed .item { justify-content: center; padding: 9px 0; }
 .sidebarCollapsed .itemLabel { opacity: 0; width: 0; margin-left: 0; }
+.sidebarCollapsed .itemBadge { position: absolute; top: 2px; right: 8px; margin-left: 0; }
 
 /* Tooltip for icon-only items when collapsed (desktop) */
-.sidebarCollapsed .item::after,
-.sidebarCollapsed .brandRow::after {
+.sidebarCollapsed .item::after {
   content: attr(data-tooltip);
   position: absolute;
   left: calc(100% + 12px);
@@ -216,33 +239,46 @@
   transform: translateY(-50%) translateX(0);
 }
 
+/* ---- Sidebar footer: real Canopy version ---- */
+.sidebarFooter {
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  border-top: 1px solid var(--sb-hairline);
+}
+.sidebarFooterText {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgba(237, 231, 225, 0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebarCollapsed .sidebarFooterText { text-align: center; }
+
 /* ---- Mobile drawer ---- */
 .mobileMenuBtn { display: none; }
 .backdrop { display: none; }
 
 @media (max-width: 860px) {
-  .shell { display: block; }
   .mobileMenuBtn {
     display: flex;
-    position: fixed;
-    top: 14px;
-    left: 14px;
-    width: 40px;
-    height: 40px;
-    border-radius: var(--radius-md);
     align-items: center;
     justify-content: center;
-    background: var(--surface);
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-md);
+    background: transparent;
     color: var(--ink);
     border: 1px solid var(--border-strong);
-    box-shadow: var(--shadow-2);
     cursor: pointer;
-    z-index: 40;
+    flex: 0 0 auto;
   }
   .sidebar {
     position: fixed;
     left: 0;
     top: 0;
+    height: 100vh;
     width: 268px !important;
     transform: translateX(-100%);
     transition: transform var(--dur) var(--ease);
@@ -250,9 +286,11 @@
   }
   .sidebarMobileOpen { transform: translateX(0); }
   /* On mobile the drawer is always the full labelled sidebar */
-  .sidebar .brandText, .sidebar .itemLabel { opacity: 1 !important; width: auto !important; }
+  .sidebar .itemLabel { opacity: 1 !important; width: auto !important; }
   .sidebar .item { justify-content: flex-start !important; padding: 9px 12px !important; }
   .sidebar .item::after { display: none; }
+  .sidebar .navSectionLabel { display: block !important; }
+  .sidebarTop { justify-content: space-between !important; }
   .collapseBtn { display: none; }
   .mobileCloseBtn {
     display: flex;
@@ -291,4 +329,4 @@
 }
 @media (max-width: 1280px) { .mainInner { padding: 24px 28px 36px; } }
 @media (max-width: 1024px) { .mainInner { padding: 20px 24px 32px; } }
-@media (max-width: 860px) { .mainInner { padding: 72px 16px 28px; } }
+@media (max-width: 860px) { .mainInner { padding: 24px 16px 28px; } }
