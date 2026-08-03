@@ -22,10 +22,10 @@
   --font-sans: "Inter Variable", -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", "Cascadia Code", "SFMono-Regular", Consolas, ui-monospace, monospace;
 
-  /* Brand accent — Canopy teal (full Canopy adoption). */
-  --color-accent: #21A6BD;
-  --color-accent-hover: #44AAC0;
-  --color-accent-tint: #E8F6F9;
+  /* Brand accent — enterprise-palette orange (replaces the old Canopy teal). */
+  --color-accent: #F89F5B;
+  --color-accent-hover: #FAB374;
+  --color-accent-tint: #FDECDC;
 
   --color-match: #15803D;
   --color-high: #2A8049;
@@ -58,37 +58,68 @@
   --border: #E7E8EE;
   --border-strong: #D5D7E0;
 
-  --ink: #1A1B25;
+  /* Dominant anchor (enterprise palette #212F3D) — refines the previous
+     near-black ink toward the app's new dark-chrome anchor; the sidebar
+     background (appLayout.module.css --sb-bg) uses this exact hex too, so
+     chrome and primary text read as one consistent dark identity. */
+  --ink: #212F3D;
   --ink-2: #43465A;
   --muted: #6B6F80;
   --muted-2: #8A8FA0;
 
   --code-bg: #F1F3F6;
 
+  /* ---- New 5-color enterprise palette: subtle near-white tints (card
+     backgrounds only, never a saturated block) and rare small-accent colors
+     (a single badge/highlight moment — never a full-width surface). Kept
+     separate from --accent/--surface-2 so they stay genuinely rare, not a
+     silent global re-tint. ---- */
+  --tint-blue: #EBF5FB;
+  --tint-yellow: #FEF9E7;
+  --highlight-pink: #FFB6C1;
+  --highlight-yellow: #F9E79F;
+
   /* ---- Brand accent — interactive / brand ONLY, never status ----
-     Canopy teal (#21A6BD) with Canopy's blue (#44AAC0) as the hover, matching
-     Canopy Button's primary variant. The whole app reads through --accent, so
-     this one change recolors every brand/interactive surface to teal. */
-  --accent: #21A6BD;
-  --accent-hover: #44AAC0;
-  --accent-active: #1B8A9E;
-  --accent-tint: #E8F6F9;
-  --accent-tint-2: #D2ECF1;
-  --accent-ring: rgba(33, 166, 189, 0.35);
-  --accent-contrast: #FFFFFF;
+     Enterprise-palette orange (#F89F5B), replacing the old Canopy teal as
+     the app's one brand/interactive color — buttons, links, focus rings,
+     hover borders, the active stepper state all read through --accent, so
+     this one change recolors every one of those surfaces. */
+  --accent: #F89F5B;
+  --accent-hover: #FAB374;
+  --accent-active: #E2823D;
+  --accent-tint: #FDECDC;
+  --accent-tint-2: #FBDFC4;
+  --accent-ring: rgba(248, 159, 91, 0.35);
+  /* Dark contrast text — #F89F5B is too light for white button text to pass
+     contrast (~2:1); pairs with the new --ink anchor instead. */
+  --accent-contrast: #212F3D;
 
   /* ---- Canopy (@bristlecone/canopy) CSS custom properties ----
      Canopy components resolve their colors/radii/shadows through these vars.
      Inlined from Canopy's theme/globals.css :root block. Its font/body/heading
      resets are intentionally omitted so this app keeps its bundled Inter /
      JetBrains Mono typography. Canopy is a light design system, so these are
-     defined once (not re-themed for dark). */
-  --bcone-teal: #21a6bd;
+     defined once (not re-themed for dark).
+
+     --bcone-teal/--bcone-blue are darkened versions of the same new
+     --accent orange (#F89F5B/#FAB374 above) — NOT the exact hex. Canopy's
+     own Button.tsx hardcodes `text-white` on --bcone-teal (primary variant)
+     and hovers to --bcone-blue with no contrast-aware override; the exact
+     light --accent orange fails contrast against white text (~2:1, needs
+     4.5:1), so these two are darkened just enough to stay legible while
+     staying in the same hue family. --bcone-cyan/--bcone-purple/--bcone-
+     green/--bcone-orange/--bcone-red are UNTOUCHED — see badgeVariants.js's
+     TIER_BADGE_VARIANT/OUTCOME_BADGE_VARIANT, which resolve confidence-tier
+     and reconciliation-outcome Badge colors through several of these; only
+     --bcone-teal was ever a status color (VERY_HIGH), which is why
+     TIER_BADGE_VARIANT.very_high was moved onto "purple" instead of
+     silently inheriting this rename. */
+  --bcone-teal: #b85c28;
   --bcone-green: #4bc984;
   --bcone-charcoal: #333536;
   --bcone-gray: #7f7f7f;
   --bcone-light-green: #67c381;
-  --bcone-blue: #44aac0;
+  --bcone-blue: #c97239;
   --bcone-cyan: #45afc2;
   --bcone-black: #192123;
   --bcone-white: #ffffff;
@@ -222,13 +253,21 @@
 
     --code-bg: #1F2230;
 
-    --accent: #4FC3D9;
-    --accent-hover: #6FD0E2;
-    --accent-active: #8ADCEA;
-    --accent-tint: #0E2A30;
-    --accent-tint-2: #123842;
-    --accent-ring: rgba(79, 195, 217, 0.45);
-    --accent-contrast: #0E0F14;
+    /* Brighter/more saturated orange for visibility against the dark ground —
+       mirrors the old teal->cyan brightening pattern this replaced. */
+    --accent: #FFB577;
+    --accent-hover: #FFC694;
+    --accent-active: #F5A054;
+    --accent-tint: #3A2A18;
+    --accent-tint-2: #4A3620;
+    --accent-ring: rgba(255, 181, 119, 0.45);
+    --accent-contrast: #171923;
+
+    /* No dark equivalent was specified for the near-white palette tints —
+       fall back to a barely-tinted dark surface rather than an unchanged
+       near-white block, which would look like a bug against a dark ground. */
+    --tint-blue: #182430;
+    --tint-yellow: #2A2818;
 
     --match: #4ADE80;   --match-bg: #10281A;   --match-bd: #1E5236;
     --high: #7FD6A0;    --high-bg: #12241A;    --high-bd: #23422F;
@@ -264,13 +303,15 @@
   --muted: #9297AB;
   --muted-2: #767C90;
   --code-bg: #1F2230;
-  --accent: #4FC3D9;
-  --accent-hover: #6FD0E2;
-  --accent-active: #8ADCEA;
-  --accent-tint: #0E2A30;
-  --accent-tint-2: #123842;
-  --accent-ring: rgba(79, 195, 217, 0.45);
-  --accent-contrast: #0E0F14;
+  --accent: #FFB577;
+  --accent-hover: #FFC694;
+  --accent-active: #F5A054;
+  --accent-tint: #3A2A18;
+  --accent-tint-2: #4A3620;
+  --accent-ring: rgba(255, 181, 119, 0.45);
+  --accent-contrast: #171923;
+  --tint-blue: #182430;
+  --tint-yellow: #2A2818;
   --match: #4ADE80;   --match-bg: #10281A;   --match-bd: #1E5236;
   --high: #7FD6A0;    --high-bg: #12241A;    --high-bd: #23422F;
   --medium: #F5B33F;  --medium-bg: #2C220C;  --medium-bd: #4E3D12;

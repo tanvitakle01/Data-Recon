@@ -128,6 +128,10 @@
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-contrast);
+  /* One deliberate small-accent moment (enterprise palette): a soft pink
+     halo on the single active-step marker — never a fill, never repeated
+     elsewhere, so it reads as a highlight rather than a second brand color. */
+  box-shadow: 0 0 0 3px var(--highlight-pink);
 }
 .ct-stepbar__label {
   font-size: 12.5px;
@@ -1853,6 +1857,30 @@
 .ct-card__hint {
   font-size: 11px;
   color: var(--muted);
+}
+
+/* The other deliberate small-accent moment: a single soft-yellow "Optional"
+   badge (Additional instructions) — not the shared .ct-card__hint treatment
+   used everywhere else, so this stays a one-off highlight, not a re-tint. */
+.ct-hint-badge--optional {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #6B5A1E;
+  background: var(--highlight-yellow);
+}
+
+/* Selective near-white surface tints (enterprise palette) — a specific card
+   type, never a global re-tint of --surface/--surface-2. */
+.ct-card--tint-blue .ct-card__body {
+  background: var(--tint-blue);
+}
+.ct-card--tint-yellow .ct-card__body {
+  background: var(--tint-yellow);
 }
 
 .ct-card__body {

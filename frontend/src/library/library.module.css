@@ -54,32 +54,6 @@
   font-size: 0.875rem;
 }
 
-.connectors {
-  white-space: nowrap;
-  font-weight: 500;
-}
-
-.arrow {
-  color: var(--color-text-muted, #94a3b8);
-  margin: 0 6px;
-}
-
-.pairs {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.pairs code {
-  background: var(--color-surface-subtle, #f1f5f9);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 0.8rem;
-}
-
 .role {
   margin-left: 6px;
 }

@@ -4,10 +4,14 @@
 // --bcone-* tokens (success=green, warning=orange, error=red, info=blue,
 // teal, default=gray) — we never hand-pick colors at the call site.
 
-// Confidence tiers. VERY_HIGH uses `teal` so it stays visually distinct from
-// HIGH (`success`/green); the rest collapse onto Canopy's status variants.
+// Confidence tiers. VERY_HIGH uses `purple` so it stays visually distinct
+// from HIGH (`success`/green); the rest collapse onto Canopy's status
+// variants. NOT `teal` — Canopy's teal variant now IS the app's brand accent
+// color (index.css --bcone-teal, an enterprise-palette orange), which would
+// otherwise put VERY_HIGH uncomfortably close to MEDIUM's amber (`warning`).
+// Status colors must never derive from the chrome/brand palette.
 export const TIER_BADGE_VARIANT = {
-  very_high: "teal",
+  very_high: "purple",
   high: "success",
   medium: "warning",
   none: "error",

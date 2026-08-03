@@ -1,22 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Badge, Alert } from "@bristlecone/canopy";
+import { Button, Alert } from "@bristlecone/canopy";
 import { FiTrash2, FiRefreshCw, FiAlertTriangle } from "react-icons/fi";
 import api from "../services/api";
 import styles from "./library.module.css";
-
-// Mirrors the per-row provenance vocabulary the mapping card uses.
-const PROV_BADGE = {
-  library: { label: "Vector Library", variant: "info" },
-  groq: { label: "Groq", variant: "default" },
-  openai: { label: "OpenAI", variant: "default" },
-  manual: { label: "Manual", variant: "warning" },
-};
-
-function fmtDate(s) {
-  if (!s) return "—";
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? s : d.toLocaleString();
-}
 
 function isKeyRole(role) {
   return /key/i.test(String(role));
@@ -71,11 +57,13 @@ function AttributeMappingSection({ onCount }) {
     [all, filters],
   );
 
-  const remove = async (id) => {
-    if (!window.confirm("Delete this stored mapping? This cannot be undone.")) return;
-    setBusyId(id);
+  const remove = async (m) => {
+    const n = m.mappings?.length ?? 0;
+    const note = n > 1 ? ` This removes all ${n} column pairings stored for this connector pair.` : "";
+    if (!window.confirm(`Delete this stored mapping?${note} This cannot be undone.`)) return;
+    setBusyId(m.id);
     try {
-      await api.delete(`/api/recon/library/${id}`);
+      await api.delete(`/api/recon/library/${m.id}`);
       await load();
     } catch {
       setError("Delete failed.");
@@ -158,52 +146,39 @@ function AttributeMappingSection({ onCount }) {
           <table className="ct-table">
             <thead>
               <tr>
-                <th>Source → Target</th>
-                <th>Comparison</th>
-                <th>Column pairings</th>
-                <th>Provenance</th>
-                <th>Added by</th>
-                <th>Last used</th>
+                <th>Source connector</th>
+                <th>Target connector</th>
+                <th>Comparison type</th>
+                <th>Source column</th>
+                <th>Target column</th>
                 <th aria-label="Row actions" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((m) => {
-                const prov = PROV_BADGE[m.provenance] ?? { label: m.provenance, variant: "default" };
-                return (
-                  <tr key={m.id}>
-                    <td className={styles.connectors}>
-                      <span>{m.source_connector}</span>
-                      <span className={styles.arrow}>→</span>
-                      <span>{m.target_connector}</span>
-                    </td>
+              {rows.flatMap((m) => {
+                const pairings = m.mappings?.length ? m.mappings : [null];
+                return pairings.map((p, i) => (
+                  <tr key={`${m.id}-${i}`}>
+                    <td>{m.source_connector}</td>
+                    <td>{m.target_connector}</td>
                     <td>{m.comparison_type}</td>
+                    <td>{p ? <code>{p.source_col}</code> : "—"}</td>
                     <td>
-                      <ul className={styles.pairs}>
-                        {m.mappings.map((p, i) => (
-                          <li key={`${p.source_col}-${p.target_col}-${i}`}>
-                            <code>{p.source_col}</code>
-                            <span className={styles.arrow}>→</span>
-                            <code>{p.target_col}</code>
-                            <span className={styles.role}>{isKeyRole(p.role) ? "🔑" : "📊"}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      {p ? (
+                        <>
+                          <code>{p.target_col}</code>
+                          <span className={styles.role}>{isKeyRole(p.role) ? "🔑" : "📊"}</span>
+                        </>
+                      ) : (
+                        "—"
+                      )}
                     </td>
-                    <td>
-                      <Badge variant={prov.variant}>{prov.label}</Badge>
-                    </td>
-                    <td>
-                      <div>{m.added_by}</div>
-                      <div className={styles.muted}>{fmtDate(m.added_on)}</div>
-                    </td>
-                    <td>{fmtDate(m.last_used_on)}</td>
                     <td>
                       <Button
                         type="button"
                         variant="ghost"
                         className="h-8 text-xs"
-                        onClick={() => remove(m.id)}
+                        onClick={() => remove(m)}
                         disabled={busyId === m.id}
                         aria-label="Delete mapping"
                       >
@@ -211,7 +186,7 @@ function AttributeMappingSection({ onCount }) {
                       </Button>
                     </td>
                   </tr>
-                );
+                ));
               })}
             </tbody>
           </table>
@@ -354,38 +329,35 @@ function ValuePairsSection({ onCount }) {
           <table className="ct-table">
             <thead>
               <tr>
-                <th>Source → Target</th>
-                <th>Field</th>
-                <th>Value pair</th>
-                <th>Transform</th>
-                <th>Added</th>
+                <th>Source connector</th>
+                <th>Target connector</th>
+                <th>Source field</th>
+                <th>Target field</th>
+                <th>Source value</th>
+                <th>Target value</th>
+                <th>Transformation applied</th>
                 <th aria-label="Row actions" />
               </tr>
             </thead>
             <tbody>
               {rows.map((p) => (
                 <tr key={p.id}>
-                  <td className={styles.connectors}>
-                    <span>{p.source_connector}</span>
-                    <span className={styles.arrow}>→</span>
-                    <span>{p.target_connector}</span>
-                  </td>
+                  <td>{p.source_connector}</td>
+                  <td>{p.target_connector}</td>
                   <td>
                     <code>{p.source_field}</code>
-                    <span className={styles.arrow}>→</span>
+                  </td>
+                  <td>
                     <code>{p.target_field}</code>
                   </td>
                   <td>
                     <code>{p.source_value}</code>
-                    <span className={styles.arrow}>→</span>
+                  </td>
+                  <td>
                     <code>{p.target_value}</code>
                   </td>
                   <td className={styles.muted}>
-                    {(p.ops ?? []).map((s) => `${s.op}(${JSON.stringify(s.params)})`).join(" → ")}
-                  </td>
-                  <td>
-                    <div>{p.added_by}</div>
-                    <div className={styles.muted}>{fmtDate(p.added_on)}</div>
+                    {(p.ops ?? []).map((s) => `${s.op}(${JSON.stringify(s.params)})`).join(" → ") || "—"}
                   </td>
                   <td>
                     <Button

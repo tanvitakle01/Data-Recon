@@ -59,15 +59,18 @@
 
 .sidebar {
   /* Sidebar theme (scoped — does NOT touch global app tokens).
-       --sb-bg    #143D4A  Teal (solid sidebar background)
+       --sb-bg    #212F3D  Enterprise-palette dark anchor (solid sidebar background)
        --sb-main  #EDE7E1  nav items, icons
-       --sb-hover #1E1E1E  hover glow/highlight */
-  --sb-bg: #143d4a;
+       --sb-hover #1E1E1E  hover glow/highlight
+     --sb-bg matches the app's --ink (index.css) exactly — chrome and primary
+     text now read as one consistent dark identity, per the palette's anchor
+     role. --sb-active-bg is tinted from the new --accent orange (was teal). */
+  --sb-bg: #212f3d;
   --sb-main: #ede7e1;
   --sb-hover: #1e1e1e;
   --sb-hairline: rgba(237, 231, 225, 0.14);
   --sb-hover-bg: rgba(255, 255, 255, 0.07);
-  --sb-active-bg: rgba(33, 166, 189, 0.22);
+  --sb-active-bg: rgba(248, 159, 91, 0.22);
   --sb-glow: 0 0 0 1px rgba(30, 30, 30, 0.55), 0 2px 12px rgba(30, 30, 30, 0.42);
 
   position: sticky;

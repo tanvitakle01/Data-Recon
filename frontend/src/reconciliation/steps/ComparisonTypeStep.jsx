@@ -637,7 +637,7 @@ function ComparisonTypeStep() {
       <div className="ct-grid">
         {/* ══ Left column: Mapping sheet + Pre-flight checks ══ */}
         <div className="ct-col">
-          <section className="ct-card">
+          <section className="ct-card ct-card--tint-blue">
             <div className="ct-card__head">
               <h3 className="ct-card__title">Mapping sheet</h3>
               <span className="ct-card__spacer" />
@@ -765,7 +765,7 @@ function ComparisonTypeStep() {
             </section>
           )}
 
-          <section className="ct-card">
+          <section className="ct-card ct-card--tint-yellow">
             <div className="ct-card__head">
               <h3 className="ct-card__title">Pre-flight checks</h3>
             </div>
@@ -887,7 +887,7 @@ function ComparisonTypeStep() {
           <section className="ct-card">
             <div className="ct-card__head">
               <h3 className="ct-card__title">Additional instructions</h3>
-              <span className="ct-card__hint">Optional</span>
+              <span className="ct-hint-badge--optional">Optional</span>
               <span className="ct-card__spacer" />
               {instructionsText && <Badge variant="teal">Set</Badge>}
             </div>
