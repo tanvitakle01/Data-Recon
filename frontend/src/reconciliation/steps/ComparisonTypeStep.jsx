@@ -14,7 +14,17 @@ import {
   sheetEntityJoin,
 } from "../lib/entityJoinSpec";
 import { Badge, Select, Button, Alert } from "@bristlecone/canopy";
-import { Upload, FileSpreadsheet, X, Loader2, Check, AlertTriangle, Circle } from "lucide-react";
+import {
+  Upload,
+  FileSpreadsheet,
+  X,
+  Loader2,
+  Check,
+  AlertTriangle,
+  Circle,
+  Sparkles,
+} from "lucide-react";
+import ResolverPanel from "../components/ResolverPanel";
 
 // Elapsed-time display for Auto mode: purely client-side (no backend job
 // status is polled fast enough to drive a smooth tick) — starts the moment
@@ -476,9 +486,19 @@ function ComparisonTypeStep() {
   const [autoError, setAutoError] = useState(null);
   const [autoFailedStep, setAutoFailedStep] = useState(null);
 
+  // ── Error-resolver bot: opens when Auto pauses on a RECOVERABLE resolution
+  // failure (entity/field/join-key not resolved) — never on an unrecoverable
+  // one, which still lands in autoError/autoFailedStep above unchanged. ────
+  const [autoInterrupt, setAutoInterrupt] = useState(null);
+  const [resolverOpen, setResolverOpen] = useState(false);
+  const [resolverBusy, setResolverBusy] = useState(false);
+  const [resolverError, setResolverError] = useState(null);
+
   const autoStartRef = useRef(null);
   const tickIntervalRef = useRef(null);
   const pollIntervalRef = useRef(null);
+  const graphRunIdRef = useRef(null);
+  const lastInterruptKeyRef = useRef(null);
   const appliedRef = useRef({ source: false, target: false, mapping: false });
 
   useEffect(() => {
@@ -559,19 +579,57 @@ function ComparisonTypeStep() {
       setAutoCurrentStep(run.current_step);
       setAutoBatchProgress(run.batch_progress ?? null);
       applyPartialResult(run.result);
+
+      if (run.status === "waiting_for_input" && run.interrupt) {
+        // Re-open on a genuinely NEW question (including a re-ask after an
+        // invalid answer) — but leave it alone if the user already
+        // dismissed THIS same one and nothing has changed yet.
+        const key = `${run.interrupt.message}|${run.interrupt.attempted}`;
+        if (key !== lastInterruptKeyRef.current) {
+          lastInterruptKeyRef.current = key;
+          setResolverOpen(true);
+          setResolverError(null);
+        }
+        setAutoInterrupt(run.interrupt);
+        setResolverBusy(false);
+        return;
+      }
+
+      setAutoInterrupt(null);
+
       if (run.status === "completed") {
         clearInterval(pollIntervalRef.current);
         clearInterval(tickIntervalRef.current);
+        setResolverOpen(false);
         await finishAutoRun(run.result);
       } else if (run.status === "failed") {
         clearInterval(pollIntervalRef.current);
         clearInterval(tickIntervalRef.current);
         setAutoRunning(false);
+        setResolverOpen(false);
         setAutoFailedStep(run.failed_step);
         setAutoError(run.error || "Auto mode failed.");
       }
     } catch {
       // A transient poll failure shouldn't abort the run — the next tick retries.
+    }
+  };
+
+  // Submits a chip tap or typed value identically — the backend validates
+  // both against the exact same live options (see interrupts.py) and either
+  // progresses, re-asks with fresh chips, completes, or fails; the next poll
+  // tick picks up whichever it was. Never restarts the run.
+  const resolveInterrupt = async (value) => {
+    const graphRunId = graphRunIdRef.current;
+    if (!graphRunId || !value) return;
+    setResolverBusy(true);
+    setResolverError(null);
+    try {
+      await api.post(`/api/recon/auto-run/${graphRunId}/resolve`, { value });
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setResolverError(typeof detail === "string" ? detail : "Could not submit that answer.");
+      setResolverBusy(false);
     }
   };
 
@@ -581,6 +639,11 @@ function ComparisonTypeStep() {
     setAutoCurrentStep(null);
     setAutoBatchProgress(null);
     setAutoElapsedMs(0);
+    setAutoInterrupt(null);
+    setResolverOpen(false);
+    setResolverError(null);
+    setResolverBusy(false);
+    lastInterruptKeyRef.current = null;
     appliedRef.current = { source: false, target: false, mapping: false };
     setAutoRunning(true);
 
@@ -597,6 +660,7 @@ function ComparisonTypeStep() {
         actor: "auto",
       });
       const graphRunId = res.data.graph_run_id;
+      graphRunIdRef.current = graphRunId;
       pollIntervalRef.current = setInterval(() => pollAutoRun(graphRunId), 1000);
     } catch (err) {
       clearInterval(tickIntervalRef.current);
@@ -811,15 +875,30 @@ function ComparisonTypeStep() {
 
                 {autoRunning ? (
                   <div className="wizard-auto-progress">
-                    <Loader2 size={16} className="animate-spin" aria-hidden />
+                    {autoInterrupt ? (
+                      <Sparkles size={16} aria-hidden />
+                    ) : (
+                      <Loader2 size={16} className="animate-spin" aria-hidden />
+                    )}
                     <span className="wizard-auto-progress__step">
-                      {AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
+                      {autoInterrupt
+                        ? `Needs your input — ${AUTO_STEP_LABELS[autoCurrentStep] ?? "resolving"}`
+                        : AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
                       {autoCurrentStep === "pair_values" && autoBatchProgress && (
                         <> — batch {autoBatchProgress.batch_index + 1} of{" "}
                         {autoBatchProgress.batch_count} ({autoBatchProgress.batch_label})</>
                       )}
                     </span>
                     <span className="wizard-auto-progress__timer">{formatElapsed(autoElapsedMs)}</span>
+                    {autoInterrupt && !resolverOpen && (
+                      <button
+                        type="button"
+                        className="wizard-link"
+                        onClick={() => setResolverOpen(true)}
+                      >
+                        Reopen
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -928,6 +1007,15 @@ function ComparisonTypeStep() {
           </section>
         </div>
       </div>
+
+      <ResolverPanel
+        open={resolverOpen}
+        interrupt={autoInterrupt}
+        busy={resolverBusy}
+        error={resolverError}
+        onSubmit={resolveInterrupt}
+        onClose={() => setResolverOpen(false)}
+      />
     </StepShell>
   );
 }

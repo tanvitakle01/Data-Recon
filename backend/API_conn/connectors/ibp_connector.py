@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 
 from backend.API_conn.connectors.base_connector import SAPConnector
-from backend.API_conn.config.config_loader import load_config
+from backend.API_conn.config.config_loader import load_config, resolve_verify
 
 @dataclass
 class IBPDataConfig:
@@ -30,7 +30,7 @@ class IBPDemandConnector(SAPConnector):
 
         super().__init__(cfg)
         self.session = requests.Session()
-        self.verify_ssl = False
+        self.verify_ssl = resolve_verify(cfg)
 
         self.ibp = IBPDataConfig(
             base_url=str(cfg["base_url"]),

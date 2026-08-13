@@ -15,6 +15,7 @@ import {
 import { BristleconeLogo } from "@bristlecone/canopy";
 import { useTicketing } from "../ticketing/useTicketing";
 import canopyPkg from "@bristlecone/canopy/package.json";
+import UserMenu from "./UserMenu";
 import styles from "./appLayout.module.css";
 
 const SIDEBAR_STORAGE_KEY = "sidebar-expanded";
@@ -142,6 +143,7 @@ function AppLayout({ children }) {
           <span className={styles.brandDivider} aria-hidden="true" />
           <span className={styles.brandText}>Data Reconciliation</span>
         </Link>
+        <UserMenu />
       </header>
 
       <div

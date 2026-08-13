@@ -42,12 +42,18 @@ def update(
     failed_step: str | None = None,
     error: str | None = None,
     result: dict[str, Any] | None = None,
+    interrupt: dict[str, Any] | None = None,
 ) -> None:
+    """``interrupt`` carries the resolver bot's pending question while
+    ``status == "waiting_for_input"`` — callers pass ``None`` explicitly to
+    clear a stale one whenever the run isn't actually paused (see
+    ``routes/auto_pipeline.py``), never left as a leftover default.
+    """
     with main_db() as conn:
         conn.execute(
             """UPDATE pipeline_runs
                SET status = ?, current_step = ?, step_timestamps_json = ?,
-                   failed_step = ?, error = ?, result_json = ?
+                   failed_step = ?, error = ?, result_json = ?, interrupt_json = ?
                WHERE graph_run_id = ?""",
             (
                 status,
@@ -56,6 +62,7 @@ def update(
                 failed_step,
                 error,
                 json.dumps(result) if result is not None else None,
+                json.dumps(interrupt) if interrupt is not None else None,
                 graph_run_id,
             ),
         )
@@ -94,6 +101,7 @@ def update_batch_progress(
 
 def _row_to_dict(row) -> dict[str, Any]:
     batch_progress_json = row["batch_progress_json"] if "batch_progress_json" in row.keys() else None
+    interrupt_json = row["interrupt_json"] if "interrupt_json" in row.keys() else None
     return {
         "graph_run_id": row["graph_run_id"],
         "status": row["status"],
@@ -104,6 +112,7 @@ def _row_to_dict(row) -> dict[str, Any]:
         "result": json.loads(row["result_json"]) if row["result_json"] else None,
         "created_at": row["created_at"],
         "batch_progress": json.loads(batch_progress_json) if batch_progress_json else None,
+        "interrupt": json.loads(interrupt_json) if interrupt_json else None,
     }
 
 

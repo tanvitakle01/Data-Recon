@@ -1,0 +1,128 @@
+/* ============================================================================
+   Account menu — compact avatar+name trigger in the top header, opening a
+   small popover with the signed-in email and logout. No entrance animation
+   by design (open/close is an instant show/hide); hover/focus states are the
+   only transitions, matching the rest of the chrome.
+   ============================================================================ */
+.root {
+  position: relative;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 3px 10px 3px 4px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.trigger:hover { background: var(--surface-2); border-color: var(--border); }
+.trigger:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+
+.avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent-contrast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.avatarLg { width: 34px; height: 34px; font-size: 13px; }
+
+.name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
+  padding: 12px;
+  z-index: 200;
+}
+
+.menuHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.menuIdentity { min-width: 0; }
+.menuName {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menuEmail {
+  margin: 1px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menuDivider {
+  height: 1px;
+  background: var(--border);
+  margin: 10px 0;
+}
+
+.logoutBtn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--missing);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.logoutBtn:hover { background: var(--missing-bg); }
+.logoutBtn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+
+.logoutIcon { width: 15px; height: 15px; flex: 0 0 auto; }
+
+@media (max-width: 640px) {
+  .name { display: none; }
+  .chevron { display: none; }
+  .trigger { padding: 3px; gap: 0; }
+}

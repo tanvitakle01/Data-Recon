@@ -1,10 +1,10 @@
 /* ============================================================================
-   App shell — a persistent top header (brand only — search/env/notifications/
-   user-profile all omitted, since none of them are backed by real data in
-   this app) above a collapsible sidebar + main content row. Expanded (labels)
-   ⇄ collapsed (icon rail). The reconciliation wizard's own step navigator
-   lives in-page (StepShell's .ct-stepbar), not in this sidebar. All color
-   reads through the global tokens.
+   App shell — a persistent top header (brand + account menu — search/env/
+   notifications still omitted, since those aren't backed by real data in this
+   app) above a collapsible sidebar + main content row. Expanded (labels) ⇄
+   collapsed (icon rail). The reconciliation wizard's own step navigator lives
+   in-page (StepShell's .ct-stepbar), not in this sidebar. All color reads
+   through the global tokens.
    ============================================================================ */
 .shell {
   width: 100%;

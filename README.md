@@ -1,3 +1,5 @@
+**SETUP** (Supabase auth + encrypted connections): see [SETUP.md](SETUP.md)
+
  **VENV**: 
  .\venv\Scripts\Activate.ps1   
 

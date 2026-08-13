@@ -86,3 +86,10 @@ temp/
 # (raw snapshots, shadow sources, results, SQLite DBs)
 # =========================
 data/recon_store/
+
+# =========================
+# Local-dev auth/connections backend
+# (temporary Supabase swap — see backend/db/sqlite.py, backend/db/local_kek.py)
+# =========================
+backend/local.db
+backend/.local_kek

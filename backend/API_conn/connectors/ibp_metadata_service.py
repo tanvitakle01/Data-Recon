@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 import requests
 
-from backend.API_conn.config.config_loader import load_config
+from backend.API_conn.config.config_loader import load_config, resolve_verify
 from backend.API_conn.connectors.base_connector import SAPConnector
 from backend.API_conn.odata_utils import sap_odata_date_to_ddmmyyyy
 
@@ -105,7 +105,7 @@ class IBPMetadataService(SAPConnector):
         )
 
         self.session = requests.Session()
-        self.verify_ssl = False
+        self.verify_ssl = resolve_verify(cfg)
 
     # ------------------------------------------------------------------
     # HTTP plumbing (mirrors IBPDemandConnector)

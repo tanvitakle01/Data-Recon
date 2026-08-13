@@ -2115,6 +2115,71 @@
   padding: 20px;
 }
 
+/* Error-resolver bot panel — a narrower drawer than Mapping Review's (it
+   holds one question + chips + a text box, not a review table). Separate
+   cards for the question / chips / free text, per this app's card-per-
+   section convention, rather than one stacked panel. */
+.ct-resolver-drawer {
+  width: min(420px, 92vw);
+}
+.ct-resolver {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ct-resolver__kind {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.ct-resolver__message {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+.ct-resolver__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ct-resolver__chip {
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.ct-resolver__chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ct-resolver__chip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.ct-resolver__chip--muted {
+  font-weight: 500;
+  color: var(--muted);
+}
+.ct-resolver__freetext {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ct-resolver__input {
+  flex: 1 1 auto;
+  min-height: 36px;
+}
+
 .ct-runmode-toggle {
   display: flex;
   border: 1px solid var(--border-strong);

@@ -175,7 +175,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     error               TEXT,
     result_json         TEXT,
     created_at          TEXT NOT NULL,
-    batch_progress_json TEXT
+    batch_progress_json TEXT,
+    interrupt_json      TEXT
 );
 
 -- Value-pair library: a source_value -> target_value pairing for one Key
@@ -375,6 +376,20 @@ def _migrate_pipeline_runs_add_batch_progress(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE pipeline_runs ADD COLUMN batch_progress_json TEXT")
 
 
+def _migrate_pipeline_runs_add_interrupt(conn: sqlite3.Connection) -> None:
+    """One-time migration adding ``interrupt_json`` to ``pipeline_runs``.
+
+    Carries the pending resolver-bot question (see ``auto_pipeline/graph.py``'s
+    ``get_pending_interrupt``) while a run sits in the ``waiting_for_input``
+    status. Nullable, no backfill needed — same safe ``ADD COLUMN`` as
+    ``batch_progress_json`` above.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(pipeline_runs)")}
+    if not cols or "interrupt_json" in cols:
+        return  # table doesn't exist yet, or already on the current schema
+    conn.execute("ALTER TABLE pipeline_runs ADD COLUMN interrupt_json TEXT")
+
+
 def init_storage() -> None:
     """Create store directories and both databases with their schemas.
 
@@ -389,6 +404,7 @@ def init_storage() -> None:
         _migrate_value_pair_library_target_value(conn)
         _migrate_value_pair_library_drop_approval_columns(conn)
         _migrate_pipeline_runs_add_batch_progress(conn)
+        _migrate_pipeline_runs_add_interrupt(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

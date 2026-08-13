@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 import requests
 
-from backend.API_conn.config.config_loader import load_config
+from backend.API_conn.config.config_loader import load_config, resolve_verify
 from backend.API_conn.connectors.base_connector import SAPConnector
 
 
@@ -40,7 +40,7 @@ class S4SalesOrderConnector(SAPConnector):
         )
 
         self.session = requests.Session()
-        self.verify_ssl = False
+        self.verify_ssl = resolve_verify(cfg)
 
     def _service_base_url(self) -> str:
         return (

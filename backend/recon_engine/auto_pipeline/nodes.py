@@ -24,6 +24,7 @@ import time
 from typing import Any, Callable
 
 import pandas as pd
+from langgraph.errors import GraphBubbleUp
 
 from backend.API_conn.connectors import registry
 from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
@@ -44,6 +45,11 @@ from backend.recon_engine.auto_pipeline.candidate_keys import identify_candidate
 from backend.recon_engine.auto_pipeline.field_matching import (
     detect_roles_for_columns,
     match_proposed_to_schema,
+)
+from backend.recon_engine.auto_pipeline.interrupts import (
+    resolve_entity_or_ask,
+    resolve_field_or_ask,
+    resolve_join_key_or_ask,
 )
 from backend.recon_engine.auto_pipeline.state import AutoRunState, SideState
 
@@ -90,9 +96,14 @@ def _live_property_names(client: S4MetadataService, entity: str) -> list[str]:
     return [p["name"] for p in client.get_entity_properties(entity)]
 
 
-def _fetch_s4_dataset(side: SideState) -> pd.DataFrame:
+def _fetch_s4_dataset(side: SideState, role: str) -> tuple[pd.DataFrame, dict[str, Any]]:
     client = S4MetadataService()
-    primary = side["primary_entity"]
+    live_entities = [e["name"] for e in client.get_entities()]
+    raw_primary = side["primary_entity"]
+    # Entity-not-resolved is RECOVERABLE via a single answer (see interrupts.py)
+    # — pauses and re-asks with live-closeness chips rather than hard-stopping.
+    primary = resolve_entity_or_ask(side=role, kind="s4", attempted=raw_primary, live_names=live_entities)
+
     requested_fields = list(side.get("fields") or [])
     if not requested_fields:
         raise RuntimeError(
@@ -100,7 +111,11 @@ def _fetch_s4_dataset(side: SideState) -> pd.DataFrame:
             "nothing to verify or fetch."
         )
 
-    joined_entities = [e for e in (side.get("entities") or []) if e != primary]
+    raw_joined = [e for e in (side.get("entities") or []) if e != raw_primary]
+    joined_entities = [
+        resolve_entity_or_ask(side=role, kind="s4", attempted=e, live_names=live_entities)
+        for e in raw_joined
+    ]
 
     primary_live = _live_property_names(client, primary)
     primary_matched, _unmatched = match_proposed_to_schema(requested_fields, primary_live)
@@ -114,10 +129,10 @@ def _fetch_s4_dataset(side: SideState) -> pd.DataFrame:
         join_matched[entity] = matched
 
     if not primary_matched and not any(join_matched.values()):
-        raise RuntimeError(
-            f"None of the mapping sheet's extracted fields {requested_fields!r} match "
-            f"the live schema of {primary!r} or its joined entities {joined_entities!r} "
-            "— cannot fetch without at least one verified field."
+        # Field/business-field not resolved is likewise RECOVERABLE — ask for
+        # one live field to unblock rather than hard-stopping outright.
+        primary_matched = resolve_field_or_ask(
+            side=role, kind="s4", attempted_fields=requested_fields, live_fields=primary_live
         )
 
     joins: list[dict[str, Any]] = []
@@ -155,13 +170,19 @@ def _fetch_s4_dataset(side: SideState) -> pd.DataFrame:
                 # sheet DID provide — only for one it genuinely didn't.
                 rel = by_target.get(entity)
                 suggested_keys = rel["suggested_keys"] if rel else []
-                if not suggested_keys:
-                    raise RuntimeError(
-                        f"No valid join key between {primary!r} and {entity!r} — the "
-                        "mapping sheet named none (or none verified against the live "
-                        "schema) and the live schema suggests none either."
+                if suggested_keys:
+                    keys = [{"left": k, "right": k} for k in suggested_keys]
+                else:
+                    # Join key missing is the third RECOVERABLE case — ask for
+                    # a key shared by both entities' live schemas.
+                    keys = resolve_join_key_or_ask(
+                        side=role,
+                        kind="s4",
+                        primary_entity=primary,
+                        joined_entity=entity,
+                        primary_props=primary_live,
+                        joined_props=join_live[entity],
                     )
-                keys = [{"left": k, "right": k} for k in suggested_keys]
 
             # An entity contributing no verified business field to this run
             # still needs a concrete, non-empty properties list — its own live
@@ -185,12 +206,16 @@ def _fetch_s4_dataset(side: SideState) -> pd.DataFrame:
         "primary": {"entity": primary, "properties": primary_props},
         "joins": joins,
     }
-    return client.fetch_joined_dataset(spec)
+    df = client.fetch_joined_dataset(spec)
+    return df, {"primary_entity": primary, "entities": [primary, *joined_entities]}
 
 
-def _fetch_ibp_dataset(side: SideState) -> pd.DataFrame:
+def _fetch_ibp_dataset(side: SideState, role: str) -> tuple[pd.DataFrame, dict[str, Any]]:
     client = IBPMetadataService()
-    primary = side["primary_entity"]
+    live_entities = [e["name"] for e in client.get_entities()]
+    primary = resolve_entity_or_ask(
+        side=role, kind="ibp", attempted=side["primary_entity"], live_names=live_entities
+    )
     requested_fields = list(side.get("fields") or [])
     if not requested_fields:
         raise RuntimeError(
@@ -202,14 +227,14 @@ def _fetch_ibp_dataset(side: SideState) -> pd.DataFrame:
     ]
     matched, _unmatched = match_proposed_to_schema(requested_fields, live_selectable)
     if not matched:
-        raise RuntimeError(
-            f"None of the mapping sheet's extracted target fields {requested_fields!r} "
-            f"match {primary!r}'s live (selectable) schema — cannot fetch."
+        matched = resolve_field_or_ask(
+            side=role, kind="ibp", attempted_fields=requested_fields, live_fields=live_selectable
         )
-    return client.fetch_entity(primary, matched)
+    df = client.fetch_entity(primary, matched)
+    return df, {"primary_entity": primary}
 
 
-_FETCHERS: dict[str, Callable[[SideState], pd.DataFrame]] = {
+_FETCHERS: dict[str, Callable[[SideState, str], tuple[pd.DataFrame, dict[str, Any]]]] = {
     "s4": _fetch_s4_dataset,
     "ibp": _fetch_ibp_dataset,
 }
@@ -220,21 +245,22 @@ def _import_side(state: AutoRunState, role: str, layer: RawLayer) -> dict[str, A
     fetcher = _FETCHERS.get(side["kind"])
     if fetcher is None:
         raise RuntimeError(f"No live-fetch importer for connector kind {side['kind']!r}.")
-    df = fetcher(side)
+    df, resolved = fetcher(side, role)
     if df is None or df.empty:
         raise RuntimeError(
             f"{role.capitalize()} import returned no rows "
-            f"(entity={side['primary_entity']!r})."
+            f"(entity={resolved.get('primary_entity', side['primary_entity'])!r})."
         )
+    updated = dict(side)
+    updated.update(resolved)
     snap = service.ingest_snapshot(
         df,
         layer=layer,
         source_type=side["kind"],
         comparison_type=state.get("comparison_type"),
         created_by=state.get("actor", "system"),
-        lineage={"graph_run_id": state["graph_run_id"], "entity": side["primary_entity"]},
+        lineage={"graph_run_id": state["graph_run_id"], "entity": updated["primary_entity"]},
     )
-    updated = dict(side)
     updated["snapshot_id"] = snap.snapshot_id
     updated["row_count"] = snap.row_count
     updated["columns"] = list(snap.columns)
@@ -525,6 +551,12 @@ def _run_step(state: AutoRunState, step: str, fn: Callable[[AutoRunState], dict[
     timestamps = dict(state.get("step_timestamps") or {})
     try:
         updates = fn(state)
+    except GraphBubbleUp:
+        # A resolver's interrupt() (see interrupts.py) — must bubble straight
+        # to LangGraph's runtime to pause/checkpoint the graph. Catching this
+        # as a generic exception would silently convert a RECOVERABLE pause
+        # into a hard "failed" status, and the resolver bot would never open.
+        raise
     except Exception as exc:  # noqa: BLE001 - any exception here is a genuine hard failure
         timestamps[step] = {"start": start, "end": time.time()}
         return {

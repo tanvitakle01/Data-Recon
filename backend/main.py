@@ -41,6 +41,10 @@ def _load_env_file() -> None:
 
 _load_env_file()
 
+from backend.db.sqlite import init_schema as _init_local_sqlite_schema
+
+_init_local_sqlite_schema()
+
 from backend.routes.preview import router as preview_router
 from backend.routes.automap import router as automap_router
 from backend.routes.s4_test_preview import router as s4_test_preview_router
@@ -62,6 +66,8 @@ from backend.routes.library import router as library_router
 from backend.routes.recon_v2 import router as recon_v2_router
 from backend.routes.script_transformations import router as script_transformations_router
 from backend.routes.auto_pipeline import router as auto_pipeline_router
+from backend.routes.auth import router as auth_router
+from backend.routes.connections import router as connections_router
 from backend.recon_engine.storage.db import init_storage
 
 app = FastAPI()
@@ -80,8 +86,18 @@ def _init_recon_storage() -> None:
 # behaviour is unchanged. This is the only way to see a 422 the browser
 # triggers but a hand-built TestClient payload does not reproduce. Remove once
 # the /api/recon/contracts/compile 422 root cause is found and fixed.
+#
+# Deliberately skipped for /api/auth/* and /api/connections/* — those routes
+# carry passwords and connection secrets, and a malformed request body must
+# never be written to the application log.
+_DIAG_SKIP_PREFIXES = ("/api/auth", "/api/connections")
+
+
 @app.exception_handler(RequestValidationError)
 async def _diagnostic_validation_error_handler(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith(_DIAG_SKIP_PREFIXES):
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
     raw_body = await request.body()
     _diag_log.info(
         "422 VALIDATION FAILURE %s %s\n  raw body: %s\n  errors: %s",
@@ -130,6 +146,8 @@ app.include_router(library_router)
 app.include_router(recon_v2_router)
 app.include_router(script_transformations_router)
 app.include_router(auto_pipeline_router)
+app.include_router(auth_router)
+app.include_router(connections_router)
 
 
 

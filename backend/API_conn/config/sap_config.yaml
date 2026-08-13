@@ -4,6 +4,12 @@ s4:
   service: "API_SALES_ORDER_SRV"
   username: "TRAIN_51_S21"
   password: "Integration@123"
+  # TLS verification is ON by default. If this host's cert chains to a
+  # corporate/self-signed CA not in the default trust store, point
+  # ca_bundle at a PEM/CRT file. skip_tls_verify is a non-default, explicit
+  # escape hatch — leave it unset/false outside of throwaway local dev.
+  ca_bundle: null
+  skip_tls_verify: false
 
 ibp:
   enabled: true
@@ -11,6 +17,8 @@ ibp:
   service: "IBP/PLANNING_DATA_API_SRV"
   username: "IBP_FILE_CI"
   password: "IbpApiconn@123456789"
+  ca_bundle: null
+  skip_tls_verify: false
 
 
   #planning_area: "HPA2508"

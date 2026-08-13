@@ -1,13 +1,10 @@
 # backend/API_conn/test_ibp.py
 
 import requests
-import urllib3
 from requests.auth import HTTPBasicAuth
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 # Replace with your config loader
-from config.config_loader import load_config
+from config.config_loader import load_config, resolve_verify
 
 
 def divider(title):
@@ -63,6 +60,7 @@ def main():
 
     username = ibp_cfg.get("username")
     password = ibp_cfg.get("password")
+    verify = resolve_verify(ibp_cfg)
 
     base_url = "https://my400230-api.scmibp.ondemand.com"
     metadata_url = (
@@ -85,7 +83,7 @@ def main():
 
         r = session.get(
             metadata_url,
-            verify=False,
+            verify=verify,
             timeout=60,
             allow_redirects=True,
         )
@@ -107,7 +105,7 @@ def main():
 
         r = session.get(
             metadata_url,
-            verify=False,
+            verify=verify,
             timeout=60,
             allow_redirects=True,
             auth=HTTPBasicAuth(
@@ -144,7 +142,7 @@ def main():
 
         r = session.get(
             service_root,
-            verify=False,
+            verify=verify,
             timeout=60,
             allow_redirects=True,
             auth=HTTPBasicAuth(
