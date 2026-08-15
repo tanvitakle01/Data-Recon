@@ -70,6 +70,11 @@
   transition: transform 0.28s var(--ease);
   z-index: 1199;
 }
+.panel[aria-hidden="true"] {
+  /* Keeps the panel out of the drop-target hit test while closed — otherwise
+     it still sits at inset 0 for the transition and would swallow drops. */
+  pointer-events: none;
+}
 .panelOpen {
   transform: translateX(0);
 }
@@ -163,6 +168,118 @@
   border-bottom-right-radius: var(--radius-sm);
 }
 
+/* ---- Attachments: the tray above the input row (pending, unsent) and the
+   chip layout reused inside sent messages ---- */
+.attachmentTray {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px 0;
+  background: var(--surface);
+}
+.messageAttachments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.attachmentChip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  max-width: 220px;
+}
+.messageUser .attachmentChip {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.attachmentThumb {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex: 0 0 auto;
+}
+.attachmentIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.attachmentMeta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.attachmentName {
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachmentSize {
+  font-size: 11px;
+  color: var(--muted);
+}
+.messageUser .attachmentSize {
+  color: inherit;
+  opacity: 0.75;
+}
+.attachmentRemove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  margin-left: 2px;
+}
+.attachmentRemove:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+/* ---- Drag-and-drop overlay: covers the whole panel while a file is
+   dragged over it, dismissed on drop or drag-leave ---- */
+.dropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-tint);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+}
+.dropOverlayInner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-active);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .inputRow {
   flex: 0 0 auto;
   display: flex;
@@ -171,6 +288,28 @@
   padding: 14px 16px;
   border-top: 1px solid var(--border);
   background: var(--surface);
+}
+.hiddenFileInput {
+  display: none;
+}
+.attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.attach:hover {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--accent-active);
 }
 .input {
   flex: 1 1 auto;
