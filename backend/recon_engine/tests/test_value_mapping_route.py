@@ -32,7 +32,10 @@ def _rows_body(source_rows, target_rows):
     }
 
 
-def test_run_value_mapping_returns_product_and_location_mappings(client):
+def test_run_value_mapping_returns_a_mapping_per_key_pair(client):
+    # No date column present in the rows below, so the default key_pairs'
+    # date pair (RequestedDeliveryDate/PERIODID0_TSTAMP) is detected and
+    # excluded, leaving exactly two pairable pairs in order: product, location.
     source_rows = [
         {"Material": "MAT-1", "ProductionPlant": "PL01"},
         {"Material": "RAW-1", "ProductionPlant": "PL01"},
@@ -44,10 +47,13 @@ def test_run_value_mapping_returns_product_and_location_mappings(client):
     res = client.post("/api/recon/value-mapping/run", data=_rows_body(source_rows, target_rows))
     assert res.status_code == 200, res.text
     body = res.json()
+    pairs = body["pairs"]
+    assert len(pairs) == 2
 
-    assert body["product"]["source_field"] == "Material"
-    assert body["product"]["target_field"] == "PRDID"
-    product_by_value = {m["source_value"]: m for m in body["product"]["matches"]}
+    product = pairs[0]
+    assert product["source_field"] == "Material"
+    assert product["target_field"] == "PRDID"
+    product_by_value = {m["source_value"]: m for m in product["matches"]}
     assert product_by_value["MAT-1"]["confidence"] == "very_high"
     assert product_by_value["MAT-1"]["rule"] == "value_pairing.identity"
     # No LLM configured and no identity/library hit -> genuinely unpaired,
@@ -55,9 +61,10 @@ def test_run_value_mapping_returns_product_and_location_mappings(client):
     assert product_by_value["RAW-1"]["confidence"] == "none"
     assert product_by_value["RAW-1"]["rule"] == "value_pairing.unpaired"
 
-    assert body["location"]["source_field"] == "ProductionPlant"
-    assert body["location"]["target_field"] == "LOCID"
-    location_by_value = {m["source_value"]: m for m in body["location"]["matches"]}
+    location = pairs[1]
+    assert location["source_field"] == "ProductionPlant"
+    assert location["target_field"] == "LOCID"
+    location_by_value = {m["source_value"]: m for m in location["matches"]}
     assert location_by_value["PL01"]["confidence"] == "very_high"
 
 
@@ -90,47 +97,156 @@ def test_run_value_mapping_400s_on_missing_target_data(client):
     assert "target" in res.json()["detail"].lower()
 
 
-def test_run_value_mapping_resolves_custom_field_names(client):
+def test_run_value_mapping_resolves_arbitrary_key_pairs(client):
     # An Excel upload's headers won't literally be "Material"/"PRDID" — the
-    # wizard resolves the confirmed field mapping's actual column names and
-    # sends them as source_product_field/target_product_field/etc.
+    # wizard sends every confirmed key pair's actual column names as a
+    # key_pairs JSON array, however many there are.
     source_rows = [{"SKU": "MAT-1", "Plant Code": "PL01"}]
     target_rows = [{"Product Code": "MAT-1", "Location ID": "PL01"}]
 
+    key_pairs = [
+        {"source_field": "SKU", "target_field": "Product Code"},
+        {"source_field": "Plant Code", "target_field": "Location ID"},
+    ]
     body = {
         **_rows_body(source_rows, target_rows),
-        "source_product_field": "SKU",
-        "target_product_field": "Product Code",
-        "source_location_field": "Plant Code",
-        "target_location_field": "Location ID",
+        "key_pairs": json.dumps(key_pairs),
     }
     res = client.post("/api/recon/value-mapping/run", data=body)
     assert res.status_code == 200, res.text
-    payload = res.json()
+    pairs = res.json()["pairs"]
+    assert len(pairs) == 2
 
-    assert payload["product"]["source_field"] == "SKU"
-    assert payload["product"]["target_field"] == "Product Code"
-    product_by_value = {m["source_value"]: m for m in payload["product"]["matches"]}
+    assert pairs[0]["source_field"] == "SKU"
+    assert pairs[0]["target_field"] == "Product Code"
+    product_by_value = {m["source_value"]: m for m in pairs[0]["matches"]}
     assert product_by_value["MAT-1"]["confidence"] == "very_high"
 
-    assert payload["location"]["source_field"] == "Plant Code"
-    assert payload["location"]["target_field"] == "Location ID"
-    location_by_value = {m["source_value"]: m for m in payload["location"]["matches"]}
+    assert pairs[1]["source_field"] == "Plant Code"
+    assert pairs[1]["target_field"] == "Location ID"
+    location_by_value = {m["source_value"]: m for m in pairs[1]["matches"]}
     assert location_by_value["PL01"]["confidence"] == "very_high"
 
 
-def test_run_value_mapping_400s_on_missing_custom_product_column(client):
+def test_run_value_mapping_supports_more_than_two_key_pairs(client):
+    # A third key pair beyond product/location (e.g. a region/hierarchy
+    # field) must be paired too, not silently dropped.
+    source_rows = [{"SKU": "MAT-1", "Plant Code": "PL01", "Region": "APAC"}]
+    target_rows = [{"Product Code": "MAT-1", "Location ID": "PL01", "RegionCode": "APAC"}]
+
+    key_pairs = [
+        {"source_field": "SKU", "target_field": "Product Code"},
+        {"source_field": "Plant Code", "target_field": "Location ID"},
+        {"source_field": "Region", "target_field": "RegionCode"},
+    ]
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "key_pairs": json.dumps(key_pairs),
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
+    assert res.status_code == 200, res.text
+    pairs = res.json()["pairs"]
+    assert len(pairs) == 3
+    assert pairs[2]["source_field"] == "Region"
+    assert pairs[2]["target_field"] == "RegionCode"
+    region_by_value = {m["source_value"]: m for m in pairs[2]["matches"]}
+    assert region_by_value["APAC"]["confidence"] == "very_high"
+
+
+def test_run_value_mapping_excludes_the_date_pair_from_pairs(client):
+    # A key pair whose own VALUES look like dates is used only for
+    # corroboration — it must never appear in the returned pairs.
+    source_rows = [{"SKU": "MAT-1", "OrderDate": "2024-01-01"}]
+    target_rows = [{"Product Code": "MAT-1", "PERIODID0_TSTAMP": "2024-01-01"}]
+
+    key_pairs = [
+        {"source_field": "SKU", "target_field": "Product Code"},
+        {"source_field": "OrderDate", "target_field": "PERIODID0_TSTAMP"},
+    ]
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "key_pairs": json.dumps(key_pairs),
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
+    assert res.status_code == 200, res.text
+    pairs = res.json()["pairs"]
+    assert len(pairs) == 1
+    assert pairs[0]["source_field"] == "SKU"
+
+
+def test_run_value_mapping_detects_the_date_pair_by_value_not_name(client):
+    # Column named nothing date-like at all ("Col1"/"Col2") but whose actual
+    # values are dates -> still recognized and excluded from pairing. Proves
+    # detection is value-based, not a column-name guess.
+    source_rows = [
+        {"SKU": "MAT-1", "Col1": "2024-01-01"},
+        {"SKU": "MAT-1", "Col1": "2024-02-01"},
+    ]
+    target_rows = [{"Product Code": "MAT-1", "Col2": "2024-01-01"}]
+
+    key_pairs = [
+        {"source_field": "SKU", "target_field": "Product Code"},
+        {"source_field": "Col1", "target_field": "Col2"},
+    ]
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "key_pairs": json.dumps(key_pairs),
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
+    assert res.status_code == 200, res.text
+    pairs = res.json()["pairs"]
+    assert len(pairs) == 1
+    assert pairs[0]["source_field"] == "SKU"
+
+
+def test_run_value_mapping_pairs_a_date_named_column_with_non_date_values(client):
+    # Column NAMED like a date ("OrderDate"/"PERIODID0_TSTAMP") but whose
+    # actual values are plain codes, not dates -> paired normally, not
+    # excluded. Proves the name alone is never enough to skip a pair.
+    source_rows = [{"SKU": "MAT-1", "OrderDate": "BATCH-9"}]
+    target_rows = [{"Product Code": "MAT-1", "PERIODID0_TSTAMP": "BATCH-9"}]
+
+    key_pairs = [
+        {"source_field": "SKU", "target_field": "Product Code"},
+        {"source_field": "OrderDate", "target_field": "PERIODID0_TSTAMP"},
+    ]
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "key_pairs": json.dumps(key_pairs),
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
+    assert res.status_code == 200, res.text
+    pairs = res.json()["pairs"]
+    assert len(pairs) == 2
+    assert pairs[1]["source_field"] == "OrderDate"
+    batch_by_value = {m["source_value"]: m for m in pairs[1]["matches"]}
+    assert batch_by_value["BATCH-9"]["confidence"] == "very_high"
+
+
+def test_run_value_mapping_400s_on_missing_custom_key_column(client):
     source_rows = [{"Plant Code": "PL01"}]
     target_rows = [{"Product Code": "MAT-1", "Location ID": "PL01"}]
 
+    key_pairs = [{"source_field": "SKU", "target_field": "Product Code"}]
     body = {
         **_rows_body(source_rows, target_rows),
-        "source_product_field": "SKU",
-        "target_product_field": "Product Code",
+        "key_pairs": json.dumps(key_pairs),
     }
     res = client.post("/api/recon/value-mapping/run", data=body)
     assert res.status_code == 400
     assert "SKU" in res.json()["detail"]
+
+
+def test_run_value_mapping_400s_on_invalid_key_pairs_json(client):
+    source_rows = [{"Material": "MAT-1"}]
+    target_rows = [{"PRDID": "MAT-1"}]
+
+    body = {
+        **_rows_body(source_rows, target_rows),
+        "key_pairs": "not json",
+    }
+    res = client.post("/api/recon/value-mapping/run", data=body)
+    assert res.status_code == 400
 
 
 def test_run_value_mapping_accepts_connector_and_mapping_sheet_context(client):
@@ -148,6 +264,6 @@ def test_run_value_mapping_accepts_connector_and_mapping_sheet_context(client):
     }
     res = client.post("/api/recon/value-mapping/run", data=body)
     assert res.status_code == 200, res.text
-    product_by_value = {m["source_value"]: m for m in res.json()["product"]["matches"]}
+    product_by_value = {m["source_value"]: m for m in res.json()["pairs"][0]["matches"]}
     assert product_by_value["MAT-1"]["confidence"] == "none"
     assert product_by_value["MAT-1"]["rule"] == "value_pairing.unpaired"

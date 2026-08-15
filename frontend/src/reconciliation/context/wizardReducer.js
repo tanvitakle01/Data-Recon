@@ -79,9 +79,10 @@ function createInitialTransformationSpec() {
     // reconciliation.
     aggregationRules: [],
     mapping: null, // { display: [...], mapping: {...} } from /api/recon/mapping/infer (LLM), possibly hand-edited
-    // Deterministic value-level mapping (Material->PRDID, ProductionPlant->LOCID)
-    // from /api/recon/value-mapping/run, reviewed on the Mapping Review page.
-    valueMappings: null, // { product: ValueMapping, location: ValueMapping } | null
+    // Deterministic value-level mapping — one ValueMapping per confirmed key
+    // pair (however many) from /api/recon/value-mapping/run, reviewed on the
+    // Mapping Review page.
+    valueMappings: null, // ValueMapping[] | null
     draftContract: null, // DraftContract JSON from /api/recon/contracts/compile
     validation: null, // { ok, gate1, gate2 } from /api/recon/contracts/validate
     contract: null, // approved TransformationContract (Manual flow) from /api/recon/contracts/approve

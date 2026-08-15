@@ -2,25 +2,27 @@
 
 Thin HTTP wrapper: resolves source/target dataframes from the same
 file-or-JSON-rows form shape /automap and /reconcile use, then calls
-``recon_engine.value_pairing.pair_values`` for the product (material/PRDID)
-and location (plant/LOCID) pairs. Which actual column plays each role is
-resolved dynamically — see ``*_product_field``/``*_location_field``/
-``*_date_field`` below — so a differently-named Excel header (e.g. "SKU" or
-"Plant Code") works exactly like SAP/IBP's canonical "Material"/"PRDID"
-names. Callers that don't know the resolved names yet (or old callers) get
-those SAP/IBP names as the default, which keeps this endpoint's behavior
-unchanged for the live-fetch flow. No pairing logic lives here.
+``recon_engine.value_pairing.pair_values`` once per confirmed key-field pair
+(see ``KeyFieldPair``/``run_key_pairs`` below) — however many the analyst
+mapped, not a fixed two. Which actual columns play each pair is given by the
+caller's ``key_pairs`` (falls back to ``_DEFAULT_KEY_PAIRS``, the SAP/IBP
+canonical Material/PRDID + ProductionPlant/LOCID pair, when omitted — keeping
+this endpoint's behavior unchanged for callers that don't resolve field names
+themselves). No pairing logic lives here.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 from starlette.datastructures import UploadFile
 
+from backend.recon_engine.date_detection import is_date_like_series
+from backend.recon_engine.models.value_mapping import ValueMapping
 from backend.recon_engine.value_pairing import pair_values
 
 # Reuse the manual-form helpers + loaders from the reconcile route so this
@@ -35,6 +37,23 @@ from backend.routes.reconcile import (
 )
 
 router = APIRouter(prefix="/api/recon", tags=["recon-value-mapping"])
+
+
+class KeyFieldPair(BaseModel):
+    source_field: str
+    target_field: str
+
+
+# The SAP/IBP canonical pair this endpoint has always defaulted to — kept as
+# the fallback so an omitted `key_pairs` reproduces prior behavior for
+# callers that don't resolve field names themselves. No date entry here: a
+# date pair is only ever recognized from its own VALUES (see
+# _split_date_pair), never guessed by name/position, so there's nothing
+# deterministic to default it to.
+_DEFAULT_KEY_PAIRS: list[KeyFieldPair] = [
+    KeyFieldPair(source_field="Material", target_field="PRDID"),
+    KeyFieldPair(source_field="ProductionPlant", target_field="LOCID"),
+]
 
 
 def _resolve_df(
@@ -62,9 +81,71 @@ def _col(df: pd.DataFrame, name: str) -> pd.Series | None:
     return df[match] if match is not None else None
 
 
+def _resolve_column(df: pd.DataFrame, name: str, side_label: str) -> pd.Series:
+    col = _col(df, name)
+    if col is None:
+        raise HTTPException(status_code=400, detail=f"{side_label} has no '{name}' column.")
+    return col
+
+
+def _split_date_pair(
+    key_pairs: list[KeyFieldPair],
+    source_df: pd.DataFrame,
+    target_df: pd.DataFrame,
+) -> tuple[list[KeyFieldPair], KeyFieldPair | None]:
+    """Pulls out the one pair whose SOURCE or TARGET column's own sample
+    values look like dates (see :func:`recon_engine.date_detection.is_date_like_series`
+    — a cheap regex-shape + real parse-attempt check, not a column-name
+    guess) as the corroboration-only date pair; every remaining pair is
+    pairable. A pair whose column is entirely absent from the data has no
+    values to check and is simply not recognized as the date pair — it's
+    left pairable like anything else, so a genuinely missing column still
+    fails with the usual clear 400 rather than being silently swallowed.
+    """
+    for index, pair in enumerate(key_pairs):
+        source_series = _col(source_df, pair.source_field)
+        target_series = _col(target_df, pair.target_field)
+        if is_date_like_series(source_series) or is_date_like_series(target_series):
+            return key_pairs[:index] + key_pairs[index + 1 :], pair
+    return key_pairs, None
+
+
+def run_key_pairs(
+    key_pairs: list[KeyFieldPair],
+    source_df: pd.DataFrame,
+    target_df: pd.DataFrame,
+    source_label: str,
+    pair_fn: Callable[..., ValueMapping],
+) -> list[ValueMapping]:
+    """Resolves ``source_label``/`"Target data"` columns for every pairable
+    key pair (the date pair, if any, is excluded — it's corroboration-only)
+    and calls ``pair_fn`` (``pair_values`` or ``pair_values_deterministic_only``)
+    once per pair, in input order. Any missing column fails fast with a
+    single clear 400, same as before."""
+    pairable, date_pair = _split_date_pair(key_pairs or list(_DEFAULT_KEY_PAIRS), source_df, target_df)
+    source_dates = _col(source_df, date_pair.source_field) if date_pair else None
+    target_dates = _col(target_df, date_pair.target_field) if date_pair else None
+
+    results: list[ValueMapping] = []
+    for pair in pairable:
+        source_series = _resolve_column(source_df, pair.source_field, source_label)
+        target_series = _resolve_column(target_df, pair.target_field, "Target data")
+        results.append(
+            pair_fn(
+                source_field=pair.source_field,
+                target_field=pair.target_field,
+                source_series=source_series,
+                target_series=target_series,
+                source_dates=source_dates,
+                target_dates=target_dates,
+            )
+        )
+    return results
+
+
 @router.post("/value-mapping/run")
 async def run_value_mapping(request: Request) -> dict[str, Any]:
-    """Pair every distinct product value and every distinct location value.
+    """Pair every distinct value for every confirmed key-field pair.
 
     Accepts either uploaded Excel files (`source_file`/`target_file`) or
     already-fetched JSON rows (`source_rows`/`target_rows`), matching the
@@ -74,16 +155,18 @@ async def run_value_mapping(request: Request) -> dict[str, Any]:
     JSON) is the parsed mapping-sheet payload, passed through as STM context
     for the LLM pairing step — a hint only, never load-bearing.
 
-    Which column plays the product/location/date role on each side is given
-    by `source_product_field`/`target_product_field`/`source_location_field`/
-    `target_location_field`/`source_date_field`/`target_date_field` — the
-    wizard resolves these from the analyst-confirmed field mapping (so an
-    Excel header like "SKU" or "Plant Code" works the same as SAP/IBP's
-    canonical "Material"/"ProductionPlant"/"PRDID"/"LOCID"). Any field
-    omitted falls back to its SAP/IBP name, which keeps this endpoint's
-    behavior unchanged for callers that don't resolve field names themselves.
+    `key_pairs` (optional JSON array of ``{"source_field", "target_field"}``,
+    same form-field-holds-JSON convention as `mapping_sheet`) lists every
+    confirmed key pair — however many the analyst mapped. Falls back to
+    ``_DEFAULT_KEY_PAIRS`` (SAP/IBP's Material/PRDID + ProductionPlant/LOCID)
+    when omitted, which keeps this endpoint's behavior unchanged for callers
+    that don't resolve field names themselves. Whichever pair's own sample
+    VALUES look like dates (a cheap regex-shape + parse-attempt check — see
+    ``recon_engine.date_detection``, never a column-name guess) is used for
+    corroboration only and never itself paired.
 
-    Returns ``{"product": ValueMapping, "location": ValueMapping}``.
+    Returns ``{"pairs": [ValueMapping, ...]}`` in `key_pairs` order (the date
+    pair excluded).
     """
     form = await request.form(max_part_size=_MAX_PART_SIZE)
 
@@ -103,64 +186,28 @@ async def run_value_mapping(request: Request) -> dict[str, Any]:
         except ValueError:
             mapping_sheet_context = None
 
-    source_product_field = (_form_str(form, "source_product_field") or "").strip() or "Material"
-    target_product_field = (_form_str(form, "target_product_field") or "").strip() or "PRDID"
-    source_location_field = (_form_str(form, "source_location_field") or "").strip() or "ProductionPlant"
-    target_location_field = (_form_str(form, "target_location_field") or "").strip() or "LOCID"
-    source_date_field = (_form_str(form, "source_date_field") or "").strip() or "RequestedDeliveryDate"
-    target_date_field = (_form_str(form, "target_date_field") or "").strip() or "PERIODID0_TSTAMP"
+    key_pairs_raw = _form_optional_str(form, "key_pairs")
+    key_pairs: list[KeyFieldPair] = list(_DEFAULT_KEY_PAIRS)
+    if key_pairs_raw:
+        try:
+            key_pairs = [KeyFieldPair(**item) for item in json.loads(key_pairs_raw)]
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid key_pairs: {exc}")
 
     try:
         source_df = _resolve_df(source_rows, source_file, src_sheet, "source")
         target_df = _resolve_df(target_rows, target_file, tgt_sheet, "target")
 
-        source_material = _col(source_df, source_product_field)
-        if source_material is None:
-            raise HTTPException(status_code=400, detail=f"Source data has no '{source_product_field}' column.")
-        target_prdid = _col(target_df, target_product_field)
-        if target_prdid is None:
-            raise HTTPException(status_code=400, detail=f"Target data has no '{target_product_field}' column.")
-        source_plant = _col(source_df, source_location_field)
-        if source_plant is None:
-            raise HTTPException(status_code=400, detail=f"Source data has no '{source_location_field}' column.")
-        target_locid = _col(target_df, target_location_field)
-        if target_locid is None:
-            raise HTTPException(status_code=400, detail=f"Target data has no '{target_location_field}' column.")
+        def _pair_fn(**kwargs: Any) -> ValueMapping:
+            return pair_values(
+                source_connector=source_connector,
+                target_connector=target_connector,
+                mapping_sheet_context=mapping_sheet_context,
+                **kwargs,
+            )
 
-        # Optional date columns for the corroboration check — a record-level
-        # signal used only to break a tie when a value has competing
-        # candidates (e.g. a coincidental identity match vs. a real
-        # transform). Absent columns simply mean corroboration reports "no
-        # signal", never a false positive or negative.
-        source_dates = _col(source_df, source_date_field)
-        target_dates = _col(target_df, target_date_field)
-
-        product = pair_values(
-            source_field=source_product_field,
-            target_field=target_product_field,
-            source_series=source_material,
-            target_series=target_prdid,
-            source_connector=source_connector,
-            target_connector=target_connector,
-            mapping_sheet_context=mapping_sheet_context,
-            source_dates=source_dates,
-            target_dates=target_dates,
-        )
-        location = pair_values(
-            source_field=source_location_field,
-            target_field=target_location_field,
-            source_series=source_plant,
-            target_series=target_locid,
-            source_connector=source_connector,
-            target_connector=target_connector,
-            mapping_sheet_context=mapping_sheet_context,
-            source_dates=source_dates,
-            target_dates=target_dates,
-        )
-        return {
-            "product": product.model_dump(mode="json"),
-            "location": location.model_dump(mode="json"),
-        }
+        mappings = run_key_pairs(key_pairs, source_df, target_df, "Source data", _pair_fn)
+        return {"pairs": [m.model_dump(mode="json") for m in mappings]}
     except HTTPException:
         raise
     except ValueError as exc:

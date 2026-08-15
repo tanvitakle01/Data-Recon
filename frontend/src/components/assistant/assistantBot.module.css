@@ -1,0 +1,213 @@
+/* App-wide assistant bot — floating launcher (viewport-fixed, bottom-right,
+   larger than Mapping Review's fab since this one represents the whole app,
+   not a single step) + a right-side slide-out chat panel at 45vw / full
+   height. Reads entirely through the global tokens in index.css so it
+   matches both themes without its own overrides. */
+
+.launcher {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 1200;
+  width: 60px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--accent-active);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: var(--shadow-3);
+  cursor: pointer;
+  transition: transform var(--dur) var(--ease), background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.launcher:hover {
+  background: var(--accent-hover);
+  transform: translateY(-2px);
+}
+.launcher:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px var(--accent-ring);
+}
+.launcher[aria-hidden="true"] {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.85);
+}
+
+@media (max-width: 720px) {
+  .launcher { right: 16px; bottom: 16px; width: 52px; height: 52px; }
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 1198;
+}
+.backdropOpen {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 45vw;
+  min-width: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-3);
+  transform: translateX(100%);
+  transition: transform 0.28s var(--ease);
+  z-index: 1199;
+}
+.panelOpen {
+  transform: translateX(0);
+}
+
+@media (max-width: 900px) {
+  .panel { width: 100vw; min-width: 0; }
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.headIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent-active);
+  flex: 0 0 auto;
+}
+.headText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.subtitle {
+  font-size: 12px;
+  color: var(--muted);
+}
+.close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.close:hover {
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+.body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface-2);
+}
+
+.message {
+  max-width: 78%;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.messageBot {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  border-bottom-left-radius: var(--radius-sm);
+}
+.messageUser {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.inputRow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.input {
+  flex: 1 1 auto;
+  resize: none;
+  max-height: 120px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+.input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.send:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

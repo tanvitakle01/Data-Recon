@@ -39,7 +39,11 @@ from backend.recon_engine.config import get_settings
 from backend.recon_engine.llm import build_llm_client, get_last_llm_outcome, reset_llm_outcome
 from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
 from backend.recon_engine.storage import value_pair_store
-from backend.recon_engine.value_pairing.batching import BatchProgress, build_source_batches
+from backend.recon_engine.value_pairing.batching import (
+    BatchProgress,
+    build_source_batches,
+    build_target_batches,
+)
 from backend.recon_engine.value_pairing.corroborate import corroboration_overlap
 from backend.recon_engine.value_pairing.extraction import distinct_values
 from backend.recon_engine.value_pairing.identity import identity_prepass
@@ -759,6 +763,14 @@ def pair_values(
     batches = build_source_batches(
         source_series=source_series, source_dates=source_dates, window_years=window_years
     )
+    # Display-only: which distinct target values share each batch's calendar
+    # window. Never used for matching — see batching.py's module docstring.
+    target_batches = build_target_batches(
+        target_series=target_series, target_dates=target_dates, window_years=window_years
+    )
+    target_candidates_by_label = {
+        label: len(distinct_values(target_series[mask])) for label, mask in target_batches
+    }
 
     all_batch_matches: list[list[ValueMatch]] = []
     for index, (label, mask) in enumerate(batches):
@@ -794,6 +806,7 @@ def pair_values(
                     batch_index=index,
                     batch_count=len(batches),
                     batch_label=label,
+                    target_candidate_count=target_candidates_by_label.get(label),
                 )
             )
 

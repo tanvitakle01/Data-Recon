@@ -8,8 +8,11 @@ s4:
   # corporate/self-signed CA not in the default trust store, point
   # ca_bundle at a PEM/CRT file. skip_tls_verify is a non-default, explicit
   # escape hatch — leave it unset/false outside of throwaway local dev.
+  # TRAIN_51_S21 presents a self-signed cert with no corporate CA bundle
+  # available (2026-08-15, confirmed with user) — skip_tls_verify enabled
+  # for this training/sandbox host until a proper ca_bundle can be supplied.
   ca_bundle: null
-  skip_tls_verify: false
+  skip_tls_verify: true
 
 ibp:
   enabled: true

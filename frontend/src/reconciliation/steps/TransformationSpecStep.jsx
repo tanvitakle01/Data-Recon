@@ -8,10 +8,10 @@ import {
   buildValueMappingFormData,
   cleanAggregationRules,
   fullOrPreviewRows,
+  keyFieldPairs,
   mergeGeneratedMapping,
   missingValueMappingRequirements,
   rebuildMapping,
-  resolveValueMappingFields,
   sampleRows,
 } from "../lib/payload";
 import { detectFieldRole } from "../lib/fieldRoleAliases";
@@ -23,13 +23,13 @@ import MappingReviewDrawer from "../components/MappingReviewDrawer";
 import { serializeOperations } from "../lib/recipeModel";
 import { Button, Alert } from "@bristlecone/canopy";
 
-// Distinct-VALUE summary of the AI-mapping (value-pairing) run, across both
-// resolved sides (product/location) — mirrors MappingReviewBody's own
-// splitMatches so the two surfaces never disagree. A source value with two
-// accepted candidates is one matched value, not two.
+// Distinct-VALUE summary of the AI-mapping (value-pairing) run, across every
+// paired key pair — mirrors MappingReviewBody's own splitMatches so the two
+// surfaces never disagree. A source value with two accepted candidates is
+// one matched value, not two.
 function summarizePairing(valueMappings) {
   if (!valueMappings) return null;
-  const sides = [valueMappings.product, valueMappings.location].filter(Boolean);
+  const sides = valueMappings;
   const matchedValues = new Set();
   const unmatchedValues = new Set();
   for (const side of sides) {
@@ -61,6 +61,28 @@ function mergeLivePrepass(prevMapping, freshMapping) {
     return prevWasLlmDerived ? prev : fresh;
   });
   return { ...freshMapping, matches: merged };
+}
+
+// Same idea as mergeLivePrepass, but across the whole array of value
+// mappings, matched by (source_field, target_field) identity rather than
+// array position — a mid-edit recipe can change how many/which pairs come
+// back, so position isn't stable. A previous pair the fresh response no
+// longer covers (e.g. a column momentarily dropped mid-edit) is kept as-is
+// rather than discarded.
+function mergePrepassArray(prevMappings, freshMappings) {
+  const pairKey = (vm) => `${vm.source_field}->${vm.target_field}`;
+  const prev = prevMappings ?? [];
+  const fresh = freshMappings ?? [];
+  const prevByKey = new Map(prev.map((vm) => [pairKey(vm), vm]));
+  const freshKeys = new Set();
+  const merged = fresh.map((freshVm) => {
+    freshKeys.add(pairKey(freshVm));
+    return mergeLivePrepass(prevByKey.get(pairKey(freshVm)), freshVm);
+  });
+  for (const vm of prev) {
+    if (!freshKeys.has(pairKey(vm))) merged.push(vm);
+  }
+  return merged;
 }
 
 function TransformationSpecStep() {
@@ -223,7 +245,7 @@ function TransformationSpecStep() {
     return () => clearTimeout(id);
   }, [mapping, source, target, runInference]);
 
-  // ── AI value pairing (Material->PRDID, ProductionPlant->LOCID) ────────────
+  // ── AI value pairing (every confirmed Key field pair) ─────────────────────
   const missingValueMappingReqs = useMemo(
     () => missingValueMappingRequirements(mapping?.display),
     [mapping],
@@ -247,10 +269,7 @@ function TransformationSpecStep() {
       const res = await api.post("/api/recon/value-mapping/run", formData);
       dispatch({
         type: WizardActions.SET_VALUE_MAPPINGS,
-        valueMappings: {
-          product: res.data?.product ?? null,
-          location: res.data?.location ?? null,
-        },
+        valueMappings: res.data?.pairs ?? [],
       });
       setValueMappingSuccess(true);
     } catch (err) {
@@ -280,8 +299,8 @@ function TransformationSpecStep() {
   useEffect(() => {
     if (livePrepassTimerRef.current) clearTimeout(livePrepassTimerRef.current);
     if (!canRunValueMapping) return;
-    const resolved = resolveValueMappingFields(mapping?.display);
-    if (!resolved.product && !resolved.location) return;
+    const pairs = keyFieldPairs(mapping?.display);
+    if (pairs.length === 0) return;
 
     let cancelled = false;
     livePrepassTimerRef.current = setTimeout(async () => {
@@ -295,30 +314,13 @@ function TransformationSpecStep() {
           comparison_type: comparisonType?.id ?? "custom",
           source_connector: source.kind ?? "excel",
           target_connector: target.kind ?? "excel",
-          ...(resolved.product
-            ? {
-                source_product_field: resolved.product.source,
-                target_product_field: resolved.product.target,
-              }
-            : {}),
-          ...(resolved.location
-            ? {
-                source_location_field: resolved.location.source,
-                target_location_field: resolved.location.target,
-              }
-            : {}),
-          ...(resolved.date
-            ? { source_date_field: resolved.date.source, target_date_field: resolved.date.target }
-            : {}),
+          key_pairs: pairs,
         });
         if (cancelled) return;
         const prev = valueMappingsRef.current;
         dispatch({
           type: WizardActions.SET_VALUE_MAPPINGS,
-          valueMappings: {
-            product: mergeLivePrepass(prev?.product, res.data?.product),
-            location: mergeLivePrepass(prev?.location, res.data?.location),
-          },
+          valueMappings: mergePrepassArray(prev, res.data?.pairs),
         });
       } catch {
         // Best-effort live feedback only — a transient failure here never
@@ -428,7 +430,7 @@ function TransformationSpecStep() {
     aggregation_rules: cleanAggregationRules(aggregationRules),
     business_key: mappingKeyFields(),
     compare_fields: mappingCompareFields(),
-    value_mappings: [valueMappings?.product, valueMappings?.location].filter(Boolean),
+    value_mappings: valueMappings ?? [],
     source_schema: source.dataset?.columns ?? [],
     target_schema: target.dataset?.columns ?? [],
     options: { case_insensitive: true, trim_whitespace: true },

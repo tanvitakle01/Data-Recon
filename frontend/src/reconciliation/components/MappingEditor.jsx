@@ -5,10 +5,11 @@ import { Button, Select, Badge, Alert, Skeleton, EmptyState } from "@bristlecone
 const KEY_ROLE = "🔑 Key";
 const COMPARE_ROLE = "📊 Compare";
 
-// "Business Field" dropdown options — the canonical role Deterministic
-// Mapping resolves by (see resolveValueMappingFields), not the row's literal
-// column names. "— none —" means this pairing doesn't feed Deterministic
-// Mapping (still fine for Manual Mapping's contract).
+// "Business Field" dropdown options — an optional semantic tag shown in the
+// UI and used to spot the date pair (see field_role usage in payload.js);
+// Deterministic Mapping itself pairs every confirmed Key row regardless of
+// whether it has a tag. "— none —" means no semantic role, still fine for
+// both Deterministic and Manual Mapping.
 const BUSINESS_FIELD_OPTIONS = [
   { value: "", label: "— none —" },
   ...Object.values(FIELD_ROLES).map((role) => ({ value: role, label: fieldRoleLabel(role) })),

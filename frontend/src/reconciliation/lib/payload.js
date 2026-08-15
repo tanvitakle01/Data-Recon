@@ -1,5 +1,3 @@
-import { fieldRoleLabel } from "./fieldRoleAliases";
-
 // Appends one reconciliation side (source or target) to a FormData in the
 // shape /automap and /reconcile expect: an uploaded Excel file
 // (`<role>_file` + optional `sheet_name_<role>`) for Excel datasets, or a
@@ -30,22 +28,15 @@ export function appendDatasetSide(formData, role, roleState, excludeFields) {
   return false;
 }
 
-// Resolves the confirmed field mapping's rows into the canonical roles
-// Deterministic Mapping needs (product/location/date/quantity) — by
-// `row.field_role` (auto-detected from the header text, or manually tagged in
-// MappingEditor's "Business Field" column) rather than by literal column
-// name. This is what lets an Excel header like "SKU" or "Plant Code" serve
-// the exact same role "Material"/"ProductionPlant" serve for Live Fetch.
-// Returns only fully-paired rows (both a source and target column set).
-export function resolveValueMappingFields(display) {
-  const rows = display ?? [];
-  const byRole = {};
-  for (const row of rows) {
-    if (!row.field_role || byRole[row.field_role]) continue;
-    if (!row.source_col || !row.target_col) continue;
-    byRole[row.field_role] = { source: row.source_col, target: row.target_col };
-  }
-  return byRole;
+// Every confirmed Key-role row's source/target column pair, in display
+// order — however many the analyst mapped (not just product/location/date).
+// This is the source of truth for which pairs get value-paired; the date
+// row is included here too (the backend excludes whichever pair looks
+// date-like from actual pairing and uses it for corroboration only).
+export function keyFieldPairs(display) {
+  return (display ?? [])
+    .filter((row) => row.source_col && row.target_col && isKeyRole(row.role))
+    .map((row) => ({ source_field: row.source_col, target_field: row.target_col }));
 }
 
 // FormData for POST /api/recon/value-mapping/run: the full current source +
@@ -54,11 +45,11 @@ export function resolveValueMappingFields(display) {
 // file-or-rows shape /automap and /reconcile use, plus the connector kinds
 // (key the value-pair library so pairs are only reused between the same
 // connector pair), the parsed mapping sheet (optional STM context for
-// the LLM pairing step — a hint only, never load-bearing), and the resolved
-// product/location/date column names (see resolveValueMappingFields) so the
-// backend pairs whichever columns the confirmed mapping says play those
-// roles, on either side. Returns null if either side has no usable payload
-// (e.g. after a refresh dropped the in-memory file/rows).
+// the LLM pairing step — a hint only, never load-bearing), and every
+// confirmed Key pair (see keyFieldPairs) — however many there are, so a 3rd+
+// key pair beyond product/location/date is paired too, not dropped. Returns
+// null if either side has no usable payload (e.g. after a refresh dropped
+// the in-memory file/rows).
 export function buildValueMappingFormData(source, target, mappingSheetContext, mappingDisplay) {
   const formData = new FormData();
   const okSource = appendDatasetSide(formData, "source", source);
@@ -68,49 +59,28 @@ export function buildValueMappingFormData(source, target, mappingSheetContext, m
   if (target?.kind) formData.append("target_connector", target.kind);
   if (mappingSheetContext) formData.append("mapping_sheet", JSON.stringify(mappingSheetContext));
 
-  const resolved = resolveValueMappingFields(mappingDisplay);
-  if (resolved.product) {
-    formData.append("source_product_field", resolved.product.source);
-    formData.append("target_product_field", resolved.product.target);
-  }
-  if (resolved.location) {
-    formData.append("source_location_field", resolved.location.source);
-    formData.append("target_location_field", resolved.location.target);
-  }
-  if (resolved.date) {
-    formData.append("source_date_field", resolved.date.source);
-    formData.append("target_date_field", resolved.date.target);
-  }
+  const pairs = keyFieldPairs(mappingDisplay);
+  if (pairs.length) formData.append("key_pairs", JSON.stringify(pairs));
   return formData;
 }
 
-// The canonical business-field roles required before "Run Deterministic
-// Mapping" can fire, and whether each must be confirmed as a Key or Compare
-// mapping. Which actual column plays a role is resolved by `field_role` (see
-// resolveValueMappingFields), not by a literal expected name.
-export const VALUE_MAPPING_ROLE_REQUIREMENTS = [
-  { role: "product", requiredRowRole: "key" },
-  { role: "location", requiredRowRole: "key" },
-  { role: "date", requiredRowRole: "key" },
-  { role: "quantity", requiredRowRole: "compare" },
-];
-
-// Which of the roles above are still missing/unconfirmed in the current field
-// mapping — surfaced on the button's disabled tooltip so the user knows
-// exactly what to fix, rather than letting it fire against an incomplete map.
+// Structural gate for "Run Deterministic Mapping": at least one confirmed Key
+// row besides the date one (a lone date key has nothing to value-pair — it's
+// corroboration-only). Returns the same [{role, label, requiredRowRole}]
+// shape the button's disabled-tooltip rendering already expects.
 export function missingValueMappingRequirements(display) {
   const rows = display ?? [];
-  return VALUE_MAPPING_ROLE_REQUIREMENTS.filter(
-    ({ role, requiredRowRole }) =>
-      !rows.some((row) => {
-        if (row.field_role !== role || !row.source_col || !row.target_col) return false;
-        return requiredRowRole === "key" ? isKeyRole(row.role) : !isKeyRole(row.role);
-      }),
-  ).map(({ role, requiredRowRole }) => ({
-    role,
-    label: fieldRoleLabel(role),
-    requiredRowRole,
-  }));
+  const pairableKeys = rows.filter(
+    (row) => row.source_col && row.target_col && isKeyRole(row.role) && row.field_role !== "date",
+  );
+  if (pairableKeys.length > 0) return [];
+  return [
+    {
+      role: "key_pair",
+      label: "at least one Key field pair (besides Date)",
+      requiredRowRole: "key",
+    },
+  ];
 }
 
 function omitFields(rows, fields) {

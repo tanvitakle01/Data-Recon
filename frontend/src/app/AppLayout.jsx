@@ -16,6 +16,7 @@ import { BristleconeLogo } from "@bristlecone/canopy";
 import { useTicketing } from "../ticketing/useTicketing";
 import canopyPkg from "@bristlecone/canopy/package.json";
 import UserMenu from "./UserMenu";
+import AssistantBot from "../components/assistant/AssistantBot";
 import styles from "./appLayout.module.css";
 
 const SIDEBAR_STORAGE_KEY = "sidebar-expanded";
@@ -214,6 +215,8 @@ function AppLayout({ children }) {
           <div className={styles.mainInner}>{children}</div>
         </main>
       </div>
+
+      <AssistantBot />
     </div>
   );
 }

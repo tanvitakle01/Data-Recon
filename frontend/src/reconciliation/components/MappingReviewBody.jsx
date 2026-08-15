@@ -114,7 +114,7 @@ function SearchBar({ query, onQueryChange, onFind, matchCount, activePos }) {
         <input
           type="text"
           className="wizard-input mapping-review__search-input"
-          placeholder="Search Material, PRDID, Plant, or LOCID…"
+          placeholder="Search any source or target value…"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
           onKeyDown={(e) => {
@@ -202,27 +202,15 @@ function MappingReviewBody() {
   const { state } = useWizard();
   const { valueMappings } = state.transformationSpec;
 
-  // ── Combined rows across both field pairs — hooks must run unconditionally,
+  // ── Combined rows across every field pair — hooks must run unconditionally,
   // so this lives above the `!valueMappings` early return below even though it
   // renders nothing until data exists. ─────────────────────────────────────
-  const productLabel = pairLabelFor(valueMappings?.product, "Material pair");
-  const locationLabel = pairLabelFor(valueMappings?.location, "Plant pair");
-  const productSplit = useMemo(
-    () => splitMatches(valueMappings?.product, productLabel),
-    [valueMappings, productLabel]
+  const splits = useMemo(
+    () => (valueMappings ?? []).map((vm, i) => splitMatches(vm, pairLabelFor(vm, `Pair ${i + 1}`))),
+    [valueMappings]
   );
-  const locationSplit = useMemo(
-    () => splitMatches(valueMappings?.location, locationLabel),
-    [valueMappings, locationLabel]
-  );
-  const allPaired = useMemo(
-    () => [...productSplit.paired, ...locationSplit.paired],
-    [productSplit, locationSplit]
-  );
-  const allUnpaired = useMemo(
-    () => [...productSplit.unpaired, ...locationSplit.unpaired],
-    [productSplit, locationSplit]
-  );
+  const allPaired = useMemo(() => splits.flatMap((s) => s.paired), [splits]);
+  const allUnpaired = useMemo(() => splits.flatMap((s) => s.unpaired), [splits]);
 
   const kpis = useMemo(() => {
     const total = allPaired.length + allUnpaired.length;

@@ -300,8 +300,8 @@ def test_run_reconciliation_excludes_unmapped_material_and_plant():
         assert summary["match"] == 1
         assert summary["quantity_mismatch"] == 0
         assert summary["mismatch"] == 0  # held-out rows never counted here
-        assert summary["excluded_material_unmapped"] == 1  # MAT-B, MEDIUM
-        assert summary["excluded_plant_unmapped"] == 1  # PL99, NONE
+        assert summary["excluded_unmapped"]["Material"] == 1  # MAT-B, MEDIUM
+        assert summary["excluded_unmapped"]["ProductionPlant"] == 1  # PL99, NONE
 
 
 # ── full lifecycle ─────────────────────────────────────────────────────────

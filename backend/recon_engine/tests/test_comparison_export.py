@@ -96,12 +96,12 @@ def test_build_comparison_workbook_is_three_sheets():
     wb = openpyxl.load_workbook(BytesIO(content))
     assert wb.sheetnames == ["Summary", "All Records", "Mapping Details"]
 
-    # ── All Records: unchanged — OriginalMaterial/OriginalPRDID/OriginalPlant/
-    # OriginalLOCID side by side, then Date/Status/ReqQty/SalesOrderRequest/Delta
+    # ── All Records: column set computed per contract — same 9 columns/content
+    # as before, generic names instead of the old fixed Original*/Date labels.
     ws = wb["All Records"]
     rows = list(ws.iter_rows(values_only=True))
     assert rows[0] == (
-        "OriginalMaterial", "OriginalPRDID", "OriginalPlant", "OriginalLOCID",
+        "Material (Original)", "PRDID (Paired)", "Plant (Original)", "LOCID (Paired)",
         "Date", "Status", "ReqQty", "SalesOrderRequest", "Delta",
     )
 
@@ -192,13 +192,15 @@ def test_build_comparison_workbook_is_three_sheets():
     assert chart_data_rows[4][4] == "Matched" and chart_data_rows[4][5] == 1
     assert chart_data_rows[5][4] == "Unmatched" and chart_data_rows[5][5] == 0
 
-    # Three native pie charts: overall results + the two mapping reviews.
+    # Three native pie charts: overall results + one per mapped key pair.
+    # Titles use the contract's actual field names generically now (no more
+    # hardcoded "Product ID"/"Location ID" aliases tied to Material/Plant).
     assert len(summ._charts) == 3
     titles = [_chart_title(c) for c in summ._charts]
     assert titles == [
         "Overall Run Results",
-        "Material → Product ID Mapping Review",
-        "Plant → Location ID Mapping Review",
+        "Material → PRDID Mapping Review",
+        "Plant → LOCID Mapping Review",
     ]
 
     assert summ.freeze_panes == "A2"
@@ -242,6 +244,91 @@ def test_mapping_details_sheet_lists_both_field_pairs():
 
     assert ws.freeze_panes == "A2"
     assert ws.auto_filter.ref == f"A1:I{len(data) + 1}"
+
+
+def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field():
+    """The whole point of the generalization: a 3rd key pair (Region, beyond
+    Material/Plant) and a 2nd compare field must both surface in the export,
+    not be silently dropped the way the old fixed 4-role tuple would drop
+    them."""
+    source_df = pd.DataFrame({
+        "Material": ["A"], "Plant": ["P1"], "Region": ["R1"], "Date": ["2024-01-01"],
+        "ReqQty": [10], "ReqQty2": [5],
+    })
+    target_df = pd.DataFrame({
+        "PRDID": ["A"], "LOCID": ["P1"], "RegionCode": ["R1"], "Date": ["2024-01-01"],
+        "SalesOrderRequest": [10], "SalesOrderRequest2": [5],
+    })
+    src = service.ingest_snapshot(source_df, layer=RawLayer.SOURCE, source_type="excel")
+    tgt = service.ingest_snapshot(target_df, layer=RawLayer.TARGET, source_type="excel")
+    draft, _ = service.compile_draft(
+        mapping_sheet=[
+            {"source_col": "Material", "target_col": "PRDID", "role": "key"},
+            {"source_col": "Plant", "target_col": "LOCID", "role": "key"},
+            {"source_col": "Region", "target_col": "RegionCode", "role": "key"},
+            {"source_col": "Date", "target_col": "Date", "role": "key"},
+            {"source_col": "ReqQty", "target_col": "SalesOrderRequest", "role": "compare"},
+            {"source_col": "ReqQty2", "target_col": "SalesOrderRequest2", "role": "compare"},
+        ],
+        rules="",
+        business_key=[
+            {"source_field": "Material", "target_field": "PRDID"},
+            {"source_field": "Plant", "target_field": "LOCID"},
+            {"source_field": "Region", "target_field": "RegionCode"},
+            {"source_field": "Date", "target_field": "Date"},
+        ],
+        compare_fields=[
+            {"source_field": "ReqQty", "target_field": "SalesOrderRequest"},
+            {"source_field": "ReqQty2", "target_field": "SalesOrderRequest2"},
+        ],
+        value_mappings=[
+            {"source_field": "Material", "target_field": "PRDID", "matches": [
+                {"source_value": "A", "target_value": "A", "confidence": "very_high", "rule": "t", "evidence": "e"},
+            ]},
+            {"source_field": "Plant", "target_field": "LOCID", "matches": [
+                {"source_value": "P1", "target_value": "P1", "confidence": "very_high", "rule": "t", "evidence": "e"},
+            ]},
+            {"source_field": "Region", "target_field": "RegionCode", "matches": [
+                {"source_value": "R1", "target_value": "R1", "confidence": "very_high", "rule": "t", "evidence": "e"},
+            ]},
+        ],
+        source_schema=["Material", "Plant", "Region", "Date", "ReqQty", "ReqQty2"],
+        target_schema=["PRDID", "LOCID", "RegionCode", "Date", "SalesOrderRequest", "SalesOrderRequest2"],
+        comparison_type="c", source_type="excel", target_type="excel",
+        compiler=StubContractCompiler(),
+    )
+    contract = service.approve_contract(draft, approved_by="alice")
+    out = service.run_reconciliation(
+        contract_id=contract.contract_id,
+        source_snapshot_id=src.snapshot_id,
+        target_snapshot_id=tgt.snapshot_id,
+    )
+
+    content = service.build_comparison_workbook(out["run_id"])
+    wb = openpyxl.load_workbook(BytesIO(content))
+
+    ws = wb["All Records"]
+    header = next(ws.iter_rows(values_only=True))
+    assert header == (
+        "Material (Original)", "PRDID (Paired)",
+        "Plant (Original)", "LOCID (Paired)",
+        "Region (Original)", "RegionCode (Paired)",
+        "Date", "Status",
+        "ReqQty", "SalesOrderRequest", "ReqQty → SalesOrderRequest Delta",
+        "ReqQty2", "SalesOrderRequest2", "ReqQty2 → SalesOrderRequest2 Delta",
+    )
+    data_row = next(ws.iter_rows(values_only=True, min_row=2))
+    assert data_row[4] == "R1" and data_row[5] == "R1"  # Region (Original) / RegionCode (Paired)
+    assert data_row[10] == 0 and data_row[13] == 0  # both compare fields' Delta is 0 (10-10, 5-5)
+
+    # Overall + 3 mapped key pairs (Material/Plant/Region — Date has no value
+    # mapping, so no pie chart for it) = 4 pie charts, not capped at 2.
+    summ = wb["Summary"]
+    assert len(summ._charts) == 4
+
+    mapping_ws = wb["Mapping Details"]
+    labels = {r[0] for r in mapping_ws.iter_rows(values_only=True, min_row=2)}
+    assert labels == {"Material → PRDID", "Plant → LOCID", "Region → RegionCode"}
 
 
 def test_download_route_returns_xlsx():

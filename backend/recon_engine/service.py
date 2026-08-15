@@ -840,9 +840,7 @@ def run_reconciliation(
         )
 
         recon = reconcile(contract, built.shadow_df, raw_target)
-        recon.summary.excluded_material_unmapped, recon.summary.excluded_plant_unmapped = (
-            excluded_unmapped_counts(built.held_out)
-        )
+        recon.summary.excluded_unmapped = excluded_unmapped_counts(built.held_out)
         result = result_store.save_result(
             run_id=run.run_id,
             contract_id=contract.contract_id,
@@ -1248,67 +1246,71 @@ _SUMMARY_BUCKETS: dict[str, tuple[str, str, list[str]]] = {
 _ALL_RECORDS_ORDER = ["quantity_mismatch", "mismatch", "match"]
 _HEADER_FILL = "1F4E78"  # dark blue for the All Records header row
 
-# Columns produced by build_enriched_detail that must not be shadowed by a
-# business/compare field that happens to share the name.
-_RESERVED_DETAIL_COLS = {
-    "business_key", "classification", "classification_label", "remark", "detail",
-    "field_diffs", "source_values", "target_values",
-    "OriginalMaterial", "OriginalPRDID", "OriginalPlant", "OriginalLOCID",
-    "Date", "Status", "ReqQty", "SalesOrderRequest", "Delta",
-}
-
-
-# "All Records" sheet columns (task spec): both sides' paired identifiers
-# side by side, then the shared Date/Status, then the compared quantities and
-# their signed Delta — replaces the old source-only, one-column-per-field
-# layout that made a Material/Plant mismatch diagnosis require manual
-# side-by-side lookups against the value-mapping library.
-_EXPORT_COLUMNS = [
-    "OriginalMaterial", "OriginalPRDID", "OriginalPlant", "OriginalLOCID",
-    "Date", "Status", "ReqQty", "SalesOrderRequest", "Delta",
-]
-
 _FieldPair = tuple[str, str]
 
 
-def _export_field_roles(
-    contract: Any,
-) -> tuple[_FieldPair | None, _FieldPair | None, _FieldPair | None, _FieldPair | None]:
-    """Identify this app's fixed business-key/compare-field roles — Material/
-    PRDID, Plant/LOCID, the date key, and the single quantity compare field —
-    from a contract's ``business_key``/``compare_fields``.
+def _business_key_export_specs(contract: Any) -> list[tuple[str, str, Any | None]]:
+    """``(source_field, target_field, value_mapping_or_None)`` per
+    ``contract.business_key``, in contract order.
 
-    Matches on the TARGET field name (stable across the S4/IBP/Excel connector
-    variants this app supports), the same convention
-    ``models.results.excluded_unmapped_counts`` already relies on. Returns
-    ``(source_field, target_field)`` per role, or ``None`` when the contract
-    has no field in that role.
+    Whether a key pair "went through value-pairing" (shown in the export as
+    two columns: the raw pre-mapping original + the paired target value) vs.
+    is a plain key with no value mapping — typically the date key, shown as
+    one merged column — is decided STRUCTURALLY: does ``contract.value_mappings``
+    have an entry for this pair's target field (see :func:`_find_value_mapping`,
+    which itself matches by target-field name, not a literal string like
+    ``"PRDID"``)? This also means a date key needs no special-casing at all —
+    it simply has no value mapping and falls into the single-column branch on
+    its own. Works for any number of key pairs, not just two.
     """
     if contract is None:
-        return None, None, None, None
-    material = next(
-        ((k.source_field, k.target_field) for k in contract.business_key if k.target_field == "PRDID"),
-        None,
-    )
-    plant = next(
-        ((k.source_field, k.target_field) for k in contract.business_key if k.target_field == "LOCID"),
-        None,
-    )
-    used_targets = {p[1] for p in (material, plant) if p}
-    date = next(
-        (
-            (k.source_field, k.target_field)
-            for k in contract.business_key
-            if k.target_field not in used_targets
-        ),
-        None,
-    )
-    qty = (
-        (contract.compare_fields[0].source_field, contract.compare_fields[0].target_field)
-        if contract.compare_fields
-        else None
-    )
-    return material, plant, date, qty
+        return []
+    return [
+        (k.source_field, k.target_field, _find_value_mapping(contract, k.target_field))
+        for k in contract.business_key
+    ]
+
+
+def _compare_field_export_specs(contract: Any) -> list[tuple[str, str]]:
+    """``(source_field, target_field)`` per ``contract.compare_fields``, in
+    contract order — any number, not just one."""
+    if contract is None:
+        return []
+    return [(c.source_field, c.target_field) for c in contract.compare_fields]
+
+
+def _delta_column_name(source_field: str, target_field: str, compare_specs: list[_FieldPair]) -> str:
+    """"Delta" when there's exactly one compare field (today's common case,
+    kept unlabeled for brevity); otherwise disambiguated per pair so a 2nd+
+    compare field's delta isn't shadowed by the first."""
+    if len(compare_specs) == 1:
+        return "Delta"
+    return f"{source_field} → {target_field} Delta"
+
+
+def _export_columns_for_contract(contract: Any) -> list[str]:
+    """The "All Records" sheet's column order for this contract: two columns
+    per value-mapped business-key pair (raw original + paired target), one
+    column per plain business-key pair (e.g. the date key), "Status", then
+    per compare field its raw source column, raw target column, and a signed
+    Delta column. Computed fresh per run instead of a fixed list, so it scales
+    to however many key/compare pairs the contract actually has.
+    """
+    key_specs = _business_key_export_specs(contract)
+    compare_specs = _compare_field_export_specs(contract)
+    columns: list[str] = []
+    for sf, tf, vm in key_specs:
+        if vm is not None:
+            columns.append(f"{sf} (Original)")
+            columns.append(f"{tf} (Paired)")
+        else:
+            columns.append(sf)
+    columns.append("Status")
+    for sf, tf in compare_specs:
+        columns.append(sf)
+        columns.append(tf)
+        columns.append(_delta_column_name(sf, tf, compare_specs))
+    return columns
 
 
 def _to_number(value: Any) -> float | None:
@@ -1330,21 +1332,21 @@ def _to_number(value: Any) -> float | None:
         return None
 
 
-def _signed_delta(req_qty: Any, sales_order_request: Any) -> float | None:
-    """``ReqQty - SalesOrderRequest``, signed, for every row.
+def _signed_delta(source_value: Any, target_value: Any) -> float | None:
+    """``source_value - target_value``, signed, for one compare field's row.
 
     Convention for the one-sided Missing/Extra cases (the app's five
     reconciliation record classes, none of which will ever populate both
-    columns' underlying source AND target rows for those statuses): the
-    absent side is treated as 0 — a Missing-in-Target row (source only) gets
-    ``Delta = ReqQty``, an Extra-in-Target row (target only) gets
-    ``Delta = -SalesOrderRequest``. ``None`` only when BOTH sides are absent.
+    sides for those statuses): the absent side is treated as 0 — a
+    Missing-in-Target row (source only) gets ``Delta = source_value``, an
+    Extra-in-Target row (target only) gets ``Delta = -target_value``.
+    ``None`` only when BOTH sides are absent.
     """
-    req = _to_number(req_qty)
-    sor = _to_number(sales_order_request)
-    if req is None and sor is None:
+    src = _to_number(source_value)
+    tgt = _to_number(target_value)
+    if src is None and tgt is None:
         return None
-    return (req or 0.0) - (sor or 0.0)
+    return (src or 0.0) - (tgt or 0.0)
 
 
 def build_enriched_detail(run_id: str) -> pd.DataFrame:
@@ -1359,15 +1361,15 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     Per row the frame carries: ``business_key``, ``classification`` (raw enum
     value), ``classification_label`` / ``remark`` (business-friendly),
     ``detail``, ``field_diffs`` (list), ``source_values`` / ``target_values``
-    (joined ``field=value`` strings), one natural-named column per business
-    key / compare field (unified across sides) so downstream dimension
-    detection works, and the fixed debuggability columns the comparison
-    workbook's "All Records" sheet renders — ``OriginalMaterial`` /
-    ``OriginalPlant`` (the RAW pre-value-mapping source values, resolved via
-    the shadow row's lineage back to Raw_Source), ``OriginalPRDID`` /
-    ``OriginalLOCID`` (the paired target-side values actually used for the
-    join), ``Date``, ``Status``, ``ReqQty``, ``SalesOrderRequest``, and signed
-    ``Delta`` (see :func:`_signed_delta`). The shadow may have expired (TTL) —
+    (joined ``field=value`` strings), plus a column set computed per contract
+    (see :func:`_export_columns_for_contract`) — two columns per value-mapped
+    business-key pair (the RAW pre-value-mapping source value, resolved via
+    the shadow row's lineage back to Raw_Source, and the paired target-side
+    value actually used for the join), one column per plain business-key pair
+    (e.g. a date key), ``Status``, and per compare field its raw source
+    value, raw target value, and a signed Delta (see :func:`_signed_delta`).
+    Scales to however many key/compare pairs the contract has — not fixed to
+    two keys and one compare field. The shadow may have expired (TTL) —
     source-derived values are then blank but every record is still listed.
     """
     from backend.recon_engine.engine.reconciler import _build_key
@@ -1386,8 +1388,8 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     bk_tgt = [k.target_field for k in contract.business_key] if contract else []
     cf_src = [c.source_field for c in contract.compare_fields] if contract else []
     cf_tgt = [c.target_field for c in contract.compare_fields] if contract else []
-    field_pairs = list(zip(bk_src, bk_tgt)) + list(zip(cf_src, cf_tgt))
-    material_pair, plant_pair, date_pair, qty_pair = _export_field_roles(contract)
+    key_specs = _business_key_export_specs(contract)
+    compare_specs = _compare_field_export_specs(contract)
 
     detail = result_store.load_result_frame(result.result_id)
     has_field_diffs = "field_diffs" in detail.columns
@@ -1459,11 +1461,6 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
         if not isinstance(diffs, list):
             diffs = []
 
-        req_qty = s_row[qty_pair[0]] if qty_pair and s_row is not None and qty_pair[0] in s_row.index else None
-        sales_order_request = (
-            t_row[qty_pair[1]] if qty_pair and t_row is not None and qty_pair[1] in t_row.index else None
-        )
-
         record: dict[str, Any] = {
             "business_key": key,
             "classification": cls,
@@ -1473,20 +1470,20 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             "field_diffs": diffs,
             "source_values": _vals(s_row, [*bk_src, *cf_src]),
             "target_values": _vals(t_row, [*bk_tgt, *cf_tgt]),
-            "OriginalMaterial": _original_raw_value(s_row, material_pair[0] if material_pair else None),
-            "OriginalPRDID": _unified(s_row, t_row, *material_pair) if material_pair else None,
-            "OriginalPlant": _original_raw_value(s_row, plant_pair[0] if plant_pair else None),
-            "OriginalLOCID": _unified(s_row, t_row, *plant_pair) if plant_pair else None,
-            "Date": _unified(s_row, t_row, *date_pair) if date_pair else None,
-            "Status": _STATUS_BY_CLASS.get(cls, cls.upper()),
-            "ReqQty": _jsonable(req_qty),
-            "SalesOrderRequest": _jsonable(sales_order_request),
-            "Delta": _signed_delta(req_qty, sales_order_request),
         }
-        for sf, tf in field_pairs:
-            if sf in _RESERVED_DETAIL_COLS:
-                continue
-            record[sf] = _unified(s_row, t_row, sf, tf)
+        for sf, tf, vm in key_specs:
+            if vm is not None:
+                record[f"{sf} (Original)"] = _original_raw_value(s_row, sf)
+                record[f"{tf} (Paired)"] = _unified(s_row, t_row, sf, tf)
+            else:
+                record[sf] = _unified(s_row, t_row, sf, tf)
+        record["Status"] = _STATUS_BY_CLASS.get(cls, cls.upper())
+        for sf, tf in compare_specs:
+            source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
+            target_val = t_row[tf] if t_row is not None and tf in t_row.index else None
+            record[sf] = _jsonable(source_val)
+            record[tf] = _jsonable(target_val)
+            record[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
         rows.append(record)
 
     return pd.DataFrame(rows)
@@ -1536,9 +1533,9 @@ _MAPPING_DETAIL_COLUMNS = [
 
 
 def _find_value_mapping(contract: Any, target_field: str | None) -> Any | None:
-    """The contract's ``ValueMapping`` for a given target field (PRDID/LOCID),
-    matched the same way :func:`_export_field_roles` identifies Material/Plant
-    — by TARGET field name, stable across connector variants."""
+    """The contract's ``ValueMapping`` for a given target field, matched by
+    TARGET field name — stable across connector variants, never a literal
+    string like ``"PRDID"``."""
     if contract is None or target_field is None:
         return None
     return next((vm for vm in contract.value_mappings if vm.target_field == target_field), None)
@@ -1567,18 +1564,20 @@ def build_comparison_workbook(run_id: str) -> bytes:
     1. ``Summary`` — the **Results** table first (every category, even at
        count 0, with Count and % of Total, each row filled with the
        category's colour), then a trimmed **Run Information** block (Run
-       Status / Created At in IST / Created By only), then three native pie
-       charts: overall run results, and the Material↔PRDID and Plant↔LOCID
-       value-mapping matched/unmatched distributions.
+       Status / Created At in IST / Created By only), then a native pie
+       chart for the overall run results plus one more pie chart per
+       value-mapped business-key pair (however many the contract has),
+       showing that pair's matched/unmatched distribution.
     2. ``All Records`` — matches, quantity mismatches, and mismatches (a
        business key present on only one side) stacked into one flat,
        field-level table, sorted issues-first and colour-coded by status.
        Bold white header on dark blue, frozen, with AutoFilter; widths
-       auto-fit.
-    3. ``Mapping Details`` — every value-mapping match for BOTH field pairs
-       (Material↔PRDID, Plant↔LOCID) in one flat, filterable table — the same
-       pairing decisions the Mapping Review page shows, colour-coded
-       Paired/Unpaired.
+       auto-fit. Column set is computed per contract (see
+       :func:`_export_columns_for_contract`) — scales to however many
+       key/compare pairs the contract has.
+    3. ``Mapping Details`` — every value-mapping match for EVERY value-mapped
+       key pair in one flat, filterable table — the same pairing decisions
+       the Mapping Review page shows, colour-coded Paired/Unpaired.
     """
     from openpyxl import Workbook
     from openpyxl.chart import PieChart, Reference
@@ -1599,11 +1598,11 @@ def build_comparison_workbook(run_id: str) -> bytes:
     enriched = build_enriched_detail(run_id)
     summary = result.summary.model_dump()
 
-    material_pair, plant_pair, _date_pair, _qty_pair = _export_field_roles(contract)
-    material_vm = _find_value_mapping(contract, material_pair[1] if material_pair else None)
-    plant_vm = _find_value_mapping(contract, plant_pair[1] if plant_pair else None)
-    material_matched, material_unmatched = _summarize_value_mapping(material_vm)
-    plant_matched, plant_unmatched = _summarize_value_mapping(plant_vm)
+    # Every key pair that actually went through value-pairing (i.e. has a
+    # ValueMapping) — however many there are, in contract order.
+    mapped_specs = [
+        (sf, tf, vm) for sf, tf, vm in _business_key_export_specs(contract) if vm is not None
+    ]
 
     bold = Font(bold=True)
     block_header = Font(bold=True, size=12)
@@ -1682,36 +1681,41 @@ def build_comparison_workbook(run_id: str) -> bytes:
         ws1.cell(row=r, column=2, value=value)
         r += 1
 
-    # -- Chart data (Material/Plant mapping matched vs. unmatched) --
+    # -- Chart data (one Matched/Unmatched mini-table per mapped key pair) --
     # Written as a visible, labelled mini-table (column E) rather than a hidden
-    # scratch area — useful on its own, and it's what the two mapping pie
-    # charts reference.
+    # scratch area — useful on its own, and it's what each pair's mapping pie
+    # chart references.
     chart_col = 5  # column E
     cr = 1
-    ws1.cell(row=cr, column=chart_col, value="Material → PRDID Mapping").font = block_header
-    cr += 1
-    material_data_start = cr
-    ws1.cell(row=cr, column=chart_col, value="Matched")
-    ws1.cell(row=cr, column=chart_col + 1, value=material_matched)
-    cr += 1
-    ws1.cell(row=cr, column=chart_col, value="Unmatched")
-    ws1.cell(row=cr, column=chart_col + 1, value=material_unmatched)
-    material_data_end = cr
-    cr += 2
+    mapping_chart_ranges: list[tuple[str, str, int, int]] = []  # (sf, tf, data_start, data_end)
+    for sf, tf, vm in mapped_specs:
+        matched, unmatched = _summarize_value_mapping(vm)
+        ws1.cell(row=cr, column=chart_col, value=f"{sf} → {tf} Mapping").font = block_header
+        cr += 1
+        data_start = cr
+        ws1.cell(row=cr, column=chart_col, value="Matched")
+        ws1.cell(row=cr, column=chart_col + 1, value=matched)
+        cr += 1
+        ws1.cell(row=cr, column=chart_col, value="Unmatched")
+        ws1.cell(row=cr, column=chart_col + 1, value=unmatched)
+        data_end = cr
+        cr += 2
+        mapping_chart_ranges.append((sf, tf, data_start, data_end))
 
-    ws1.cell(row=cr, column=chart_col, value="Plant → LOCID Mapping").font = block_header
-    cr += 1
-    plant_data_start = cr
-    ws1.cell(row=cr, column=chart_col, value="Matched")
-    ws1.cell(row=cr, column=chart_col + 1, value=plant_matched)
-    cr += 1
-    ws1.cell(row=cr, column=chart_col, value="Unmatched")
-    ws1.cell(row=cr, column=chart_col + 1, value=plant_unmatched)
-    plant_data_end = cr
-
-    # -- Charts (bottom) --
+    # -- Charts (bottom): overall results, then one per mapped key pair, in a
+    # repeating grid (4 per row) — with today's single mapped-pair-or-two
+    # count this reproduces the original A/I/Q single-row layout exactly. --
     charts_row = max(r, cr) + 2
     ws1.cell(row=charts_row - 1, column=1, value="Charts").font = block_header
+
+    _CHARTS_PER_ROW = 4
+    _COL_STRIDE = 8
+    _ROW_STRIDE = 18
+
+    def _chart_anchor(index: int) -> str:
+        row = charts_row + (index // _CHARTS_PER_ROW) * _ROW_STRIDE
+        col = 1 + (index % _CHARTS_PER_ROW) * _COL_STRIDE
+        return f"{get_column_letter(col)}{row}"
 
     overall_chart = _labeled_pie(
         "Overall Run Results",
@@ -1719,30 +1723,23 @@ def build_comparison_workbook(run_id: str) -> bytes:
         Reference(ws1, min_col=1, min_row=results_start_row, max_row=results_end_row),
         [_STATUS_FILL[_SUMMARY_BUCKETS[field][1]] for field in _SUMMARY_ORDER],
     )
-    ws1.add_chart(overall_chart, f"A{charts_row}")
+    ws1.add_chart(overall_chart, _chart_anchor(0))
 
-    material_chart = _labeled_pie(
-        "Material → Product ID Mapping Review",
-        Reference(ws1, min_col=chart_col + 1, min_row=material_data_start, max_row=material_data_end),
-        Reference(ws1, min_col=chart_col, min_row=material_data_start, max_row=material_data_end),
-        ["C6EFCE", "FFC7CE"],  # Matched (green) / Unmatched (red)
-    )
-    ws1.add_chart(material_chart, f"I{charts_row}")
-
-    plant_chart = _labeled_pie(
-        "Plant → Location ID Mapping Review",
-        Reference(ws1, min_col=chart_col + 1, min_row=plant_data_start, max_row=plant_data_end),
-        Reference(ws1, min_col=chart_col, min_row=plant_data_start, max_row=plant_data_end),
-        ["C6EFCE", "FFC7CE"],
-    )
-    ws1.add_chart(plant_chart, f"Q{charts_row}")
+    for idx, (sf, tf, data_start, data_end) in enumerate(mapping_chart_ranges, start=1):
+        pair_chart = _labeled_pie(
+            f"{sf} → {tf} Mapping Review",
+            Reference(ws1, min_col=chart_col + 1, min_row=data_start, max_row=data_end),
+            Reference(ws1, min_col=chart_col, min_row=data_start, max_row=data_end),
+            ["C6EFCE", "FFC7CE"],  # Matched (green) / Unmatched (red)
+        )
+        ws1.add_chart(pair_chart, _chart_anchor(idx))
 
     ws1.freeze_panes = "A2"
     _autofit(ws1)
 
     # ── Sheet 2: All Records ─────────────────────────────────────────────────
     ws2 = wb.create_sheet("All Records")
-    columns = _EXPORT_COLUMNS
+    columns = _export_columns_for_contract(contract)
     header_fill = PatternFill("solid", fgColor=_HEADER_FILL)
     header_font = Font(bold=True, color="FFFFFF")
     for col, name in enumerate(columns, start=1):
@@ -1775,9 +1772,8 @@ def build_comparison_workbook(run_id: str) -> bytes:
         c.fill = header_fill
 
     row_idx = 2
-    for label, vm in (("Material → PRDID", material_vm), ("Plant → LOCID", plant_vm)):
-        if vm is None:
-            continue
+    for sf, tf, vm in mapped_specs:
+        label = f"{sf} → {tf}"
         for m in vm.matches:
             paired = m.target_value is not None
             status = "Paired" if paired else "Unpaired"

@@ -303,7 +303,7 @@ def get_settings() -> Settings:
         use_script_transformations=_bool_env("USE_SCRIPT_TRANSFORMATIONS", False),
         groq_strict=_bool_env("RECON_GROQ_STRICT", False),
         llm_fallback_cooldown_s=max(0, _int_env("LLM_FALLBACK_COOLDOWN_SECONDS", 60)),
-        value_pairing_window_years=max(1, _int_env("VALUE_PAIRING_WINDOW_YEARS", 2)),
+        value_pairing_window_years=max(1, _int_env("VALUE_PAIRING_WINDOW_YEARS", 1)),
         groq=groq,
         gemini=gemini,
         cerebras=cerebras,

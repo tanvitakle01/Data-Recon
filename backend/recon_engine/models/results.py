@@ -35,13 +35,13 @@ class ReconciliationSummary(BaseModel):
     # named sub-categories; it is simply ``total - match - quantity_mismatch``.
     # There is no user-facing "missing in target" / "extra in target" split.
     mismatch: int = 0
-    # Rows the Value Mapping stage held out before the join ever ran (Material
-    # or Plant landed on a MEDIUM/NONE/OUT_OF_SCOPE match, or had no match
-    # record at all) — never reconciled, so kept isolated from the three
+    # Rows the Value Mapping stage held out before the join ever ran (a
+    # business-key field landed on a MEDIUM/NONE/OUT_OF_SCOPE match, or had no
+    # match record at all) — never reconciled, so kept isolated from the three
     # classifications above and excluded from ``total``. Not a `RecordClass`:
-    # these rows never reached the join.
-    excluded_material_unmapped: int = 0
-    excluded_plant_unmapped: int = 0
+    # these rows never reached the join. Keyed by SOURCE business-key field
+    # name — any number of fields, not just two named ones.
+    excluded_unmapped: dict[str, int] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -64,6 +64,18 @@ class ReconciliationSummary(BaseModel):
             total = data.get("total", 0) or 0
             data["quantity_mismatch"] = quantity_mismatch
             data["mismatch"] = total - match - quantity_mismatch
+        # Summaries persisted before excluded_unmapped became a generic
+        # per-field dict carried two fixed named counters (Material/Plant
+        # only) — migrated into the dict form on load.
+        if "excluded_material_unmapped" in data or "excluded_plant_unmapped" in data:
+            material = data.pop("excluded_material_unmapped", None)
+            plant = data.pop("excluded_plant_unmapped", None)
+            legacy: dict[str, int] = {}
+            if material:
+                legacy["Material"] = material
+            if plant:
+                legacy["ProductionPlant"] = plant
+            data.setdefault("excluded_unmapped", legacy)
         return data
 
     @classmethod
@@ -79,18 +91,23 @@ class ReconciliationSummary(BaseModel):
         )
 
 
-def excluded_unmapped_counts(held_out: list[dict[str, Any]]) -> tuple[int, int]:
-    """Sum held-out row counts for the Material and Plant business-key fields.
+def excluded_unmapped_counts(held_out: list[dict[str, Any]]) -> dict[str, int]:
+    """Sum held-out row counts per SOURCE business-key field name.
 
-    ``held_out`` is :attr:`~engine.executor.ShadowBuildResult.held_out` — every
-    row whose Material or Plant landed on a MEDIUM/NONE/OUT_OF_SCOPE match (or
-    had no match record, or was blank) before the join ever ran. Keyed on the
-    literal SAP field names this app's two business-key fields always use
-    (``Material`` -> PRDID, ``ProductionPlant`` -> LOCID).
+    ``held_out`` is :attr:`~engine.executor.ShadowBuildResult.held_out` —
+    every row whose business-key field landed on a MEDIUM/NONE/OUT_OF_SCOPE
+    match (or had no match record, or was blank) before the join ever ran.
+    ``engine.executor._apply_value_mappings`` stamps ``held_out[i]["field"]``
+    generically for ANY business-key field, so this sums across every field
+    that actually held out rows — not just two named ones.
     """
-    material = sum(int(h.get("row_count") or 0) for h in held_out if h.get("field") == "Material")
-    plant = sum(int(h.get("row_count") or 0) for h in held_out if h.get("field") == "ProductionPlant")
-    return material, plant
+    counts: dict[str, int] = {}
+    for h in held_out:
+        field = h.get("field")
+        if not field:
+            continue
+        counts[field] = counts.get(field, 0) + int(h.get("row_count") or 0)
+    return counts
 
 
 class ReconciliationResult(BaseModel):

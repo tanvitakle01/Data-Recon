@@ -12,7 +12,7 @@ import pytest
 
 from backend.recon_engine.storage import value_pair_store
 from backend.recon_engine.value_pairing import pipeline
-from backend.recon_engine.value_pairing.batching import build_source_batches
+from backend.recon_engine.value_pairing.batching import build_source_batches, build_target_batches
 
 
 class _Settings:
@@ -57,6 +57,32 @@ def test_build_source_batches_adds_a_trailing_undated_batch():
     labels = [label for label, _mask in batches]
     assert labels[-1] == "Undated"
     assert batches[-1][1].tolist() == [False, True]
+
+
+def test_build_source_batches_default_window_is_one_year():
+    series = _series(["A", "B", "C"])
+    dates = _series(["2021-01-01", "2022-06-01", "2022-12-31"])
+    batches = build_source_batches(source_series=series, source_dates=dates)
+    labels = [label for label, _mask in batches]
+    assert labels == ["2021", "2022"]
+
+
+# ── build_target_batches ─────────────────────────────────────────────────────
+
+def test_build_target_batches_mirrors_source_windowing():
+    series = _series(["X", "Y"])
+    dates = _series(["2021-01-01", "2022-01-01"])
+    batches = build_target_batches(target_series=series, target_dates=dates, window_years=1)
+    labels = [label for label, _mask in batches]
+    assert labels == ["2021", "2022"]
+    assert batches[0][1].tolist() == [True, False]
+
+
+def test_build_target_batches_degrades_to_one_batch_without_a_date_column():
+    series = _series(["X", "Y"])
+    batches = build_target_batches(target_series=series, target_dates=None)
+    assert len(batches) == 1
+    assert batches[0][0] == "All records"
 
 
 # ── pipeline.pair_values batching integration ────────────────────────────────
@@ -128,6 +154,40 @@ def test_on_batch_callback_reports_every_batch_in_order(configured_llm):
     )
 
     assert seen == [(0, 2, "2021-2022"), (1, 2, "2023-2024")]
+
+
+def test_on_batch_callback_reports_target_candidate_count_without_gating_matches(configured_llm):
+    """Target dates are batched purely for display: "5001" (source, 2021) must
+    still be matchable against an identical target value dated 2023 — a
+    different calendar window — while the reported target_candidate_count for
+    the 2021 batch reflects only target rows actually dated 2021 (none)."""
+    seen = []
+    source_series = _series(["5001"])
+    source_dates = _series(["2021-06-01"])
+    target_series = _series(["5001"])  # identical value -> identity match, no LLM needed
+    target_dates = _series(["2023-06-01"])  # deliberately a different window than source
+
+    result = pipeline.pair_values(
+        source_field="Material",
+        target_field="PRDID",
+        source_series=source_series,
+        target_series=target_series,
+        source_connector="s4",
+        target_connector="ibp",
+        source_dates=source_dates,
+        target_dates=target_dates,
+        date_window_years=1,
+        on_batch=lambda progress: seen.append(progress),
+    )
+
+    assert len(seen) == 1
+    assert seen[0].batch_label == "2021"
+    assert seen[0].target_candidate_count is None, (
+        "no target row is dated 2021, so the display count is None"
+    )
+    assert result.matches[0].target_value == "5001", (
+        "the match itself must still happen — target batching never gates matching"
+    )
 
 
 class _FakeOutcome:

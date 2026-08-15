@@ -33,14 +33,14 @@ def test_live_prepass_pairs_against_raw_values_with_no_recipe(client):
 
     res = client.post("/api/recon/value-mapping/live-prepass", json=_body(source_rows, target_rows))
     assert res.status_code == 200, res.text
-    body = res.json()
+    pairs = res.json()["pairs"]
 
-    assert body["product"]["source_field"] == "Material"
-    product_by_value = {m["source_value"]: m for m in body["product"]["matches"]}
+    assert pairs[0]["source_field"] == "Material"
+    product_by_value = {m["source_value"]: m for m in pairs[0]["matches"]}
     assert product_by_value["MAT-1"]["confidence"] == "very_high"
     assert product_by_value["MAT-1"]["rule"] == "value_pairing.identity"
 
-    location_by_value = {m["source_value"]: m for m in body["location"]["matches"]}
+    location_by_value = {m["source_value"]: m for m in pairs[1]["matches"]}
     assert location_by_value["PL01"]["confidence"] == "very_high"
 
 
@@ -57,7 +57,7 @@ def test_live_prepass_pairs_against_recipe_transformed_values(client):
         json=_body(source_rows, target_rows, operations=operations),
     )
     assert res.status_code == 200, res.text
-    product_by_value = {m["source_value"]: m for m in res.json()["product"]["matches"]}
+    product_by_value = {m["source_value"]: m for m in res.json()["pairs"][0]["matches"]}
     assert product_by_value["MAT-1"]["confidence"] == "very_high"
     assert product_by_value["MAT-1"]["rule"] == "value_pairing.identity"
 
@@ -77,7 +77,7 @@ def test_live_prepass_reuses_a_stored_library_pair(client):
 
     res = client.post("/api/recon/value-mapping/live-prepass", json=_body(source_rows, target_rows))
     assert res.status_code == 200, res.text
-    product_by_value = {m["source_value"]: m for m in res.json()["product"]["matches"]}
+    product_by_value = {m["source_value"]: m for m in res.json()["pairs"][0]["matches"]}
     assert product_by_value["5006"]["confidence"] == "high"
     assert product_by_value["5006"]["rule"] == "value_pairing.library_reused"
 
@@ -98,7 +98,7 @@ def test_live_prepass_drops_aggregate_ops_before_pairing(client):
         json=_body(source_rows, target_rows, operations=operations),
     )
     assert res.status_code == 200, res.text
-    product_by_value = {m["source_value"]: m for m in res.json()["product"]["matches"]}
+    product_by_value = {m["source_value"]: m for m in res.json()["pairs"][0]["matches"]}
     assert product_by_value["MAT-1"]["confidence"] == "very_high"
 
 
@@ -111,9 +111,31 @@ def test_live_prepass_leaves_unmatched_values_unpaired_never_calls_llm(client):
 
     res = client.post("/api/recon/value-mapping/live-prepass", json=_body(source_rows, target_rows))
     assert res.status_code == 200, res.text
-    product_by_value = {m["source_value"]: m for m in res.json()["product"]["matches"]}
+    product_by_value = {m["source_value"]: m for m in res.json()["pairs"][0]["matches"]}
     assert product_by_value["RAW-1"]["confidence"] == "none"
     assert product_by_value["RAW-1"]["rule"] == "value_pairing.unpaired"
+
+
+def test_live_prepass_supports_arbitrary_key_pairs(client):
+    # A third key pair beyond product/location must be paired too.
+    source_rows = [{"SKU": "MAT-1", "Plant Code": "PL01", "Region": "APAC"}]
+    target_rows = [{"Product Code": "MAT-1", "Location ID": "PL01", "RegionCode": "APAC"}]
+    key_pairs = [
+        {"source_field": "SKU", "target_field": "Product Code"},
+        {"source_field": "Plant Code", "target_field": "Location ID"},
+        {"source_field": "Region", "target_field": "RegionCode"},
+    ]
+
+    res = client.post(
+        "/api/recon/value-mapping/live-prepass",
+        json=_body(source_rows, target_rows, key_pairs=key_pairs),
+    )
+    assert res.status_code == 200, res.text
+    pairs = res.json()["pairs"]
+    assert len(pairs) == 3
+    assert pairs[2]["source_field"] == "Region"
+    region_by_value = {m["source_value"]: m for m in pairs[2]["matches"]}
+    assert region_by_value["APAC"]["confidence"] == "very_high"
 
 
 def test_live_prepass_400s_on_missing_source_rows(client):
