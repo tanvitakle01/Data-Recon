@@ -720,6 +720,8 @@ def pair_values(
     date_window_years: int | None = None,
     raise_on_batch_failure: bool = False,
     on_batch: Any = None,
+    start_batch_index: int = 0,
+    resume_matches: list[ValueMatch] | None = None,
 ) -> ValueMapping:
     """Resolve every distinct ``source_field`` value to a ``target_field`` value.
 
@@ -755,8 +757,20 @@ def pair_values(
     step would, so it opts into this.
 
     ``on_batch``, if given, is called after each batch resolves with a
-    :class:`~value_pairing.batching.BatchProgress` — the hook Auto mode uses
-    to surface live "batch N of M (label)" progress.
+    :class:`~value_pairing.batching.BatchProgress` and that batch's own
+    ``list[ValueMatch]`` — the hook Auto mode uses to surface live "batch N of
+    M (label)" progress AND to persist a resumable per-batch checkpoint (see
+    ``auto_pipeline.nodes._make_batch_progress_cb``).
+
+    ``start_batch_index``/``resume_matches`` resume a PRIOR call that raised
+    :class:`ValuePairingUnavailable` partway through: batches before
+    ``start_batch_index`` are skipped entirely (never re-run — they already
+    resolved and their matches were reported via ``on_batch`` before the
+    prior call failed), and ``resume_matches`` (that prior call's already-
+    resolved matches, gathered by the caller from its own checkpoint) are
+    merged in as if they were produced by this call's own batch 0, so the
+    returned ``ValueMapping`` covers every batch, not only the ones actually
+    re-run this call.
     """
     target_values = set(distinct_values(target_series))
     window_years = date_window_years or get_settings().value_pairing_window_years
@@ -772,12 +786,15 @@ def pair_values(
         label: len(distinct_values(target_series[mask])) for label, mask in target_batches
     }
 
-    all_batch_matches: list[list[ValueMatch]] = []
+    all_batch_matches: list[list[ValueMatch]] = [list(resume_matches)] if resume_matches else []
     for index, (label, mask) in enumerate(batches):
+        if index < start_batch_index:
+            continue  # already resolved by a prior (failed) call — see resume_matches above
         batch_source_series = source_series[mask]
         source_counts = distinct_values(batch_source_series)
+        batch_matches: list[ValueMatch] = []
         if source_counts:
-            matches, all_failed = _pair_batch(
+            batch_matches, all_failed = _pair_batch(
                 source_counts=source_counts,
                 target_values=target_values,
                 source_field=source_field,
@@ -797,7 +814,7 @@ def pair_values(
                     f"All configured AI providers are unavailable for value-pairing on "
                     f"{source_field!r} -> {target_field!r} (batch {label!r})."
                 )
-            all_batch_matches.append(matches)
+            all_batch_matches.append(batch_matches)
 
         if on_batch is not None:
             on_batch(
@@ -807,7 +824,8 @@ def pair_values(
                     batch_count=len(batches),
                     batch_label=label,
                     target_candidate_count=target_candidates_by_label.get(label),
-                )
+                ),
+                batch_matches,
             )
 
     matches = _merge_batch_matches(all_batch_matches)

@@ -59,9 +59,28 @@ function InsightsPageInner() {
 
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadSheetName, setUploadSheetName] = useState("");
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const cockpitSectionRef = useRef(null);
   const { ensureTicketsForPayload } = useTicketing();
+
+  const onDownloadPdf = async () => {
+    if (!runId) return;
+    setPdfBusy(true);
+    try {
+      const res = await api.get(`/insights/${runId}/pdf`, { responseType: "blob" });
+      const blobUrl = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `insights_${runId}.pdf`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Failed to generate the PDF report");
+    } finally {
+      setPdfBusy(false);
+    }
+  };
 
   useEffect(() => {
     const runAuto = async () => {
@@ -123,11 +142,24 @@ function InsightsPageInner() {
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontWeight: 900, letterSpacing: "-0.02em" }}>Insights</h2>
-        <div style={{ color: "#64748b", marginTop: 6, fontWeight: 600 }}>
-          {isAutoMode ? "Auto-generated from reconciliation output" : "Standalone analysis"}
+      <div style={{ marginBottom: 16, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontWeight: 900, letterSpacing: "-0.02em" }}>Insights</h2>
+          <div style={{ color: "#64748b", marginTop: 6, fontWeight: 600 }}>
+            {isAutoMode ? "Auto-generated from reconciliation output" : "Standalone analysis"}
+          </div>
         </div>
+        {runId && payload && (
+          <button
+            type="button"
+            onClick={onDownloadPdf}
+            disabled={pdfBusy}
+            className="btn-secondary"
+            style={{ flex: "0 0 auto" }}
+          >
+            {pdfBusy ? "Preparing…" : "Download PDF"}
+          </button>
+        )}
       </div>
 
       {error && <div style={{ color: "#b91c1c", fontWeight: 700, marginBottom: 12 }}>⚠️ {String(error)}</div>}

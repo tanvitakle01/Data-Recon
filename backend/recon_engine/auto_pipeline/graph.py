@@ -83,9 +83,14 @@ def _stream_and_merge(
     config: dict[str, Any],
     seed: AutoRunState,
     on_step: Callable[[str, AutoRunState], None] | None,
+    compiled: Any = None,
 ) -> AutoRunState:
+    """``compiled`` defaults to this module's full 8-node graph; passed
+    explicitly by ``graph_from_data.py`` to reuse this exact merge/streaming
+    logic over its own 4-node graph instead of duplicating it."""
+    graph_obj = compiled if compiled is not None else _COMPILED
     merged: AutoRunState = dict(seed)
-    for chunk in _COMPILED.stream(input_, config=config, stream_mode="updates"):
+    for chunk in graph_obj.stream(input_, config=config, stream_mode="updates"):
         for step_name, update in chunk.items():
             if step_name == "__interrupt__":
                 # Handled by get_pending_interrupt() after streaming ends —
@@ -146,6 +151,36 @@ def resume_auto_pipeline(
     config = _thread_config(graph_run_id)
     seed = _COMPILED.get_state(config).values or {}
     return _stream_and_merge(Command(resume=resume_value), config, seed=seed, on_step=on_step)
+
+
+def retry_auto_pipeline(
+    graph_run_id: str,
+    on_step: Callable[[str, AutoRunState], None] | None = None,
+) -> AutoRunState:
+    """Retry a HARD-FAILED ``pair_values`` node from exactly the batch it
+    stopped at, using whatever ``pipeline_batch_checkpoints`` rows
+    ``nodes._make_batch_progress_cb`` already persisted for the batches that
+    resolved before the failure.
+
+    Unlike :func:`resume_auto_pipeline` (which resumes a live ``interrupt()``
+    pause via ``Command(resume=...)``), a hard failure (``status: "failed"``,
+    routed straight to ``END`` by ``_router``) leaves no pending interrupt to
+    resume — ``get_pending_interrupt`` returns ``None`` for this thread. So
+    instead this rewrites the checkpoint via ``update_state(...,
+    as_node="extract_unique_keys")`` — the node immediately before
+    ``pair_values`` — clearing ``status``/``failed_step``/``error`` as part of
+    the same write. LangGraph then schedules whatever node
+    ``extract_unique_keys``'s own edge points at (``pair_values``) as the next
+    step, so invoking with no new input re-executes ONLY ``pair_values``, not
+    the whole graph from ``START``. ``pair_values`` itself reads the
+    checkpoint rows via ``nodes._resume_state_for`` and skips every batch
+    already resolved.
+    """
+    config = _thread_config(graph_run_id)
+    seed = _COMPILED.get_state(config).values or {}
+    values = {**seed, "status": "running", "failed_step": None, "error": None}
+    _COMPILED.update_state(config, values, as_node="extract_unique_keys")
+    return _stream_and_merge(None, config, seed=values, on_step=on_step)
 
 
 def get_pending_interrupt(graph_run_id: str) -> Any | None:

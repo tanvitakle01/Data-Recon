@@ -31,6 +31,7 @@ from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
 from backend.API_conn.connectors.s4_metadata_service import S4MetadataService
 from backend.recon_engine import service
 from backend.recon_engine.models.snapshot import RawLayer
+from backend.recon_engine.models.value_mapping import ValueMatch
 from backend.recon_engine.storage import (
     contract_store,
     pipeline_run_store,
@@ -339,9 +340,18 @@ def _make_batch_progress_cb(graph_run_id: str) -> Any:
     the product and location pairing calls below (a fresh closure per call,
     so the polled status always reflects whichever field pair is currently
     mid-flight rather than stale progress from the other one).
+
+    Also persists a resumable per-batch checkpoint (accumulated matches +
+    next_batch_index) for this field pair — what lets a LATER batch's hard
+    failure (``ValuePairingUnavailable``) be retried from exactly where it
+    stopped instead of redoing the whole field pair (see
+    ``auto_pipeline.graph.retry_auto_pipeline`` and ``_resume_state_for``
+    below). A batch that itself triggers the failure never reaches this
+    callback (see ``value_pairing.pipeline.pair_values``), so the checkpoint
+    always reflects only batches that actually resolved.
     """
 
-    def _on_batch(progress: BatchProgress) -> None:
+    def _on_batch(progress: BatchProgress, batch_matches: list[ValueMatch]) -> None:
         pipeline_run_store.update_batch_progress(
             graph_run_id,
             field_pair=progress.field_pair,
@@ -349,8 +359,34 @@ def _make_batch_progress_cb(graph_run_id: str) -> Any:
             batch_count=progress.batch_count,
             batch_label=progress.batch_label,
         )
+        existing = pipeline_run_store.get_batch_checkpoint(graph_run_id, progress.field_pair)
+        accumulated = (existing["matches"] if existing else []) + [
+            m.model_dump(mode="json") for m in batch_matches
+        ]
+        pipeline_run_store.save_batch_checkpoint(
+            graph_run_id,
+            field_pair=progress.field_pair,
+            next_batch_index=progress.batch_index + 1,
+            batch_count=progress.batch_count,
+            matches=accumulated,
+        )
 
     return _on_batch
+
+
+def _resume_state_for(graph_run_id: str, source_field: str, target_field: str) -> dict[str, Any]:
+    """Batch-level resume state for one field pair's ``pair_values()`` call —
+    read from a checkpoint a PRIOR (failed) attempt on this same
+    ``graph_run_id`` left behind (see ``_make_batch_progress_cb``). Empty/zero
+    when this is the first attempt, or this field pair has no checkpoint
+    (never started yet, or already completed and cleared)."""
+    checkpoint = pipeline_run_store.get_batch_checkpoint(graph_run_id, f"{source_field} -> {target_field}")
+    if checkpoint is None:
+        return {"start_batch_index": 0, "resume_matches": None}
+    return {
+        "start_batch_index": checkpoint["next_batch_index"],
+        "resume_matches": [ValueMatch(**m) for m in checkpoint["matches"]],
+    }
 
 
 def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
@@ -408,6 +444,7 @@ def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
         actor=actor,
         raise_on_batch_failure=True,
         on_batch=_make_batch_progress_cb(graph_run_id),
+        **_resume_state_for(graph_run_id, source_roles["product"], target_roles["product"]),
     )
     location = pair_values(
         source_field=source_roles["location"],
@@ -422,7 +459,12 @@ def _do_pair_values(state: AutoRunState) -> dict[str, Any]:
         actor=actor,
         raise_on_batch_failure=True,
         on_batch=_make_batch_progress_cb(graph_run_id),
+        **_resume_state_for(graph_run_id, source_roles["location"], target_roles["location"]),
     )
+
+    # Both field pairs fully resolved — nothing left to resume; drop any
+    # checkpoints a prior failed attempt on this graph_run_id left behind.
+    pipeline_run_store.clear_batch_checkpoints(graph_run_id)
 
     return {
         "product_mapping": product.model_dump(mode="json"),

@@ -150,7 +150,9 @@ def test_on_batch_callback_reports_every_batch_in_order(configured_llm):
         source_connector="s4",
         target_connector="ibp",
         source_dates=source_dates,
-        on_batch=lambda progress: seen.append((progress.batch_index, progress.batch_count, progress.batch_label)),
+        on_batch=lambda progress, matches: seen.append(  # noqa: ARG005
+            (progress.batch_index, progress.batch_count, progress.batch_label)
+        ),
     )
 
     assert seen == [(0, 2, "2021-2022"), (1, 2, "2023-2024")]
@@ -177,7 +179,7 @@ def test_on_batch_callback_reports_target_candidate_count_without_gating_matches
         source_dates=source_dates,
         target_dates=target_dates,
         date_window_years=1,
-        on_batch=lambda progress: seen.append(progress),
+        on_batch=lambda progress, matches: seen.append(progress),  # noqa: ARG005
     )
 
     assert len(seen) == 1

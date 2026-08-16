@@ -70,3 +70,14 @@ def load_excel(file_obj: Any, sheet_name: str | None = None) -> dict[str, Any]:
         "row_count": int(df.shape[0]),
         "col_count": int(df.shape[1]),
     }
+
+
+def load_tabular(content: bytes, filename: str) -> pd.DataFrame:
+    """CSV or Excel, dispatched by extension — the one place both the plain
+    reconcile route and the chat/auto-pipeline routes decide how to read an
+    uploaded data file, so the two never diverge on which formats are
+    supported (mirrors the same ``.csv`` branch ``mapping_sheet_parser.py``
+    uses for mapping-sheet uploads)."""
+    if filename.lower().endswith(".csv"):
+        return pd.read_csv(BytesIO(content))
+    return load_excel(BytesIO(content))["df"]

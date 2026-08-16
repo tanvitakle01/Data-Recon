@@ -1,0 +1,121 @@
+"""Chatbot intent + attachment-role classification (one LLM call).
+
+Given the user's chat message and, for each attachment not already pinned to
+a role from an earlier turn in this conversation, a cheap preview (filename +
+column headers + first populated row), infer:
+
+* whether this message is asking for a reconciliation at all, and
+* which role each new attachment plays: a mapping sheet, source data, target
+  data, or none of those.
+
+Same provider chain as every other LLM call in this codebase
+(``build_llm_client()`` — Groq primary, Gemini/Cerebras/OpenRouter fallback,
+see ``backend/recon_engine/llm/failover.py``), and the same
+never-raise-degrade-instead contract as ``sheet_identifier.identify_systems``:
+a provider failure returns a conservative "not enough to tell" result rather
+than raising, so the chatbot always has something to say back.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from backend.recon_engine.llm import build_llm_client
+
+logger = logging.getLogger("recon.chat_assistant.intent")
+
+_ROLE_VALUES = ("mapping_sheet", "source_data", "target_data", "unknown")
+
+_SYSTEM_PREAMBLE = """You triage chat messages for a data-reconciliation
+assistant. Given the user's message text and a preview of each newly
+attached file (filename, column headers, and its first populated data row),
+decide:
+
+1. `is_reconciliation`: true only if the user is asking to reconcile,
+   compare, or match two datasets — not a general question, greeting, or
+   unrelated request.
+2. `roles`: for EVERY filename given in `attachments`, classify it as exactly
+   one of:
+   - "mapping_sheet": a sheet whose rows describe field/entity mappings,
+     join rules, or which systems/fields to compare (not transactional data
+     itself) — e.g. columns like Source Field, Target Field, Join Condition,
+     Transformation Notes.
+   - "source_data": transactional/master data representing the SOURCE side
+     of a comparison (sales orders, inventory, planning data, etc.).
+   - "target_data": the same kind of data, but representing the TARGET side.
+   - "unknown": you cannot tell, or it is unrelated to reconciliation.
+
+Use the message text as the strongest signal for source vs. target ("reconcile
+X against Y" implies X=source, Y=target) — if the message doesn't say, infer
+from column shape: a mapping sheet's rows describe fields/mappings, not
+business records; source/target data files contain actual business rows.
+When two data files look alike and the message gives no ordering hint,
+prefer keeping their upload order (first file = source, second = target).
+
+Return strictly the requested JSON shape — no prose, no markdown."""
+
+
+def classify(
+    *,
+    message: str,
+    attachment_previews: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """``attachment_previews``: ``[{"filename": str, "headers": [...], "first_row": {...}}]``
+    for attachments not already pinned to a role from a prior turn.
+
+    Returns ``{"is_reconciliation": bool, "roles": {filename: role}, "degraded": bool,
+    "degraded_reason": str | None}``. Never raises — a provider failure degrades to
+    ``is_reconciliation=False`` with every role "unknown", so the caller falls back
+    to asking the user directly rather than crashing the chat turn.
+    """
+    if not message.strip() and not attachment_previews:
+        return {
+            "is_reconciliation": False,
+            "roles": {},
+            "degraded": False,
+            "degraded_reason": None,
+        }
+
+    user_payload = {"message": message, "attachments": attachment_previews}
+
+    try:
+        client = build_llm_client()
+        payload = client.complete_json(
+            [
+                {"role": "system", "content": _SYSTEM_PREAMBLE},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, default=str)},
+            ]
+        )
+    except Exception as exc:  # noqa: BLE001 - degradation is the contract
+        logger.warning("Chat intent classification failed; degrading. %s", exc)
+        return {
+            "is_reconciliation": False,
+            "roles": {p["filename"]: "unknown" for p in attachment_previews},
+            "degraded": True,
+            "degraded_reason": str(exc),
+        }
+
+    if not isinstance(payload, dict):
+        return {
+            "is_reconciliation": False,
+            "roles": {p["filename"]: "unknown" for p in attachment_previews},
+            "degraded": True,
+            "degraded_reason": "AI returned an unexpected response for intent classification.",
+        }
+
+    raw_roles = payload.get("roles") if isinstance(payload.get("roles"), dict) else {}
+    roles = {
+        p["filename"]: raw_roles.get(p["filename"])
+        if raw_roles.get(p["filename"]) in _ROLE_VALUES
+        else "unknown"
+        for p in attachment_previews
+    }
+
+    return {
+        "is_reconciliation": bool(payload.get("is_reconciliation")),
+        "roles": roles,
+        "degraded": False,
+        "degraded_reason": None,
+    }

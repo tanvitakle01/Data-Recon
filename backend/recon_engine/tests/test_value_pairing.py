@@ -14,6 +14,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from backend.recon_engine.models.value_mapping import Confidence, ValueMatch
 from backend.recon_engine.storage import value_pair_store
 from backend.recon_engine.value_pairing import pipeline
 from backend.recon_engine.value_pairing.corroborate import corroboration_overlap
@@ -479,6 +480,50 @@ def test_pipeline_accepts_both_candidates_and_labels_corroboration(monkeypatch, 
 
     assert identity_match.candidates == sorted(["01", "PL01@S21400"])
     assert transform_match.candidates == sorted(["01", "PL01@S21400"])
+
+
+def test_pair_values_resumes_from_start_batch_index_skipping_earlier_batches():
+    # Two year-batches ("2021", "2022"), one distinct value each. "A" is
+    # passed in as an already-resolved match from a PRIOR (failed) call — as
+    # if a checkpoint restored it — and start_batch_index=1 means only the
+    # "2022" batch should actually run this call.
+    source_series = pd.Series(["A", "B"])
+    source_dates = pd.Series(["2021-01-01", "2022-01-01"])
+    target_series = pd.Series(["A", "B"])
+
+    resumed_match = ValueMatch(
+        source_value="A",
+        target_value="A",
+        confidence=Confidence.VERY_HIGH,
+        rule="value_pairing.identity",
+        evidence="Exact match: 'A' == 'A'.",
+        row_count=1,
+    )
+
+    seen_batch_indices: list[int] = []
+
+    def _on_batch(progress, matches):  # noqa: ARG001 - matches unused, only indices asserted
+        seen_batch_indices.append(progress.batch_index)
+
+    result = pipeline.pair_values(
+        source_field="Material",
+        target_field="PRDID",
+        source_series=source_series,
+        target_series=target_series,
+        source_connector="s4",
+        target_connector="ibp",
+        source_dates=source_dates,
+        date_window_years=1,
+        start_batch_index=1,
+        resume_matches=[resumed_match],
+        on_batch=_on_batch,
+    )
+
+    assert seen_batch_indices == [1]  # batch 0 ("2021") never re-run
+    by_value = {m.source_value: m for m in result.matches}
+    assert by_value["A"].target_value == "A"
+    assert by_value["A"].rule == "value_pairing.identity"  # the resumed match, untouched
+    assert by_value["B"].target_value == "B"
 
 
 def test_pipeline_accepts_both_candidates_when_corroboration_has_no_signal(monkeypatch, configured_llm):

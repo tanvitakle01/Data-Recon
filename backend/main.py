@@ -68,6 +68,7 @@ from backend.routes.script_transformations import router as script_transformatio
 from backend.routes.auto_pipeline import router as auto_pipeline_router
 from backend.routes.auth import router as auth_router
 from backend.routes.connections import router as connections_router
+from backend.routes.chat import router as chat_router
 from backend.recon_engine.storage.db import init_storage
 
 app = FastAPI()
@@ -148,6 +149,7 @@ app.include_router(script_transformations_router)
 app.include_router(auto_pipeline_router)
 app.include_router(auth_router)
 app.include_router(connections_router)
+app.include_router(chat_router)
 
 
 

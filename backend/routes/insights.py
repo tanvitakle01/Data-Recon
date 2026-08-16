@@ -5,10 +5,11 @@ from io import BytesIO
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, File, UploadFile, HTTPException, Body
+from fastapi import APIRouter, File, UploadFile, HTTPException, Body, Response
 
 from backend.ai.insight_engine import InsightEngine
 from backend.excel_comparator.core.loader import load_excel
+from backend.recon_engine.reporting.insights_pdf import build_insights_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,26 @@ async def generate_insights_from_run_id(body: dict[str, Any] = Body(...)) -> dic
         raise HTTPException(status_code=400, detail=f"Failed to build insights for run: {exc}")
 
     return {"success": True, "payload": payload}
+
+
+@router.get("/insights/{run_id}/pdf")
+def download_insights_pdf(run_id: str) -> Response:
+    """Structured PDF export of a run's insights — same payload
+    ``/insights/from-run-id`` returns, rendered as a printable report
+    (see ``insights_pdf.py``)."""
+    try:
+        payload = _generate_run_insights(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Reconciliation run not found")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Failed to build insights for run: {exc}")
+
+    pdf_bytes = build_insights_pdf(payload, run_id=run_id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="insights_{run_id}.pdf"'},
+    )
 
 
 _DRILLDOWN_DIMENSION_CANDIDATES = {

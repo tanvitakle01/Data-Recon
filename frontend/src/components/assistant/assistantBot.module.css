@@ -168,6 +168,114 @@
   border-bottom-right-radius: var(--radius-sm);
 }
 
+/* ---- Run progress: status line, result badges, resolver question, quick
+   actions — all rendered inside a bot message tied to an Auto-mode run ---- */
+.runStatusLine {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.runError {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--missing);
+}
+.runInterrupted {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+.resultBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.resolver {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.resolverMessage {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.resolverChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.resolverChip {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.resolverChip:hover {
+  border-color: var(--accent);
+  color: var(--accent-active);
+}
+.resolverInputRow {
+  display: flex;
+}
+.resolverInput {
+  flex: 1 1 auto;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+}
+.resolverInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* ---- Floating suggestions: quick next-step pills shown above the input
+   row (not inside the chat bubble) once a run completes ---- */
+.floatingSuggestions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px 0;
+  background: var(--surface-2);
+}
+.suggestionPill {
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+  transition: transform var(--dur) var(--ease), background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.suggestionPill:hover {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--accent-active);
+  transform: translateY(-1px);
+}
+
 /* ---- Attachments: the tray above the input row (pending, unsent) and the
    chip layout reused inside sent messages ---- */
 .attachmentTray {

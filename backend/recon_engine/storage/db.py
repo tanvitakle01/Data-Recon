@@ -179,6 +179,23 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     interrupt_json      TEXT
 );
 
+-- Batch-level checkpoint for one field pair's pair_values() call within an
+-- Auto-mode `pair_values` node, keyed by (graph_run_id, field_pair) — e.g.
+-- ("autorun_ab12", "Material -> PRDID"). Written after every batch that
+-- resolves successfully (see auto_pipeline/nodes.py's _make_batch_progress_cb)
+-- so a batch that later fails (ValuePairingUnavailable) can be retried from
+-- exactly next_batch_index instead of redoing the whole field pair — see
+-- auto_pipeline/graph.py's retry_auto_pipeline. Cleared once the owning
+-- `pair_values` node completes successfully for both field pairs.
+CREATE TABLE IF NOT EXISTS pipeline_batch_checkpoints (
+    graph_run_id      TEXT NOT NULL,
+    field_pair        TEXT NOT NULL,
+    next_batch_index  INTEGER NOT NULL,
+    batch_count       INTEGER NOT NULL,
+    matches_json      TEXT NOT NULL,
+    PRIMARY KEY (graph_run_id, field_pair)
+);
+
 -- Value-pair library: a source_value -> target_value pairing for one Key
 -- field pair (e.g. Material -> PRDID), discovered by the LLM-pairing pipeline
 -- and deterministically verified before it is ever stored here. Every stored
