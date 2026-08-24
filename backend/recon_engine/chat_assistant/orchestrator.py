@@ -1,9 +1,15 @@
 """Chatbot reconciliation orchestrator — the state machine described in the
-plan: classify intent + attachment roles, then route into whichever existing
-Auto-mode pipeline entry point the resolved state calls for.
+plan: intercept a pending confirmation first, then classify run-mutating
+intent (CANCEL/RETRY/STATUS) deterministically against the session's current
+run, and only then classify attachment roles, then route into whichever
+existing Auto-mode pipeline entry point the resolved state calls for.
 
-``state`` is a small, frontend-persisted dict (no server-side chat session
-store, consistent with the rest of this codebase's stateless routes):
+``state`` is a small, frontend-persisted dict — attachment-resolution
+progress only (mapping sheet / source / target roles for the CURRENT
+in-progress reconciliation request). It carries no run identity and is not
+what gates a second run: that's ``session_id``, resolved server-side to at
+most one active run via ``chat_assistant.session_store``, with any pending
+"replace it?" confirmation held in ``chat_assistant.confirmation_store``.
 
     {"operation": "reconciliation" | None,
      "mapping_sheet": {"filename": str, "file_id": str} | None,
@@ -21,10 +27,13 @@ from typing import Any
 
 from backend.API_conn.connectors import registry
 from backend.excel_comparator.core.loader import load_tabular
-from backend.recon_engine.chat_assistant import attachment_store, intent
+from backend.recon_engine import run_registry
+from backend.recon_engine.chat_assistant import attachment_store, confirmation_store, intent, session_store
 from backend.recon_engine.mapping_sheet_parser import parse_mapping_sheet
+from backend.recon_engine.run_registry import RunState
 from backend.recon_engine.sheet_identifier import identify_systems
 from backend.recon_engine.storage import pipeline_run_store
+from backend.routes import auto_pipeline
 from backend.routes.auto_pipeline import start_auto_run_from_data_state, start_auto_run_state
 from backend.routes.entity_join import live_entity_catalog
 
@@ -83,17 +92,180 @@ def _missing_data_reply(state: dict[str, Any]) -> str:
     )
 
 
+def _active_run_id(session_id: str) -> str | None:
+    """The session's active run, if it's still genuinely active — a stale
+    binding (the run finished, or FAILED without being retried, since the
+    session was last seen) is cleared here rather than left to block a
+    fresh NEW_RUN forever."""
+    active_run_id = session_store.get_active_run(session_id)
+    if active_run_id is None:
+        return None
+    try:
+        if run_registry.is_active(active_run_id):
+            return active_run_id
+    except ValueError:
+        pass
+    session_store.set_active_run(session_id, None)
+    return None
+
+
+def _status_reply(run_id: str) -> str:
+    run = pipeline_run_store.get(run_id)
+    if run is None:
+        return f"I don't have any record of run {run_id} anymore."
+    status = run.get("status")
+    step = run.get("current_step")
+    if status == RunState.PAUSED_FOR_INPUT.value:
+        return f"Run {run_id} is waiting on your answer to a question I asked earlier."
+    if status == RunState.STALLED.value:
+        return f"Run {run_id} looks stalled — it hasn't reported progress in a while. It's still being watched."
+    if status == RunState.CANCELLING.value:
+        return f"Run {run_id} is being cancelled."
+    if status == RunState.RUNNING.value:
+        return f"Run {run_id} is still running" + (f" (currently on '{step}')." if step else ".")
+    return f"Run {run_id} is currently {status!r}."
+
+
+def _start_run_from_state(state: dict[str, Any], *, session_id: str, prefix: str = "") -> dict[str, Any]:
+    """Actually starts a reconciliation from a fully-resolved ``state`` —
+    shared by the normal NEW_RUN path and a confirmed "yes" on a staged
+    ``start_new_run`` action (which passes the EXACT ``state`` captured at
+    stage-time, never a re-derivation of the current message)."""
+    if state.get("mapping_sheet"):
+        filename, content = attachment_store.load(state["mapping_sheet"]["file_id"])
+        parsed = parse_mapping_sheet(content, filename=filename)
+        kinds = [c["kind"] for c in registry.get_configured_connectors()]
+        catalog, catalog_warnings = live_entity_catalog(kinds)
+        identification = identify_systems(parsed, entity_catalog=catalog)
+        if catalog_warnings:
+            identification["warnings"] = [*identification.get("warnings", []), *catalog_warnings]
+
+        if (
+            identification.get("degraded")
+            or not identification.get("source", {}).get("kind")
+            or not identification.get("target", {}).get("kind")
+        ):
+            return {"reply": prefix + _missing_data_reply(state), "state": state, "run": None}
+
+        initial_state = {
+            "actor": "chat",
+            "comparison_type": None,
+            "mapping_sheet": parsed,
+            "identification": {"source": identification["source"], "target": identification["target"]},
+        }
+        graph_run_id = pipeline_run_store.new_graph_run_id()
+        start_auto_run_state({**initial_state, "graph_run_id": graph_run_id})
+        session_store.set_active_run(session_id, graph_run_id)
+        return {
+            "reply": prefix + "Got it — running reconciliation from your mapping sheet now.",
+            "state": state,
+            "run": {"graph_run_id": graph_run_id},
+        }
+
+    if state.get("source_data") and state.get("target_data"):
+        source_name, source_content = attachment_store.load(state["source_data"]["file_id"])
+        target_name, target_content = attachment_store.load(state["target_data"]["file_id"])
+        source_df = load_tabular(source_content, source_name)
+        target_df = load_tabular(target_content, target_name)
+
+        graph_run_id = start_auto_run_from_data_state(
+            source_df=source_df,
+            target_df=target_df,
+            source_name=source_name,
+            target_name=target_name,
+            actor="chat",
+        )
+        session_store.set_active_run(session_id, graph_run_id)
+        return {
+            "reply": prefix + "Got it — running reconciliation on your source and target data now.",
+            "state": state,
+            "run": {"graph_run_id": graph_run_id},
+        }
+
+    return {"reply": prefix + _missing_data_reply(state), "state": state, "run": None}
+
+
+def _execute_staged_action(staged_action: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+    if staged_action.get("type") == "start_new_run":
+        # The ORIGINALLY BOUND inputs, captured at stage-time — never a
+        # re-parse of whatever the "yes" message itself happens to say.
+        return _start_run_from_state(staged_action["resolved_state"], session_id=session_id)
+    return {
+        "reply": "Something went wrong resolving that confirmation — please try again.",
+        "state": _empty_state(),
+        "run": None,
+    }
+
+
 def handle_message(
     *,
     message: str,
     new_attachments: list[tuple[str, bytes]],
     state: dict[str, Any] | None,
+    session_id: str,
 ) -> dict[str, Any]:
-    """Returns ``{"reply": str, "state": dict, "run": {"graph_run_id": str} | None}``."""
+    """Returns ``{"reply": str, "state": dict, "run": {"graph_run_id": str} | None}``.
+
+    ``session_id`` is the EXISTING authenticated session id (see
+    ``routes/chat.py``) — the key for this session's active-run binding and
+    any pending confirmation. Every message is routed through the pending-
+    confirmation gate FIRST, before any intent classification at all.
+    """
+    # ── 1. pending-confirmation gate — intercepts BEFORE intent classification ──
+    prefix = ""
+    pending = confirmation_store.get_pending(session_id)
+    if pending is not None:
+        if pending["status"] == "expired":
+            prefix = "(Your previous request timed out — please try again.) "
+        else:
+            resolution = intent.interpret_yes_no(message)
+            if resolution == "ambiguous":
+                # Never falls through to fresh classification — re-ask the
+                # identical question until it's answered yes/no.
+                return {"reply": pending["question"], "state": state or _empty_state(), "run": None}
+            confirmation_store.answer(pending["confirmation_id"], resolution)
+            if resolution == "no":
+                return {
+                    "reply": "Okay — the current run keeps going.",
+                    "state": state or _empty_state(),
+                    "run": None,
+                }
+            return _execute_staged_action(pending["staged_action"], session_id=session_id)
+
     state = dict(state) if state else _empty_state()
     for key in ("operation", "mapping_sheet", "source_data", "target_data"):
         state.setdefault(key, None)
 
+    # ── 2. run-mutating intent, classified against THIS session's run state ──
+    active_run_id = _active_run_id(session_id)
+    control_intent = intent.classify_intent(message, run_snapshot={"active_run_id": active_run_id})
+
+    if control_intent == "CANCEL":
+        run_registry.transition(active_run_id, RunState.CANCELLING, reason="user requested cancel")
+        return {
+            "reply": prefix + f"Cancelling run {active_run_id} — it'll stop shortly.",
+            "state": state,
+            "run": {"graph_run_id": active_run_id},
+        }
+
+    if control_intent == "RETRY":
+        if not auto_pipeline.has_resumable_checkpoint(active_run_id):
+            return {
+                "reply": prefix + "There's nothing resumable to retry on your current run right now.",
+                "state": state,
+                "run": {"graph_run_id": active_run_id},
+            }
+        auto_pipeline.trigger_retry(active_run_id, reason="chat retry")
+        return {
+            "reply": prefix + "Retrying the reconciliation from where it left off…",
+            "state": state,
+            "run": {"graph_run_id": active_run_id},
+        }
+
+    if control_intent == "STATUS":
+        return {"reply": prefix + _status_reply(active_run_id), "state": state, "run": {"graph_run_id": active_run_id}}
+
+    # ── 3. attachment-role / reconciliation-intent classification (LLM) ──
     # Only classify attachments this state hasn't already resolved a role
     # for — a role fixed in an earlier turn is never re-asked about.
     unresolved_names = {
@@ -119,7 +291,7 @@ def handle_message(
     # falls through to the ordinary "still missing X" reply below.
     if classification.get("degraded") and state["operation"] != "reconciliation":
         return {
-            "reply": (
+            "reply": prefix + (
                 "I couldn't reach the AI service just now to understand your request "
                 "(every configured provider is temporarily unavailable or rate-limited). "
                 "Please try again in a moment."
@@ -141,7 +313,7 @@ def handle_message(
 
     if state["operation"] != "reconciliation":
         return {
-            "reply": (
+            "reply": prefix + (
                 "Hi! I'm the reconciliation assistant — ask me to reconcile a mapping sheet or "
                 "a source/target dataset and I'll take it from there."
             ),
@@ -149,53 +321,22 @@ def handle_message(
             "run": None,
         }
 
-    if state["mapping_sheet"]:
-        filename, content = attachment_store.load(state["mapping_sheet"]["file_id"])
-        parsed = parse_mapping_sheet(content, filename=filename)
-        kinds = [c["kind"] for c in registry.get_configured_connectors()]
-        catalog, catalog_warnings = live_entity_catalog(kinds)
-        identification = identify_systems(parsed, entity_catalog=catalog)
-        if catalog_warnings:
-            identification["warnings"] = [*identification.get("warnings", []), *catalog_warnings]
-
-        if (
-            identification.get("degraded")
-            or not identification.get("source", {}).get("kind")
-            or not identification.get("target", {}).get("kind")
-        ):
-            return {"reply": _missing_data_reply(state), "state": state, "run": None}
-
-        initial_state = {
-            "actor": "chat",
-            "comparison_type": None,
-            "mapping_sheet": parsed,
-            "identification": {"source": identification["source"], "target": identification["target"]},
-        }
-        graph_run_id = pipeline_run_store.new_graph_run_id()
-        start_auto_run_state({**initial_state, "graph_run_id": graph_run_id})
-        return {
-            "reply": "Got it — running reconciliation from your mapping sheet now.",
-            "state": state,
-            "run": {"graph_run_id": graph_run_id},
-        }
-
-    if state["source_data"] and state["target_data"]:
-        source_name, source_content = attachment_store.load(state["source_data"]["file_id"])
-        target_name, target_content = attachment_store.load(state["target_data"]["file_id"])
-        source_df = load_tabular(source_content, source_name)
-        target_df = load_tabular(target_content, target_name)
-
-        graph_run_id = start_auto_run_from_data_state(
-            source_df=source_df,
-            target_df=target_df,
-            source_name=source_name,
-            target_name=target_name,
-            actor="chat",
+    # ── 4. NEW_RUN: gate on the session's active run before ever starting one ──
+    ready_to_start = bool(state["mapping_sheet"]) or bool(state["source_data"] and state["target_data"])
+    if ready_to_start and active_run_id is not None:
+        question = (
+            f"You already have a reconciliation running (run {active_run_id}). "
+            "Start this new one instead and replace it? (yes/no)"
         )
-        return {
-            "reply": "Got it — running reconciliation on your source and target data now.",
-            "state": state,
-            "run": {"graph_run_id": graph_run_id},
-        }
+        confirmation_store.stage(
+            session_id,
+            question=question,
+            staged_action={"type": "start_new_run", "resolved_state": state},
+            target_run_ids=[active_run_id],
+        )
+        return {"reply": prefix + question, "state": state, "run": None}
 
-    return {"reply": _missing_data_reply(state), "state": state, "run": None}
+    if ready_to_start:
+        return _start_run_from_state(state, session_id=session_id, prefix=prefix)
+
+    return {"reply": prefix + _missing_data_reply(state), "state": state, "run": None}

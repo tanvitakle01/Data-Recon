@@ -28,7 +28,9 @@ def test_degraded_classification_gives_an_honest_reply_not_a_false_no(monkeypatc
         },
     )
 
-    result = orchestrator.handle_message(message="reconcile", new_attachments=[], state=None)
+    result = orchestrator.handle_message(
+        message="reconcile", new_attachments=[], state=None, session_id="test-session"
+    )
 
     assert result["state"]["operation"] is None
     assert result["run"] is None
@@ -43,7 +45,9 @@ def test_non_reconciliation_message_gets_the_generic_reply(monkeypatch):
         lambda **kwargs: {"is_reconciliation": False, "roles": {}, "degraded": False, "degraded_reason": None},
     )
 
-    result = orchestrator.handle_message(message="hello", new_attachments=[], state=None)
+    result = orchestrator.handle_message(
+        message="hello", new_attachments=[], state=None, session_id="test-session"
+    )
 
     assert result["state"]["operation"] is None
     assert result["run"] is None
@@ -57,7 +61,9 @@ def test_reconciliation_intent_with_no_files_asks_for_data(monkeypatch):
         lambda **kwargs: {"is_reconciliation": True, "roles": {}, "degraded": False, "degraded_reason": None},
     )
 
-    result = orchestrator.handle_message(message="reconcile please", new_attachments=[], state=None)
+    result = orchestrator.handle_message(
+        message="reconcile please", new_attachments=[], state=None, session_id="test-session"
+    )
 
     assert result["state"]["operation"] == "reconciliation"
     assert result["run"] is None
@@ -90,6 +96,7 @@ def test_source_and_target_resolved_starts_the_from_data_pipeline(monkeypatch):
         message="reconcile my source and target data",
         new_attachments=[("source.csv", b"a\n1\n"), ("target.csv", b"a\n1\n")],
         state=None,
+        session_id="test-session",
     )
 
     assert result["run"] == {"graph_run_id": "autorun_fd_test123"}
@@ -110,7 +117,9 @@ def test_already_established_operation_is_not_reopened_by_a_later_degraded_call(
     )
 
     prior_state = {"operation": "reconciliation", "mapping_sheet": None, "source_data": None, "target_data": None}
-    result = orchestrator.handle_message(message="here's more", new_attachments=[], state=prior_state)
+    result = orchestrator.handle_message(
+        message="here's more", new_attachments=[], state=prior_state, session_id="test-session"
+    )
 
     assert result["state"]["operation"] == "reconciliation"
     assert "AI service" not in result["reply"]

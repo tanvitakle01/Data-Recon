@@ -18,6 +18,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import backend.routes.auto_pipeline as auto_pipeline_routes
+from backend.recon_engine import run_registry
+from backend.recon_engine.run_registry import RunState
 from backend.recon_engine.storage import pipeline_run_store
 from backend.routes.auto_pipeline import router
 
@@ -42,9 +44,10 @@ def client(monkeypatch):
 
 def _make_failed_run(graph_run_id: str, *, failed_step: str, with_checkpoint: bool) -> None:
     pipeline_run_store.create(graph_run_id)
-    pipeline_run_store.update(
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason="test setup")
+    run_registry.transition(graph_run_id, RunState.FAILED, reason="test setup")
+    pipeline_run_store.update_progress(
         graph_run_id,
-        status="failed",
         failed_step=failed_step,
         error="All configured AI providers are unavailable for value-pairing.",
     )
@@ -89,9 +92,10 @@ def _make_failed_run_batches_run(graph_run_id: str) -> None:
     ``pipeline_batch_checkpoints``. See ``_has_resumable_checkpoint`` in
     ``routes/auto_pipeline.py``."""
     pipeline_run_store.create(graph_run_id)
-    pipeline_run_store.update(
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason="test setup")
+    run_registry.transition(graph_run_id, RunState.FAILED, reason="test setup")
+    pipeline_run_store.update_progress(
         graph_run_id,
-        status="failed",
         failed_step="run_batches",
         error="Batch 3 failed: All configured AI providers are unavailable for value-pairing.",
     )

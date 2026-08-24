@@ -38,7 +38,8 @@ from langgraph.errors import GraphBubbleUp
 from backend.API_conn.connectors import registry
 from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
 from backend.API_conn.connectors.s4_metadata_service import S4MetadataService
-from backend.recon_engine import ids, service
+from backend.recon_engine import heartbeat, ids, run_registry, service
+from backend.recon_engine.run_registry import CooperativeCancellation
 from backend.recon_engine.engine.executor import build_shadow_source
 from backend.recon_engine.engine.reconciler import reconcile
 from backend.recon_engine.llm import clear_llm_call_context, set_llm_call_context
@@ -613,6 +614,13 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
     mapping_sheet_context = state.get("mapping_sheet")
 
     for batch in batches[start_index:]:
+        # Cooperative-cancellation checkpoint — between date-batches, not
+        # mid-batch: each batch is already checkpointed on completion, so
+        # stopping here never loses partial work. See _run_step's own
+        # top-of-node check for the coarser (between-nodes) checkpoint.
+        if run_registry.is_cancelling(graph_run_id):
+            return {"status": "cancelled", "result_id": result_id, "batch_count": batch_count}
+
         # A fresh batch_id per ATTEMPT (never reused across a retry) — chained
         # to whatever attempt it replaces via supersedes_batch_id, so a failed
         # attempt's trail survives rather than being overwritten. Deterministic
@@ -621,6 +629,7 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
         prior_attempt = pipeline_run_store.get_latest_batch_attempt(graph_run_id, batch.batch_index)
         batch_id = ids.new_id()
         supersedes_batch_id = prior_attempt["batch_id"] if prior_attempt else None
+        heartbeat.beat(graph_run_id, node="run_batches", batch_id=batch_id)
 
         try:
             pipeline_run_store.update_batch_progress(
@@ -887,6 +896,7 @@ def _make_batch_progress_cb(graph_run_id: str) -> Any:
     """
 
     def _on_batch(progress: BatchProgress, batch_matches: list[ValueMatch]) -> None:
+        heartbeat.beat(graph_run_id, node="pair_values")
         pipeline_run_store.update_batch_progress(
             graph_run_id,
             field_pair=progress.field_pair,
@@ -905,6 +915,12 @@ def _make_batch_progress_cb(graph_run_id: str) -> Any:
             batch_count=progress.batch_count,
             matches=accumulated,
         )
+        # Checked AFTER this batch's checkpoint is persisted, never before —
+        # cancelling must never discard a batch that already finished.
+        # pair_values() (value_pairing/pipeline.py) has no try/except around
+        # this callback, so this propagates straight out of the pair_values()
+        # call and up into _run_step's CooperativeCancellation handler.
+        run_registry.transition_or_raise_cancelled(graph_run_id)
 
     return _on_batch
 
@@ -1049,9 +1065,23 @@ def compile_and_run(state: AutoRunState) -> dict[str, Any]:
 # ── per-node timing + hard-stop wrapper ──────────────────────────────────────
 
 def _run_step(state: AutoRunState, step: str, fn: Callable[[AutoRunState], dict[str, Any]]) -> dict[str, Any]:
-    start = time.time()
     timestamps = dict(state.get("step_timestamps") or {})
     graph_run_id = state.get("graph_run_id")
+
+    # Cooperative-cancellation checkpoint — checked BEFORE this node does any
+    # real work, so a CANCEL takes effect between nodes rather than only after
+    # the whole run finishes. See run_registry.CooperativeCancellation for the
+    # matching in-node checkpoint (run_batches' per-batch loop,
+    # _make_batch_progress_cb's per-pair_values-batch callback).
+    if graph_run_id and run_registry.is_cancelling(graph_run_id):
+        now = time.time()
+        timestamps[step] = {"start": now, "end": now}
+        return {"step_timestamps": timestamps, "status": "cancelled", "failed_step": None, "error": None}
+
+    if graph_run_id:
+        heartbeat.beat(graph_run_id, node=step)
+
+    start = time.time()
     set_llm_call_context(run_id=graph_run_id, node=step)
     try:
         updates = fn(state)
@@ -1061,8 +1091,15 @@ def _run_step(state: AutoRunState, step: str, fn: Callable[[AutoRunState], dict[
         # as a generic exception would silently convert a RECOVERABLE pause
         # into a hard "failed" status, and the resolver bot would never open.
         raise
+    except CooperativeCancellation:
+        # Raised from inside fn() (e.g. run_batches' per-batch loop, or
+        # _make_batch_progress_cb's on_batch callback) once a cancel was
+        # observed mid-node — a clean stop, not a failure: no error_event.
+        timestamps[step] = {"start": start, "end": time.time()}
+        return {"step_timestamps": timestamps, "status": "cancelled", "failed_step": None, "error": None}
     except Exception as exc:  # noqa: BLE001 - any exception here is a genuine hard failure
         timestamps[step] = {"start": start, "end": time.time()}
+        message = run_registry.format_failure(graph_run_id, step, detail=str(exc))
         # One error_event per hard node failure, across all 7 wizard steps —
         # a run_batches failure's batch-specific detail is already captured
         # by pipeline_run_store.record_batch_attempt (with the real batch_id),
@@ -1072,7 +1109,7 @@ def _run_step(state: AutoRunState, step: str, fn: Callable[[AutoRunState], dict[
             "step_timestamps": timestamps,
             "status": "failed",
             "failed_step": step,
-            "error": str(exc),
+            "error": message,
         }
     finally:
         clear_llm_call_context()

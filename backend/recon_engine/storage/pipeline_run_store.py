@@ -20,6 +20,12 @@ def new_graph_run_id() -> str:
 
 
 def create(graph_run_id: str) -> None:
+    """Inserts the row in ``CREATED`` — the caller (``start_auto_run_state``)
+    immediately follows with ``run_registry.transition(..., RUNNING, ...)``.
+    Never inserts any other status here: this module has no ``status``-writing
+    function left besides this literal, fixed initial value — see
+    ``run_registry.transition``, the sole place ``pipeline_runs.status``
+    changes after creation."""
     with main_db() as conn:
         conn.execute(
             """INSERT INTO pipeline_runs
@@ -27,16 +33,15 @@ def create(graph_run_id: str) -> None:
                 failed_step, error, result_json, created_at, batch_progress_json)
                VALUES (?,?,?,?,?,?,?,?,?)""",
             (
-                graph_run_id, "running", None, json.dumps({}),
+                graph_run_id, "created", None, json.dumps({}),
                 None, None, None, datetime.now(timezone.utc).isoformat(), None,
             ),
         )
 
 
-def update(
+def update_progress(
     graph_run_id: str,
     *,
-    status: str,
     current_step: str | None = None,
     step_timestamps: dict[str, Any] | None = None,
     failed_step: str | None = None,
@@ -44,19 +49,22 @@ def update(
     result: dict[str, Any] | None = None,
     interrupt: dict[str, Any] | None = None,
 ) -> None:
-    """``interrupt`` carries the resolver bot's pending question while
-    ``status == "waiting_for_input"`` — callers pass ``None`` explicitly to
-    clear a stale one whenever the run isn't actually paused (see
-    ``routes/auto_pipeline.py``), never left as a leftover default.
+    """Everything about a run EXCEPT its lifecycle status — deliberately has
+    no ``status`` parameter at all, so a status change cannot happen through
+    this function; see ``run_registry.transition`` for that.
+
+    ``interrupt`` carries the resolver bot's pending question while paused —
+    callers pass ``None`` explicitly to clear a stale one whenever the run
+    isn't actually paused (see ``routes/auto_pipeline.py``), never left as a
+    leftover default.
     """
     with main_db() as conn:
         conn.execute(
             """UPDATE pipeline_runs
-               SET status = ?, current_step = ?, step_timestamps_json = ?,
+               SET current_step = ?, step_timestamps_json = ?,
                    failed_step = ?, error = ?, result_json = ?, interrupt_json = ?
                WHERE graph_run_id = ?""",
             (
-                status,
                 current_step,
                 json.dumps(step_timestamps or {}),
                 failed_step,

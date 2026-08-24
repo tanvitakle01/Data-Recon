@@ -19,7 +19,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from backend.excel_comparator.core.loader import load_tabular
-from backend.recon_engine import service
+from backend.recon_engine import run_registry, service
 from backend.recon_engine.auto_pipeline.graph import (
     get_pending_interrupt,
     resume_auto_pipeline,
@@ -34,6 +34,7 @@ from backend.recon_engine.auto_pipeline.graph_from_data import (
 )
 from backend.recon_engine.auto_pipeline.state import AutoRunState
 from backend.recon_engine.models.snapshot import RawLayer
+from backend.recon_engine.run_registry import RunState
 from backend.recon_engine.storage import pipeline_run_store
 
 router = APIRouter(prefix="/api/recon/auto-run", tags=["recon-auto-pipeline"])
@@ -89,9 +90,15 @@ def _partial_result(state: AutoRunState) -> dict[str, Any]:
 
 
 def _on_step(graph_run_id: str, step_name: str, state: AutoRunState) -> None:
-    pipeline_run_store.update(
+    # Progress only — NEVER status. A node that just hard-failed or requested
+    # cancellation still reports its step/timestamps/partial result here, but
+    # the actual status change (if any) is decided once, authoritatively, by
+    # _finish below — writing it here too would let this callback and _finish
+    # race to transition the same run twice for one outcome (e.g. both trying
+    # to move a run into FAILED, the second attempt illegal since FAILED is
+    # terminal-for-that-edge). See run_registry.transition's docstring.
+    pipeline_run_store.update_progress(
         graph_run_id,
-        status=state.get("status", "running"),
         current_step=step_name,
         step_timestamps=state.get("step_timestamps") or {},
         failed_step=state.get("failed_step"),
@@ -105,8 +112,10 @@ def _on_step(graph_run_id: str, step_name: str, state: AutoRunState) -> None:
 
 
 def _finish(graph_run_id: str, final_state: AutoRunState) -> None:
-    """Record a stream's outcome: completed, hard-failed, or RECOVERABLY
-    paused waiting on the resolver bot's next answer.
+    """Record a stream's outcome: completed, hard-failed, cooperatively
+    cancelled, or RECOVERABLY paused waiting on the resolver bot's next
+    answer — the ONE place that decides the run's terminal-for-this-stream
+    status and transitions it via run_registry.
 
     A pause never returns a "completed"/"failed" status from the stream
     itself (the interrupting node raised instead of returning) — checked via
@@ -120,9 +129,9 @@ def _finish(graph_run_id: str, final_state: AutoRunState) -> None:
         else get_pending_interrupt(graph_run_id)
     )
     if pending is not None:
-        pipeline_run_store.update(
+        run_registry.transition(graph_run_id, RunState.PAUSED_FOR_INPUT, reason="node interrupted, awaiting input")
+        pipeline_run_store.update_progress(
             graph_run_id,
-            status="waiting_for_input",
             step_timestamps=final_state.get("step_timestamps") or {},
             failed_step=None,
             error=None,
@@ -131,9 +140,15 @@ def _finish(graph_run_id: str, final_state: AutoRunState) -> None:
         )
         return
 
-    pipeline_run_store.update(
+    node_status = final_state.get("status", "failed")
+    to_state = {
+        "completed": RunState.COMPLETED,
+        "cancelled": RunState.CANCELLED,
+    }.get(node_status, RunState.FAILED)
+    reason = final_state.get("error") or f"node status={node_status!r}"
+    run_registry.transition(graph_run_id, to_state, reason=reason)
+    pipeline_run_store.update_progress(
         graph_run_id,
-        status=final_state.get("status", "failed"),
         step_timestamps=final_state.get("step_timestamps") or {},
         failed_step=final_state.get("failed_step"),
         error=final_state.get("error"),
@@ -142,12 +157,21 @@ def _finish(graph_run_id: str, final_state: AutoRunState) -> None:
     )
 
 
+def _fail_hard(graph_run_id: str, exc: Exception) -> None:
+    """A bug in the graph invocation itself (not a modeled node failure —
+    those are caught and turned into a "failed" node status inside
+    ``nodes.py``'s ``_run_step``, handled by ``_finish`` above instead)."""
+    message = run_registry.format_failure(graph_run_id, "graph", detail=str(exc))
+    run_registry.transition(graph_run_id, RunState.FAILED, reason=message)
+    pipeline_run_store.update_progress(graph_run_id, error=message, interrupt=None)
+
+
 def _execute(graph_run_id: str, initial_state: AutoRunState) -> None:
     stream_fn = stream_auto_pipeline_from_data if _is_from_data(graph_run_id) else stream_auto_pipeline
     try:
         final_state = stream_fn(initial_state, on_step=lambda step, s: _on_step(graph_run_id, step, s))
     except Exception as exc:  # noqa: BLE001 - a bug in the graph itself, not a modeled step failure
-        pipeline_run_store.update(graph_run_id, status="failed", error=str(exc), interrupt=None)
+        _fail_hard(graph_run_id, exc)
         return
     _finish(graph_run_id, final_state)
 
@@ -159,7 +183,7 @@ def _execute_resume(graph_run_id: str, resume_value: str) -> None:
             graph_run_id, resume_value, on_step=lambda step, s: _on_step(graph_run_id, step, s)
         )
     except Exception as exc:  # noqa: BLE001 - a bug in the graph itself, not a modeled step failure
-        pipeline_run_store.update(graph_run_id, status="failed", error=str(exc), interrupt=None)
+        _fail_hard(graph_run_id, exc)
         return
     _finish(graph_run_id, final_state)
 
@@ -169,7 +193,7 @@ def _execute_retry(graph_run_id: str) -> None:
     try:
         final_state = retry_fn(graph_run_id, on_step=lambda step, s: _on_step(graph_run_id, step, s))
     except Exception as exc:  # noqa: BLE001 - a bug in the graph itself, not a modeled step failure
-        pipeline_run_store.update(graph_run_id, status="failed", error=str(exc), interrupt=None)
+        _fail_hard(graph_run_id, exc)
         return
     _finish(graph_run_id, final_state)
 
@@ -192,6 +216,7 @@ def start_auto_run_state(initial_state: dict[str, Any]) -> str:
     kicking off the background execution either way."""
     graph_run_id = initial_state["graph_run_id"]
     pipeline_run_store.create(graph_run_id)
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason="run started")
     task = asyncio.create_task(_run_in_background(graph_run_id, initial_state))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -312,6 +337,36 @@ def _has_resumable_checkpoint(graph_run_id: str, failed_step: str | None) -> boo
     return failed_step == "run_batches" and pipeline_run_store.has_run_batch_checkpoint(graph_run_id)
 
 
+def has_resumable_checkpoint(graph_run_id: str) -> bool:
+    """Public form of :func:`_has_resumable_checkpoint` — used by the chat
+    orchestrator's RETRY intent (``chat_assistant/orchestrator.py``) to answer
+    "is there anything to retry" without duplicating the HTTP route's guard."""
+    run = pipeline_run_store.get(graph_run_id)
+    if run is None or run.get("status") != "failed":
+        return False
+    return _has_resumable_checkpoint(graph_run_id, run.get("failed_step"))
+
+
+def trigger_retry(graph_run_id: str, *, reason: str = "retry") -> None:
+    """Flips a resumable-failed run back to RUNNING and kicks off the retry in
+    the background — the exact side effect ``POST /{id}/retry`` performs,
+    factored out so the chat orchestrator's RETRY intent can trigger the same
+    thing without going through HTTP. Caller must have already confirmed
+    :func:`has_resumable_checkpoint`."""
+    run = pipeline_run_store.get(graph_run_id)
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason=reason)
+    pipeline_run_store.update_progress(
+        graph_run_id,
+        current_step=run.get("current_step") if run else None,
+        step_timestamps=(run or {}).get("step_timestamps") or {},
+        result=(run or {}).get("result"),
+        interrupt=None,
+    )
+    task = asyncio.create_task(_retry_in_background(graph_run_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 @router.get("/{graph_run_id}/status")
 def get_auto_run_status(graph_run_id: str) -> dict[str, Any]:
     run = pipeline_run_store.get(graph_run_id)
@@ -349,9 +404,9 @@ async def resolve_auto_run(graph_run_id: str, req: AutoRunResolveRequest) -> dic
             detail=f"Auto-run '{graph_run_id}' is not waiting for input (status={run.get('status')!r}).",
         )
 
-    pipeline_run_store.update(
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason="resolve")
+    pipeline_run_store.update_progress(
         graph_run_id,
-        status="running",
         current_step=run.get("current_step"),
         step_timestamps=run.get("step_timestamps") or {},
         result=run.get("result"),
@@ -385,16 +440,6 @@ async def retry_auto_run(graph_run_id: str) -> dict[str, Any]:
             detail=f"Auto-run '{graph_run_id}' has no resumable batch failure to retry.",
         )
 
-    pipeline_run_store.update(
-        graph_run_id,
-        status="running",
-        current_step=run.get("current_step"),
-        step_timestamps=run.get("step_timestamps") or {},
-        result=run.get("result"),
-        interrupt=None,
-    )
-    task = asyncio.create_task(_retry_in_background(graph_run_id))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    trigger_retry(graph_run_id, reason="retry")
 
     return {"graph_run_id": graph_run_id, "status": "resuming"}

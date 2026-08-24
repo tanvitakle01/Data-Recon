@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -69,9 +70,16 @@ from backend.routes.auto_pipeline import router as auto_pipeline_router
 from backend.routes.auth import router as auth_router
 from backend.routes.connections import router as connections_router
 from backend.routes.chat import router as chat_router
+from backend.recon_engine import heartbeat, run_registry
+from backend.recon_engine.chat_assistant import confirmation_store, session_store
 from backend.recon_engine.storage.db import init_storage
 
+logger = logging.getLogger("recon.main")
+
 app = FastAPI()
+
+_WATCHDOG_INTERVAL_SECONDS = 15
+_watchdog_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
@@ -79,6 +87,43 @@ def _init_recon_storage() -> None:
     # Create the persistent store (recon.db, recon_shadow.db + data dirs) if
     # absent. Idempotent — replaces the previous in-memory-only design.
     init_storage()
+
+    # Orphan sweep: any run left RUNNING/CANCELLING when the process last
+    # stopped can only mean it died mid-run — flip it to FAILED
+    # (process_terminated) so it can never again look like a live, blocking
+    # active run. PAUSED_FOR_INPUT is left alone (durably resumable via
+    # LangGraph's own checkpoint). For every session bound to an orphaned
+    # run, clear that binding too, so a subsequent NEW_RUN in that session
+    # isn't blocked by a phantom active run.
+    for run_id in run_registry.sweep_orphans():
+        logger.warning("Orphaned run %s marked FAILED (process_terminated) at startup.", run_id)
+        for sid in session_store.sessions_bound_to(run_id):
+            session_store.clear_active_run_if(sid, run_id)
+
+
+@app.on_event("startup")
+async def _start_watchdog() -> None:
+    global _watchdog_task
+
+    async def _watchdog_loop() -> None:
+        while True:
+            await asyncio.sleep(_WATCHDOG_INTERVAL_SECONDS)
+            try:
+                stalled = await asyncio.to_thread(heartbeat.sweep_stalled)
+                for run_id in stalled:
+                    logger.warning("Run %s flipped to STALLED — no heartbeat for over %ss.",
+                                    run_id, heartbeat.STALLED_THRESHOLD_SECONDS)
+                await asyncio.to_thread(confirmation_store.clear_expired)
+            except Exception:  # noqa: BLE001 - the watchdog must never die from one bad tick
+                logger.exception("Watchdog tick failed — will retry on the next interval.")
+
+    _watchdog_task = asyncio.create_task(_watchdog_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_watchdog() -> None:
+    if _watchdog_task is not None:
+        _watchdog_task.cancel()
 
 
 # TEMP DIAGNOSTIC — logs the raw request body and the exact Pydantic errors

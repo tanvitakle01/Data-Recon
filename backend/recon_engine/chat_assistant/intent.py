@@ -20,13 +20,72 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+import re
+from typing import Any, Literal
 
 from backend.recon_engine.llm import build_llm_client
 
 logger = logging.getLogger("recon.chat_assistant.intent")
 
 _ROLE_VALUES = ("mapping_sheet", "source_data", "target_data", "unknown")
+
+RunIntent = Literal["CANCEL", "RETRY", "STATUS", "OTHER"]
+
+# Deterministic, not LLM — these three are run-mutating or safety-relevant
+# (CANCEL/RETRY act on the session's active run; STATUS must never silently
+# misreport), so guessing wrong on them is exactly the "silent failure" class
+# this classifier exists to prevent. An LLM call here would put the single
+# routing decision behind the same "every provider unavailable" degradation
+# mode the rest of this module already treats as untrustworthy for control
+# flow. "OTHER" falls through to the existing LLM ``classify()`` below, which
+# already distinguishes a genuine reconciliation request (NEW_RUN) from small
+# talk (QUESTION) — no separate NEW_RUN/QUESTION split is needed here.
+_CANCEL_KEYWORDS = ("cancel", "abort", "stop the run", "stop this run", "kill the run", "kill this run")
+_RETRY_KEYWORDS = ("retry", "resume", "continue the run", "continue this run", "try again")
+_STATUS_KEYWORDS = (
+    "status", "progress", "how's it going", "how is it going", "what's happening",
+    "is it done", "are we done", "update me",
+)
+
+
+def _matches(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(re.search(rf"\b{re.escape(kw)}\b" if " " not in kw else re.escape(kw), text) for kw in keywords)
+
+
+def classify_intent(message: str, *, run_snapshot: dict[str, Any]) -> RunIntent:
+    """Run state is an INPUT here, not consulted afterward: CANCEL/RETRY are
+    only meaningful (and only checked for) when ``run_snapshot`` actually has
+    an active/failed run to target — a bare "cancel" typed with nothing
+    running falls through to OTHER (which resolves to a plain reply) rather
+    than being misrouted as a run-mutating command with nothing to act on."""
+    text = (message or "").strip().lower()
+    if not text:
+        return "OTHER"
+    active_run_id = run_snapshot.get("active_run_id")
+    if active_run_id and _matches(text, _CANCEL_KEYWORDS):
+        return "CANCEL"
+    if active_run_id and _matches(text, _RETRY_KEYWORDS):
+        return "RETRY"
+    if active_run_id and _matches(text, _STATUS_KEYWORDS):
+        return "STATUS"
+    return "OTHER"
+
+
+_YES_WORDS = {"yes", "y", "yeah", "yep", "yup", "confirm", "confirmed", "ok", "okay", "go ahead", "do it", "sure"}
+_NO_WORDS = {"no", "n", "nope", "nah", "cancel", "don't", "dont", "stop"}
+
+
+def interpret_yes_no(message: str) -> Literal["yes", "no", "ambiguous"]:
+    """Deterministic answer-interpretation for a pending confirmation — never
+    LLM-based (see module docstring above on why control flow here must not
+    depend on something that can degrade). Ambiguous text must re-ask the
+    same question rather than fall through to fresh classification."""
+    text = (message or "").strip().lower().rstrip(".!")
+    if text in _YES_WORDS:
+        return "yes"
+    if text in _NO_WORDS:
+        return "no"
+    return "ambiguous"
 
 _SYSTEM_PREAMBLE = """You triage chat messages for a data-reconciliation
 assistant. Given the user's message text and a preview of each newly

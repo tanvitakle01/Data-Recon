@@ -63,7 +63,7 @@ def _build_graph():
         next_name = _NODE_ORDER_FROM_DATA[i + 1][0]
 
         def _router(state, _next=next_name):
-            return END if state.get("status") == "failed" else _next
+            return END if state.get("status") in ("failed", "cancelled") else _next
 
         graph.add_conditional_edges(name, _router, [next_name, END])
     graph.add_edge(_NODE_ORDER_FROM_DATA[-1][0], END)

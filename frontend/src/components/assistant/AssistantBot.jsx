@@ -101,6 +101,9 @@ const STATUS_LABELS = {
   waiting_for_input: "Needs your input",
   completed: "Reconciliation complete",
   failed: "Reconciliation failed",
+  cancelling: "Cancelling…",
+  cancelled: "Reconciliation cancelled",
+  stalled: "No progress reported recently — still watching…",
 };
 
 const STEP_LABELS = {

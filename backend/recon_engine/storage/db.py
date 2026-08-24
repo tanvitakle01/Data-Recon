@@ -308,6 +308,65 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     all_failed        INTEGER NOT NULL,
     created_at        TEXT NOT NULL
 );
+
+-- Append-only audit log of every run-state transition (see run_registry.py's
+-- `transition`, the SOLE function permitted to change pipeline_runs.status).
+-- Never updated or deleted — the full lifecycle history of a run, including
+-- transitions a naive glance at pipeline_runs.status (current state only)
+-- would lose (e.g. a run that stalled and recovered).
+CREATE TABLE IF NOT EXISTS run_transitions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT NOT NULL,
+    from_state  TEXT NOT NULL,
+    to_state    TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_transitions_run_id ON run_transitions (run_id);
+
+-- One row per chat session (keyed by the existing authenticated session_id —
+-- see backend/auth/sessions.py — never a separate cookie), tracking which
+-- Auto-mode run (if any) that session currently considers "active" under the
+-- cancel-and-replace concurrency model: at most one non-terminal run per
+-- session. NEW_RUN while this is set raises a confirmation instead of
+-- silently replacing it (see chat_assistant/orchestrator.py).
+CREATE TABLE IF NOT EXISTS chat_run_sessions (
+    session_id    TEXT PRIMARY KEY,
+    active_run_id TEXT,
+    updated_at    TEXT NOT NULL
+);
+
+-- A pending yes/no confirmation gating a staged, not-yet-executed chat action
+-- (currently only "start_new_run" while another run is active). `resolution`
+-- is NULL while unanswered; "yes"/"no"/"expired" once resolved — resolved
+-- rows are kept (never deleted) as an audit trail, `get_pending` only ever
+-- returns a row with resolution IS NULL and expires_at in the future.
+CREATE TABLE IF NOT EXISTS chat_confirmations (
+    confirmation_id     TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL,
+    question            TEXT NOT NULL,
+    staged_action_json  TEXT NOT NULL,
+    target_run_ids_json TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    answered_at         TEXT,
+    resolution          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_confirmations_session ON chat_confirmations (session_id);
+
+-- Liveness signal for a running Auto-mode node/batch — one row per run,
+-- upserted by heartbeat.beat() from nodes.py's `_run_step` (every top-level
+-- node) and from the run_batches/pair_values inner batch loops (finer
+-- granularity, with batch_id set). The watchdog (see main.py's startup task)
+-- flips a run whose heartbeat has gone stale to STALLED.
+CREATE TABLE IF NOT EXISTS run_heartbeats (
+    run_id     TEXT PRIMARY KEY,
+    batch_id   TEXT,
+    node       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 _SHADOW_SCHEMA = """
