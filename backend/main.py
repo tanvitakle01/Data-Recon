@@ -72,6 +72,8 @@ from backend.routes.connections import router as connections_router
 from backend.routes.chat import router as chat_router
 from backend.recon_engine import heartbeat, run_registry
 from backend.recon_engine.chat_assistant import confirmation_store, session_store
+from backend.recon_engine.run_registry import RunState
+from backend.recon_engine.storage import pipeline_run_store
 from backend.recon_engine.storage.db import init_storage
 
 logger = logging.getLogger("recon.main")
@@ -105,6 +107,24 @@ def _init_recon_storage() -> None:
 async def _start_watchdog() -> None:
     global _watchdog_task
 
+    def _sweep_expired_suspensions() -> list[str]:
+        """Discards every SUSPENDED run past its ``expires_at`` — same
+        CANCELLED transition + artifact cleanup an explicit Stored-Runs
+        delete performs (see routes.auto_pipeline.delete_stored_run), never
+        promoting anything (nothing provisional to promote — see
+        pipeline_run_store.cleanup_run_artifacts's docstring)."""
+        expired: list[str] = []
+        for graph_run_id in pipeline_run_store.list_expired_suspensions():
+            try:
+                run_registry.transition(graph_run_id, RunState.CANCELLED, reason="suspension expired")
+            except run_registry.IllegalTransition:
+                # Already moved on (resumed/deleted) by a racing request —
+                # its suspension row is stale, just drop it below.
+                pass
+            pipeline_run_store.cleanup_run_artifacts(graph_run_id)
+            expired.append(graph_run_id)
+        return expired
+
     async def _watchdog_loop() -> None:
         while True:
             await asyncio.sleep(_WATCHDOG_INTERVAL_SECONDS)
@@ -114,6 +134,9 @@ async def _start_watchdog() -> None:
                     logger.warning("Run %s flipped to STALLED — no heartbeat for over %ss.",
                                     run_id, heartbeat.STALLED_THRESHOLD_SECONDS)
                 await asyncio.to_thread(confirmation_store.clear_expired)
+                expired = await asyncio.to_thread(_sweep_expired_suspensions)
+                for run_id in expired:
+                    logger.info("Suspended run %s expired and was discarded.", run_id)
             except Exception:  # noqa: BLE001 - the watchdog must never die from one bad tick
                 logger.exception("Watchdog tick failed — will retry on the next interval.")
 

@@ -326,3 +326,109 @@ def get(graph_run_id: str) -> dict[str, Any] | None:
             "SELECT * FROM pipeline_runs WHERE graph_run_id = ?", (graph_run_id,)
         ).fetchone()
     return _row_to_dict(row) if row else None
+
+
+# ── suspended-run ("Stored Runs") support ───────────────────────────────────
+
+def save_suspension(
+    graph_run_id: str,
+    *,
+    user_name: str | None,
+    suspend_reason: str,
+    data_fingerprint: dict[str, Any],
+    expires_at: str,
+) -> None:
+    """Upserts the ``pipeline_run_suspensions`` row for a run entering
+    SUSPENDING — written eagerly at the moment suspend is REQUESTED (not once
+    it actually takes effect a batch later), so the Stored Runs tab can show
+    "suspending…" immediately and ``data_fingerprint`` is captured against the
+    state the user actually asked to pause, not whatever batch happens to be
+    running when the cooperative checkpoint fires.
+    """
+    with main_db() as conn:
+        conn.execute(
+            """INSERT INTO pipeline_run_suspensions
+               (graph_run_id, user_name, suspended_at, suspend_reason,
+                data_fingerprint_json, expires_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT (graph_run_id) DO UPDATE SET
+                   user_name = excluded.user_name,
+                   suspended_at = excluded.suspended_at,
+                   suspend_reason = excluded.suspend_reason,
+                   data_fingerprint_json = excluded.data_fingerprint_json,
+                   expires_at = excluded.expires_at""",
+            (
+                graph_run_id, user_name, datetime.now(timezone.utc).isoformat(),
+                suspend_reason, json.dumps(data_fingerprint), expires_at,
+            ),
+        )
+
+
+def get_suspension(graph_run_id: str) -> dict[str, Any] | None:
+    with main_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM pipeline_run_suspensions WHERE graph_run_id = ?", (graph_run_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "graph_run_id": row["graph_run_id"],
+        "user_name": row["user_name"],
+        "suspended_at": row["suspended_at"],
+        "suspend_reason": row["suspend_reason"],
+        "data_fingerprint": json.loads(row["data_fingerprint_json"]),
+        "expires_at": row["expires_at"],
+    }
+
+
+def list_suspensions() -> list[dict[str, Any]]:
+    """Every row in ``pipeline_run_suspensions`` — the Stored Runs tab further
+    joins each against :func:`get`/:func:`get_run_batch_checkpoint`/
+    :func:`get_run_batch_plan` for live status/progress; this store makes no
+    assumption about which of those a caller actually needs."""
+    with main_db() as conn:
+        rows = conn.execute(
+            "SELECT graph_run_id FROM pipeline_run_suspensions ORDER BY suspended_at DESC"
+        ).fetchall()
+    return [get_suspension(row["graph_run_id"]) for row in rows]
+
+
+def delete_suspension(graph_run_id: str) -> None:
+    with main_db() as conn:
+        conn.execute("DELETE FROM pipeline_run_suspensions WHERE graph_run_id = ?", (graph_run_id,))
+
+
+def list_expired_suspensions(*, as_of: str | None = None) -> list[str]:
+    """graph_run_ids whose suspension has passed ``expires_at`` — the
+    watchdog's expiry sweep reads this, then transitions each to CANCELLED and
+    calls :func:`cleanup_run_artifacts`, same as an explicit delete."""
+    cutoff = as_of or datetime.now(timezone.utc).isoformat()
+    with main_db() as conn:
+        rows = conn.execute(
+            "SELECT graph_run_id FROM pipeline_run_suspensions WHERE expires_at < ?", (cutoff,)
+        ).fetchall()
+    return [row["graph_run_id"] for row in rows]
+
+
+def cleanup_run_artifacts(graph_run_id: str) -> None:
+    """Drops every run-scoped artifact that has no reason to survive past a
+    run's CANCELLED/expired-SUSPENDED endpoint: the batch plan/checkpoint
+    (:func:`clear_run_batch_state`), corroboration evidence
+    (``corroboration_store.clear``), and any suspension record
+    (:func:`delete_suspension`).
+
+    Shared by three callers: an explicit Stored-Runs delete, the expiry
+    watchdog, and the CANCELLING -> CANCELLED path — the last of which used to
+    leak all three of these (only a successful ``finalize()`` ever cleaned
+    them up before). Deliberately never touches `results`/`run_batch_checkpoint
+    .result_id`'s underlying result row — partial results must remain
+    inspectable after a run is gone, same as a completed run's results do.
+    """
+    # Local import — avoids a module-level circular import (corroboration_store
+    # does not import pipeline_run_store, but keeping this import next to its
+    # single call site makes the dependency explicit here).
+    from backend.recon_engine.storage import corroboration_store
+
+    clear_run_batch_state(graph_run_id)
+    corroboration_store.clear(graph_run_id)
+    delete_suspension(graph_run_id)

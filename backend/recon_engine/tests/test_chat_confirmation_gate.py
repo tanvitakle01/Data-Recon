@@ -1,7 +1,9 @@
 """Coverage for the pending-confirmation gate — NEW_RUN while a run is active
 must never silently replace it, an ambiguous answer must re-ask rather than
-fall through to fresh classification, and a confirmed "yes" must execute the
-ORIGINALLY STAGED inputs, never a re-parse of the answering message.
+fall through to fresh classification, and a confirmed "cancel"/"suspend" must
+execute the ORIGINALLY STAGED inputs (never a re-parse of the answering
+message) while actually resolving run 1 (cancel -> CANCELLING, suspend ->
+SUSPENDING/SUSPENDED) rather than leaving it dangling.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ def test_new_run_while_active_stages_a_confirmation_and_does_not_start(monkeypat
     assert session_store.get_active_run(SESSION) == "autorun_active_1"
 
 
-def test_confirming_yes_starts_the_staged_inputs_not_the_answering_message(monkeypatch):
+def test_confirming_cancel_starts_the_staged_inputs_not_the_answering_message(monkeypatch):
     _stub_reconciliation_classification(monkeypatch)
     _make_active_run("autorun_active_2")
 
@@ -78,17 +80,54 @@ def test_confirming_yes_starts_the_staged_inputs_not_the_answering_message(monke
     )
     assert staged_reply["run"] is None
 
-    # The answering message itself ("yes") would classify as nonsense if it
+    # The answering message itself ("cancel") would classify as nonsense if it
     # were re-parsed as a fresh reconciliation request — proving the staged
     # action, not this message, is what actually gets executed.
     result = orchestrator.handle_message(
-        message="yes", new_attachments=[], state=staged_reply["state"], session_id=SESSION
+        message="cancel", new_attachments=[], state=staged_reply["state"], session_id=SESSION
     )
 
     assert result["run"] == {"graph_run_id": "autorun_fd_replacement"}
     assert started["source_name"] == "source.csv"
     assert started["target_name"] == "target.csv"
     assert session_store.get_active_run(SESSION) == "autorun_fd_replacement"
+    # Run 1 must actually be resolved, not just orphaned in the background.
+    assert run_registry.current_state("autorun_active_2") == RunState.CANCELLING
+
+
+def test_confirming_suspend_parks_run_1_and_starts_run_2(monkeypatch):
+    _stub_reconciliation_classification(monkeypatch)
+    _make_active_run("autorun_active_suspend")
+
+    started = {}
+
+    def _fake_start(**kwargs):
+        started.update(kwargs)
+        return "autorun_fd_replacement_2"
+
+    monkeypatch.setattr(orchestrator, "start_auto_run_from_data_state", _fake_start)
+    monkeypatch.setattr(
+        orchestrator.auto_pipeline,
+        "_capture_fingerprint_for",
+        lambda graph_run_id: None,
+    )
+
+    staged_reply = orchestrator.handle_message(
+        message="reconcile this new data instead",
+        new_attachments=[("source.csv", b"a\n1\n"), ("target.csv", b"a\n1\n")],
+        state=None,
+        session_id=SESSION,
+    )
+
+    result = orchestrator.handle_message(
+        message="suspend", new_attachments=[], state=staged_reply["state"], session_id=SESSION
+    )
+
+    assert result["run"] == {"graph_run_id": "autorun_fd_replacement_2"}
+    assert started["source_name"] == "source.csv"
+    # Run 1 is parked, not dangling RUNNING and not started with run 2's inputs.
+    assert run_registry.current_state("autorun_active_suspend") == RunState.SUSPENDING
+    assert pipeline_run_store.get_suspension("autorun_active_suspend") is not None
 
 
 def test_ambiguous_answer_reasks_the_identical_question(monkeypatch):

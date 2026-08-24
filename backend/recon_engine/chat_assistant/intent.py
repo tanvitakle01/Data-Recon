@@ -87,6 +87,28 @@ def interpret_yes_no(message: str) -> Literal["yes", "no", "ambiguous"]:
         return "no"
     return "ambiguous"
 
+
+_CANCEL_CHOICE_WORDS = {"cancel", "cancel it", "cancel run", "cancel and start"}
+_SUSPEND_CHOICE_WORDS = {"suspend", "pause", "park", "suspend it", "suspend run", "suspend and start"}
+_DECLINE_CHOICE_WORDS = _NO_WORDS | {"neither", "keep it going", "leave it running"}
+
+
+def interpret_cancel_suspend_no(message: str) -> Literal["cancel", "suspend", "no", "ambiguous"]:
+    """Deterministic three-way answer-interpretation for the NEW_RUN-while-
+    active-run confirmation (see ``orchestrator.py``): exactly the two
+    options the run-lifecycle design permits — cancel run 1 and start, or
+    suspend run 1 and start — plus a decline that leaves run 1 untouched.
+    Never LLM-based, same rationale as :func:`interpret_yes_no`. Ambiguous
+    text must re-ask rather than fall through to fresh classification."""
+    text = (message or "").strip().lower().rstrip(".!")
+    if text in _CANCEL_CHOICE_WORDS:
+        return "cancel"
+    if text in _SUSPEND_CHOICE_WORDS:
+        return "suspend"
+    if text in _DECLINE_CHOICE_WORDS:
+        return "no"
+    return "ambiguous"
+
 _SYSTEM_PREAMBLE = """You triage chat messages for a data-reconciliation
 assistant. Given the user's message text and a preview of each newly
 attached file (filename, column headers, and its first populated data row),

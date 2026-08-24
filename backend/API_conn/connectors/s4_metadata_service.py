@@ -416,6 +416,34 @@ class S4MetadataService(SAPConnector):
             return pd.Series([], dtype=object)
         return df[field]
 
+    def count_entity(self, entity_name: str) -> int | None:
+        """Cheap total row count for ``entity_name`` via OData V2
+        ``$inlinecount=allpages`` with ``$top=0`` (no row data transferred) —
+        one half of the suspend/resume staleness fingerprint (see
+        ``auto_pipeline.data_fingerprint``). ``$select`` is pinned to the
+        entity's own key purely to satisfy services that reject a
+        selection-less read; the value itself is never used. Returns ``None``
+        if the response carries no ``__count`` (some OData V2 services omit
+        it for ``$top=0``), so a caller can degrade gracefully rather than
+        assume staleness from a missing signal.
+        """
+        keys = self.get_entity_keys(entity_name)
+        params: dict[str, Any] = {"$format": "json", "$inlinecount": "allpages", "$top": "0"}
+        if keys:
+            params["$select"] = keys[0]
+        response = self.session.get(
+            f"{self._service_base_url()}/{entity_name}",
+            params=params,
+            auth=self._auth(),
+            headers=self._headers(),
+            verify=self.verify_ssl,
+            timeout=60,
+        )
+        if not response.ok:
+            raise RuntimeError(_sap_error_message(response))
+        count = response.json().get("d", {}).get("__count")
+        return int(count) if count is not None else None
+
     def preview_join(self, spec: dict[str, Any]) -> pd.DataFrame:
         return self._build_joined(spec, sample_top=PREVIEW_SAMPLE_TOP).head(10)
 

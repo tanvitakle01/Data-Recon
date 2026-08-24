@@ -11,18 +11,24 @@ reconciliation takes.
 from __future__ import annotations
 
 import asyncio
+import io
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 
 from pydantic import BaseModel, Field
 
 from backend.excel_comparator.core.loader import load_tabular
 from backend.recon_engine import run_registry, service
+from backend.recon_engine.auto_pipeline import data_fingerprint
 from backend.recon_engine.auto_pipeline.graph import (
     get_pending_interrupt,
+    get_run_state_values,
     resume_auto_pipeline,
+    resume_suspended_pipeline,
     retry_auto_pipeline,
     stream_auto_pipeline,
 )
@@ -35,9 +41,13 @@ from backend.recon_engine.auto_pipeline.graph_from_data import (
 from backend.recon_engine.auto_pipeline.state import AutoRunState
 from backend.recon_engine.models.snapshot import RawLayer
 from backend.recon_engine.run_registry import RunState
-from backend.recon_engine.storage import pipeline_run_store
+from backend.recon_engine.storage import pipeline_run_store, result_store
 
 router = APIRouter(prefix="/api/recon/auto-run", tags=["recon-auto-pipeline"])
+
+# Default parking window for a suspended run before the expiry watchdog
+# discards it (see main.py's watchdog tick) — confirmed with the user.
+SUSPENSION_EXPIRY_DAYS = 30
 
 # Keeps a strong reference to in-flight background tasks — asyncio does not
 # guarantee a task survives if nothing else holds it, and the request that
@@ -67,6 +77,18 @@ class AutoRunResolveRequest(BaseModel):
     # interrupted node re-validates it against live options either way (see
     # interrupts.py), so there is nothing for the route itself to validate.
     value: str
+
+
+class AutoRunSuspendRequest(BaseModel):
+    name: str | None = None
+    reason: str = "user requested suspend"
+
+
+class AutoRunResumeRequest(BaseModel):
+    # True only after the caller has already been shown a staleness mismatch
+    # (see /resume's 409 response) and explicitly chose to proceed anyway,
+    # accepting a run that mixes two data vintages.
+    force: bool = False
 
 
 def _partial_result(state: AutoRunState) -> dict[str, Any]:
@@ -144,9 +166,16 @@ def _finish(graph_run_id: str, final_state: AutoRunState) -> None:
     to_state = {
         "completed": RunState.COMPLETED,
         "cancelled": RunState.CANCELLED,
+        "suspended": RunState.SUSPENDED,
     }.get(node_status, RunState.FAILED)
     reason = final_state.get("error") or f"node status={node_status!r}"
     run_registry.transition(graph_run_id, to_state, reason=reason)
+    if to_state == RunState.CANCELLED:
+        # Nothing about a cancelled run is ever resumable (retry/resume both
+        # gate on other statuses) — safe to drop its batch plan/checkpoint/
+        # corroboration state now rather than leak it until an unrelated
+        # cleanup happens to run. See pipeline_run_store.cleanup_run_artifacts.
+        pipeline_run_store.cleanup_run_artifacts(graph_run_id)
     pipeline_run_store.update_progress(
         graph_run_id,
         step_timestamps=final_state.get("step_timestamps") or {},
@@ -367,6 +396,247 @@ def trigger_retry(graph_run_id: str, *, reason: str = "retry") -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+def _capture_fingerprint_for(graph_run_id: str) -> dict[str, Any] | None:
+    """Best-effort staleness fingerprint from the run's current checkpointed
+    state — ``None`` if the run hasn't reached ``resolve_schema`` yet (no
+    ``*_spec``/``*_field_roles`` to resolve an entity/date-field from), which
+    only matters if someone suspends within the first couple of steps; nothing
+    meaningful has been extracted yet in that case anyway."""
+    state = get_run_state_values(graph_run_id)
+    required = ("source_spec", "target_spec", "source_field_roles", "target_field_roles")
+    if any(state.get(k) is None for k in required):
+        return None
+    return data_fingerprint.capture_fingerprint(
+        source_kind=state["source"]["kind"],
+        source_spec=state["source_spec"],
+        source_date_field=state["source_field_roles"]["date"],
+        target_kind=state["target"]["kind"],
+        target_spec=state["target_spec"],
+        target_date_field=state["target_field_roles"]["date"],
+    )
+
+
+def trigger_suspend(graph_run_id: str, *, name: str | None = None, reason: str = "user requested suspend") -> None:
+    """Requests a suspend and records the ``pipeline_run_suspensions`` row,
+    capturing the staleness fingerprint against the state at REQUEST time
+    (not whatever batch happens to be mid-flight once a cooperative signal is
+    actually observed). Two paths, depending on the run's current status:
+
+    - RUNNING/STALLED: flips to SUSPENDING (the cooperative signal
+      ``nodes._do_run_batches``' between-batch loop checks) — actually
+      parking the run (SUSPENDING -> SUSPENDED) happens asynchronously, the
+      same way CANCELLING -> CANCELLED already does. This is the "user
+      explicitly pauses" trigger.
+    - FAILED (with a resumable ``run_batch_checkpoint`` — same gate
+      ``/retry`` uses): a DIRECT FAILED -> SUSPENDED conversion, since the run
+      has already stopped (e.g. a network error mid ``run_batches``) — there
+      is no cooperative checkpoint left to wait for. This is the "network
+      error / interruption" trigger, offered alongside the existing retry
+      path rather than only failing outright.
+
+    Raises ``run_registry.IllegalTransition`` for any other current status
+    (e.g. WAITING_FOR_INPUT — resolve that first, or cancel instead; or a
+    FAILED run with nothing resumable to park)."""
+    run = pipeline_run_store.get(graph_run_id)
+    current_status = (run or {}).get("status")
+    default_name = name or f"{graph_run_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    fingerprint = _capture_fingerprint_for(graph_run_id)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=SUSPENSION_EXPIRY_DAYS)).isoformat()
+
+    if current_status == RunState.FAILED.value:
+        if not _has_resumable_checkpoint(graph_run_id, (run or {}).get("failed_step")):
+            raise run_registry.IllegalTransition(
+                f"Run {graph_run_id!r} failed with nothing resumable to park — nothing to suspend."
+            )
+        run_registry.transition(graph_run_id, RunState.SUSPENDED, reason=reason)
+    else:
+        run_registry.transition(graph_run_id, RunState.SUSPENDING, reason=reason)
+
+    pipeline_run_store.save_suspension(
+        graph_run_id,
+        user_name=default_name,
+        suspend_reason=reason,
+        data_fingerprint=fingerprint or {},
+        expires_at=expires_at,
+    )
+
+
+def trigger_resume(graph_run_id: str, *, force: bool = False) -> dict[str, Any]:
+    """Flips a SUSPENDED run back to RUNNING and kicks off
+    :func:`resume_suspended_pipeline` in the background — the exact side
+    effect ``POST /{id}/resume`` performs, factored out so the chat
+    orchestrator's resume path can trigger the same thing without going
+    through HTTP (mirrors :func:`trigger_retry`'s existing shape).
+
+    Raises ``ValueError("stale")`` if the connector-side data has moved since
+    suspend and ``force`` wasn't set — it's the caller's responsibility to
+    surface the staleness question and retry with ``force=True`` once the
+    user decides.
+    """
+    suspension = pipeline_run_store.get_suspension(graph_run_id)
+    if suspension is not None and not force:
+        current = _capture_fingerprint_for(graph_run_id)
+        if current is not None and not data_fingerprint.fingerprint_matches(
+            suspension["data_fingerprint"], current
+        ):
+            raise ValueError("stale")
+
+    run = pipeline_run_store.get(graph_run_id)
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason="resume")
+    pipeline_run_store.update_progress(
+        graph_run_id,
+        current_step=run.get("current_step") if run else None,
+        step_timestamps=(run or {}).get("step_timestamps") or {},
+        result=(run or {}).get("result"),
+        interrupt=None,
+    )
+    pipeline_run_store.delete_suspension(graph_run_id)
+    task = asyncio.create_task(_resume_suspended_in_background(graph_run_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return {"graph_run_id": graph_run_id, "status": "resuming"}
+
+
+def _execute_resume_suspended(graph_run_id: str) -> None:
+    try:
+        final_state = resume_suspended_pipeline(
+            graph_run_id, on_step=lambda step, s: _on_step(graph_run_id, step, s)
+        )
+    except Exception as exc:  # noqa: BLE001 - a bug in the graph itself, not a modeled step failure
+        _fail_hard(graph_run_id, exc)
+        return
+    _finish(graph_run_id, final_state)
+
+
+async def _resume_suspended_in_background(graph_run_id: str) -> None:
+    await asyncio.to_thread(_execute_resume_suspended, graph_run_id)
+
+
+@router.post("/{graph_run_id}/suspend")
+async def suspend_auto_run(graph_run_id: str, req: AutoRunSuspendRequest) -> dict[str, Any]:
+    """Offer-and-accept suspend (Section 3 of the build) — never automatic.
+    A decline is the caller's responsibility to turn into a CANCEL instead
+    (this route only ever parks a run, never discards one)."""
+    run = pipeline_run_store.get(graph_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
+    try:
+        trigger_suspend(graph_run_id, name=req.name, reason=req.reason)
+    except run_registry.IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # RUNNING/STALLED -> SUSPENDING (park takes effect at the next batch
+    # boundary); FAILED -> SUSPENDED directly (see trigger_suspend).
+    return {"graph_run_id": graph_run_id, "status": run_registry.current_state(graph_run_id).value}
+
+
+@router.post("/{graph_run_id}/resume")
+async def resume_auto_run(graph_run_id: str, req: AutoRunResumeRequest) -> dict[str, Any]:
+    run = pipeline_run_store.get(graph_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
+    if run.get("status") != RunState.SUSPENDED.value:
+        raise HTTPException(
+            status_code=409, detail=f"Auto-run '{graph_run_id}' is not suspended (status={run.get('status')!r})."
+        )
+    try:
+        return trigger_resume(graph_run_id, force=req.force)
+    except ValueError:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Source/target data has changed since this run was suspended. "
+                "Resume anyway (mixing two data vintages) with force=true, or discard "
+                "this run and start fresh."
+            ),
+        )
+
+
+@router.get("/stored")
+def list_stored_runs() -> list[dict[str, Any]]:
+    """Every currently-SUSPENDED run, enriched with progress/expiry for the
+    Stored Runs tab. A suspension row whose owning ``pipeline_runs`` status has
+    since drifted away from SUSPENDED (resumed/deleted by a racing request) is
+    skipped rather than shown stale."""
+    out: list[dict[str, Any]] = []
+    for suspension in pipeline_run_store.list_suspensions():
+        graph_run_id = suspension["graph_run_id"]
+        run = pipeline_run_store.get(graph_run_id)
+        if run is None or run.get("status") != RunState.SUSPENDED.value:
+            continue
+        checkpoint = pipeline_run_store.get_run_batch_checkpoint(graph_run_id)
+        plan = pipeline_run_store.get_run_batch_plan(graph_run_id)
+        out.append(
+            {
+                "graph_run_id": graph_run_id,
+                "name": suspension["user_name"],
+                "suspended_at": suspension["suspended_at"],
+                "suspend_reason": suspension["suspend_reason"],
+                "expires_at": suspension["expires_at"],
+                "batches_completed": checkpoint["next_batch_index"] if checkpoint else 0,
+                "batches_total": len(plan) if plan else (checkpoint["batch_count"] if checkpoint else None),
+                "result_id": checkpoint["result_id"] if checkpoint else None,
+            }
+        )
+    return out
+
+
+@router.delete("/{graph_run_id}")
+def delete_stored_run(graph_run_id: str) -> dict[str, Any]:
+    """Discards a SUSPENDED run: transitions it to CANCELLED and drops its
+    batch plan/checkpoint/corroboration/suspension rows — never promotes
+    anything (there is nothing provisional to promote; every batch's value
+    pairings are already in the global library the moment that batch
+    completed, see value_pairing/pipeline.py's module docstring)."""
+    run = pipeline_run_store.get(graph_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
+    if run.get("status") != RunState.SUSPENDED.value:
+        raise HTTPException(
+            status_code=409, detail=f"Auto-run '{graph_run_id}' is not suspended (status={run.get('status')!r})."
+        )
+    run_registry.transition(graph_run_id, RunState.CANCELLED, reason="discarded from Stored Runs")
+    pipeline_run_store.cleanup_run_artifacts(graph_run_id)
+    return {"graph_run_id": graph_run_id, "status": "cancelled"}
+
+
+@router.get("/{graph_run_id}/partial-results")
+def get_partial_results(graph_run_id: str) -> dict[str, Any]:
+    """A suspended (or otherwise non-completed) run's completed-batches-so-far
+    results — read straight from ``result_store``, entirely independent of the
+    LangGraph checkpoint, so this works without resuming anything."""
+    run = pipeline_run_store.get(graph_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
+    result = result_store.get_result_for_run(graph_run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No results recorded yet for '{graph_run_id}'.")
+    detail_df = result_store.load_result_frame_jsonl(result.result_id).head(200)
+    preview_rows = (
+        detail_df.astype(object).where(detail_df.notna(), None).to_dict(orient="records")
+        if not detail_df.empty else []
+    )
+    return {"result": result.model_dump(mode="json"), "preview_rows": preview_rows}
+
+
+@router.get("/{graph_run_id}/partial-results/export")
+def export_partial_results(graph_run_id: str) -> StreamingResponse:
+    run = pipeline_run_store.get(graph_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
+    result = result_store.get_result_for_run(graph_run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No results recorded yet for '{graph_run_id}'.")
+    detail_df = result_store.load_result_frame_jsonl(result.result_id)
+    buffer = io.StringIO()
+    detail_df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{graph_run_id}_partial_results.csv"'},
+    )
+
+
 @router.get("/{graph_run_id}/status")
 def get_auto_run_status(graph_run_id: str) -> dict[str, Any]:
     run = pipeline_run_store.get(graph_run_id)
@@ -380,6 +650,18 @@ def get_auto_run_status(graph_run_id: str) -> dict[str, Any]:
         run.get("status") == "failed"
         and _has_resumable_checkpoint(graph_run_id, run.get("failed_step"))
     )
+    # Suspend only makes sense once the run has reached the batching stage
+    # (see trigger_suspend/_capture_fingerprint_for) — offering it any
+    # earlier would let a user "suspend" a run that has nothing checkpointed
+    # yet to resume from. A FAILED run is also suspendable (alongside the
+    # existing retry option) exactly when it's resumable at all — the
+    # "network error / interruption" trigger point.
+    if run.get("status") in (RunState.RUNNING.value, RunState.STALLED.value):
+        run["suspendable"] = bool(pipeline_run_store.get_run_batch_plan(graph_run_id))
+    elif run.get("status") == RunState.FAILED.value:
+        run["suspendable"] = run["resumable"]
+    else:
+        run["suspendable"] = False
     return run
 
 

@@ -19,6 +19,7 @@ import SettingsPage from "./pages/SettingsPage";
 import InsightsHistoryPage from "./pages/InsightsHistoryPage";
 import TicketingPage from "./pages/TicketingPage";
 import LibraryPage from "./library/LibraryPage";
+import StoredRunsPage from "./pages/StoredRunsPage";
 
 // The authenticated app shell — unchanged from before auth was added, just
 // gated behind AppRoutes below instead of being the only thing App() renders.
@@ -36,6 +37,7 @@ function AuthenticatedApp() {
             <Route path="/insights/run/:runId" element={<InsightsPage />} />
             <Route path="/ticketing" element={<TicketingPage />} />
             <Route path="/library" element={<LibraryPage />} />
+            <Route path="/stored-runs" element={<StoredRunsPage />} />
             <Route path="/data-sources" element={<DataSourcesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/home" replace />} />

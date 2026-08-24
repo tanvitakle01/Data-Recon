@@ -9,11 +9,21 @@ INVARIANT: ``pipeline_runs.status`` is never written anywhere except inside
 parameter at all) for everything else — a status change literally cannot
 happen through any other code path.
 
-States: CREATED, RUNNING, PAUSED_FOR_INPUT, CANCELLING, STALLED, and terminal
-COMPLETED / CANCELLED. FAILED is deliberately NOT fully terminal here — this
-codebase's batch-checkpointed run_batches/pair_values steps make a "failed"
-run resumable (see routes/auto_pipeline.py's ``/retry``), so FAILED's only
-legal outgoing edge is back to RUNNING (a retry), never anything else.
+States: CREATED, RUNNING, PAUSED_FOR_INPUT, CANCELLING, SUSPENDING, STALLED,
+SUSPENDED, and terminal COMPLETED / CANCELLED. FAILED is deliberately NOT
+fully terminal here — this codebase's batch-checkpointed run_batches/
+pair_values steps make a "failed" run resumable (see routes/auto_pipeline.py's
+``/retry``), so FAILED's only legal outgoing edge is back to RUNNING (a
+retry), never anything else.
+
+SUSPENDING/SUSPENDED mirror CANCELLING/CANCELLED's cooperative-checkpoint
+shape (see ``transition_or_raise_suspended``/``CooperativeSuspension``) with
+one deliberate difference: SUSPENDED is not terminal. It is a durable, parked
+state a run can be resumed from later (see ``auto_pipeline.graph.
+resume_suspended_pipeline``) or discarded from (-> CANCELLED), so it lives in
+neither ACTIVE_STATES (it must never block a fresh NEW_RUN the way a genuinely
+active run does) nor TERMINAL_STATES (it has legal outgoing edges) — see
+PARKED_STATES.
 """
 
 from __future__ import annotations
@@ -30,7 +40,9 @@ class RunState(str, Enum):
     RUNNING = "running"
     PAUSED_FOR_INPUT = "waiting_for_input"  # existing on-disk/frontend string, kept unchanged
     CANCELLING = "cancelling"
+    SUSPENDING = "suspending"
     STALLED = "stalled"
+    SUSPENDED = "suspended"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -38,16 +50,26 @@ class RunState(str, Enum):
 
 # States a NEW_RUN confirmation / orphan sweep / watchdog must treat as "still
 # doing something" — deliberately excludes FAILED (a failed run doesn't block
-# a fresh one; the user did not ask for it to be retried) and the terminal set.
-ACTIVE_STATES = {RunState.RUNNING, RunState.PAUSED_FOR_INPUT, RunState.CANCELLING, RunState.STALLED}
+# a fresh one; the user did not ask for it to be retried), SUSPENDED (parked,
+# see PARKED_STATES), and the terminal set.
+ACTIVE_STATES = {
+    RunState.RUNNING, RunState.PAUSED_FOR_INPUT, RunState.CANCELLING,
+    RunState.SUSPENDING, RunState.STALLED,
+}
 
 TERMINAL_STATES = {RunState.COMPLETED, RunState.CANCELLED}
+
+# Durable, resumable, parked states — excluded from both ACTIVE_STATES (must
+# never block a fresh NEW_RUN) and TERMINAL_STATES (has legal outgoing edges:
+# back to RUNNING via resume, or to CANCELLED via discard/expiry).
+PARKED_STATES = {RunState.SUSPENDED}
 
 _TRANSITIONS: dict[RunState, set[RunState]] = {
     RunState.CREATED: {RunState.RUNNING, RunState.CANCELLED},
     RunState.RUNNING: {
         RunState.PAUSED_FOR_INPUT,
         RunState.CANCELLING,
+        RunState.SUSPENDING,
         RunState.STALLED,
         RunState.COMPLETED,
         RunState.FAILED,
@@ -56,12 +78,21 @@ _TRANSITIONS: dict[RunState, set[RunState]] = {
     RunState.STALLED: {
         RunState.RUNNING,
         RunState.CANCELLING,
+        RunState.SUSPENDING,
         RunState.FAILED,
         RunState.COMPLETED,
         RunState.PAUSED_FOR_INPUT,
     },
     RunState.CANCELLING: {RunState.CANCELLED, RunState.FAILED},
-    RunState.FAILED: {RunState.RUNNING},  # retry only
+    RunState.SUSPENDING: {RunState.SUSPENDED, RunState.CANCELLED, RunState.FAILED},
+    RunState.SUSPENDED: {RunState.RUNNING, RunState.CANCELLED},  # resume, or discard/expire
+    # FAILED -> SUSPENDED is a DIRECT conversion, not the cooperative
+    # RUNNING -> SUSPENDING -> SUSPENDED path: the run has already stopped (a
+    # hard failure — e.g. a network error — mid run_batches), so there is no
+    # in-flight cooperative checkpoint to wait for. Legal only when there is
+    # actually a resumable run_batch_checkpoint to park (same gate `/retry`
+    # already uses) — see routes/auto_pipeline.py's suspend route.
+    RunState.FAILED: {RunState.RUNNING, RunState.SUSPENDED},  # retry, or suspend-from-failure
 }
 
 
@@ -73,6 +104,15 @@ class CooperativeCancellation(Exception):
     """Raised from inside a running node/batch loop to unwind cooperatively once
     ``is_cancelling`` is observed true — caught in ``nodes.py``'s ``_run_step``
     and turned into a ``status: "cancelled"`` node update, never a hard failure."""
+
+
+class CooperativeSuspension(Exception):
+    """Raised from inside a running node/batch loop to unwind cooperatively once
+    ``is_suspending`` is observed true — caught in ``nodes.py``'s ``_run_step``
+    and turned into a ``status: "suspended"`` node update, never a hard failure.
+    Mirrors :class:`CooperativeCancellation` exactly; kept as a distinct type
+    (rather than a shared base with a flag) so a ``except CooperativeCancellation``
+    written before suspend existed never silently swallows a suspend too."""
 
 
 def _now() -> str:
@@ -91,8 +131,16 @@ def is_cancelling(run_id: str) -> bool:
     return current_state(run_id) == RunState.CANCELLING
 
 
+def is_suspending(run_id: str) -> bool:
+    return current_state(run_id) == RunState.SUSPENDING
+
+
 def is_active(run_id: str) -> bool:
     return current_state(run_id) in ACTIVE_STATES
+
+
+def is_parked(run_id: str) -> bool:
+    return current_state(run_id) in PARKED_STATES
 
 
 def transition(run_id: str, to_state: RunState, *, reason: str) -> None:
@@ -122,18 +170,23 @@ def transition(run_id: str, to_state: RunState, *, reason: str) -> None:
 
 
 def sweep_orphans() -> list[str]:
-    """Boot-time recovery: any run left in RUNNING/CANCELLING when the process
-    last stopped can only mean the process died mid-run — flip it to FAILED
-    (reason ``process_terminated``) so it can never again look like a live,
-    blocking, active run. PAUSED_FOR_INPUT is deliberately left alone: it is
-    durably resumable via LangGraph's own SqliteSaver checkpoint across a
-    restart, so orphaning it here would destroy a perfectly resumable run.
+    """Boot-time recovery: any run left in RUNNING/CANCELLING/SUSPENDING when
+    the process last stopped can only mean the process died mid-run — flip it
+    to FAILED (reason ``process_terminated``) so it can never again look like
+    a live, blocking, active run. A SUSPENDING run that died mid-suspend
+    didn't finish parking cleanly (its checkpoint state is whatever the last
+    completed batch left, same as any other hard interruption), so it is
+    swept exactly like an orphaned CANCELLING run, never promoted to
+    SUSPENDED. PAUSED_FOR_INPUT and SUSPENDED are deliberately left alone:
+    both are durably resumable via LangGraph's own SqliteSaver checkpoint
+    across a restart, so orphaning them here would destroy a perfectly
+    resumable/parked run.
     """
     orphaned: list[str] = []
     with main_db() as conn:
         rows = conn.execute(
-            "SELECT graph_run_id FROM pipeline_runs WHERE status IN (?, ?)",
-            (RunState.RUNNING.value, RunState.CANCELLING.value),
+            "SELECT graph_run_id FROM pipeline_runs WHERE status IN (?, ?, ?)",
+            (RunState.RUNNING.value, RunState.CANCELLING.value, RunState.SUSPENDING.value),
         ).fetchall()
     for row in rows:
         run_id = row["graph_run_id"]
@@ -157,3 +210,13 @@ def transition_or_raise_cancelled(run_id: str) -> None:
     doing another node's/batch's worth of work first."""
     if is_cancelling(run_id):
         raise CooperativeCancellation(run_id)
+
+
+def transition_or_raise_suspended(run_id: str) -> None:
+    """Call at a cooperative-suspension checkpoint (top of a node, top of a
+    batch-loop iteration): raises :class:`CooperativeSuspension` if the run
+    has been asked to suspend, so the caller unwinds immediately rather than
+    doing another node's/batch's worth of work first. Mirrors
+    :func:`transition_or_raise_cancelled` exactly."""
+    if is_suspending(run_id):
+        raise CooperativeSuspension(run_id)

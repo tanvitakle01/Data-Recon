@@ -371,6 +371,36 @@ class IBPMetadataService(SAPConnector):
             return pd.Series([], dtype=object)
         return df[field]
 
+    def count_entity(self, entity_name: str) -> int | None:
+        """Cheap total row count via OData V2 ``$inlinecount=allpages`` with
+        ``$top=0`` — one half of the suspend/resume staleness fingerprint
+        (see ``auto_pipeline.data_fingerprint``). IBP rejects a
+        selection-less read, so ``$select`` is pinned to one selectable
+        property purely to satisfy that requirement; the value itself is
+        never used. Returns ``None`` if there is no selectable property at
+        all, or the response carries no ``__count``, so a caller can degrade
+        gracefully rather than assume staleness from a missing signal.
+        """
+        selectable = [p["name"] for p in self.get_entity_properties(entity_name) if p["selectable"]]
+        if not selectable:
+            return None
+        params = {
+            "$format": "json", "$select": selectable[0],
+            "$inlinecount": "allpages", "$top": "0",
+        }
+        response = self.session.get(
+            f"{self._service_base_url()}/{entity_name}",
+            params=params,
+            auth=self._auth(),
+            headers=self._headers(),
+            verify=self.verify_ssl,
+            timeout=60,
+        )
+        if not response.ok:
+            raise RuntimeError(_sap_error_message(response))
+        count = response.json().get("d", {}).get("__count")
+        return int(count) if count is not None else None
+
     def fetch_entity(
         self,
         entity_name: str,

@@ -484,6 +484,9 @@ function ComparisonTypeStep() {
   // value_pairing.pipeline.pair_values' on_batch hook). null outside that step.
   const [autoBatchProgress, setAutoBatchProgress] = useState(null);
   const [autoError, setAutoError] = useState(null);
+  const [autoSuspendable, setAutoSuspendable] = useState(false);
+  const [autoSuspending, setAutoSuspending] = useState(false);
+  const [autoSuspended, setAutoSuspended] = useState(false);
   const [autoFailedStep, setAutoFailedStep] = useState(null);
 
   // ── Error-resolver bot: opens when Auto pauses on a RECOVERABLE resolution
@@ -578,6 +581,7 @@ function ComparisonTypeStep() {
       const run = res.data;
       setAutoCurrentStep(run.current_step);
       setAutoBatchProgress(run.batch_progress ?? null);
+      setAutoSuspendable(Boolean(run.suspendable));
       applyPartialResult(run.result);
 
       if (run.status === "waiting_for_input" && run.interrupt) {
@@ -609,9 +613,45 @@ function ComparisonTypeStep() {
         setResolverOpen(false);
         setAutoFailedStep(run.failed_step);
         setAutoError(run.error || "Auto mode failed.");
+      } else if (run.status === "suspended") {
+        clearInterval(pollIntervalRef.current);
+        clearInterval(tickIntervalRef.current);
+        setAutoRunning(false);
+        setAutoSuspending(false);
+        setResolverOpen(false);
+        setAutoSuspended(true);
       }
     } catch {
       // A transient poll failure shouldn't abort the run — the next tick retries.
+    }
+  };
+
+  // Offer-and-accept only — never automatic (see build notes). Suspend takes
+  // effect at the next batch boundary; the existing poll loop keeps running
+  // until the status flips to "suspended" above, so no extra polling logic
+  // is needed here.
+  const suspendAutoRun = async () => {
+    const graphRunId = graphRunIdRef.current;
+    if (!graphRunId) return;
+    // A FAILED run converts to SUSPENDED directly, with no further polling
+    // to observe it (the poll loop already stopped when the run failed) —
+    // reflect that immediately. A RUNNING/STALLED run's cooperative suspend
+    // still takes effect a batch later; the existing poll loop (still
+    // running) picks up the eventual "suspended" status itself.
+    const isDirectFromFailure = Boolean(autoError);
+    setAutoSuspending(true);
+    try {
+      await api.post(`/api/recon/auto-run/${graphRunId}/suspend`, { reason: "user requested suspend" });
+      if (isDirectFromFailure) {
+        setAutoSuspending(false);
+        setAutoError(null);
+        setAutoFailedStep(null);
+        setAutoSuspended(true);
+      }
+    } catch (err) {
+      setAutoSuspending(false);
+      const detail = err?.response?.data?.detail;
+      setAutoError(typeof detail === "string" ? detail : "Could not suspend this run.");
     }
   };
 
@@ -640,6 +680,9 @@ function ComparisonTypeStep() {
     setAutoBatchProgress(null);
     setAutoElapsedMs(0);
     setAutoInterrupt(null);
+    setAutoSuspendable(false);
+    setAutoSuspending(false);
+    setAutoSuspended(false);
     setResolverOpen(false);
     setResolverError(null);
     setResolverBusy(false);
@@ -899,7 +942,27 @@ function ComparisonTypeStep() {
                         Reopen
                       </button>
                     )}
+                    {autoSuspendable && !autoInterrupt && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={suspendAutoRun}
+                        disabled={autoSuspending}
+                      >
+                        {autoSuspending ? "Suspending…" : "Suspend"}
+                      </Button>
+                    )}
                   </div>
+                ) : autoSuspended ? (
+                  <Alert variant="info">
+                    Run suspended — its progress is saved. Resume it anytime from{" "}
+                    <a href="/stored-runs">Stored Runs</a>.
+                    <div className="wizard-instructions__actions" style={{ marginTop: 8 }}>
+                      <Button variant="secondary" size="sm" onClick={startAutoRun}>
+                        Start a new run instead
+                      </Button>
+                    </div>
+                  </Alert>
                 ) : (
                   <>
                     <div className="ct-runmode-toggle">
@@ -951,6 +1014,11 @@ function ComparisonTypeStep() {
                       <Button variant="secondary" size="sm" onClick={startAutoRun}>
                         Retry Auto
                       </Button>
+                      {autoSuspendable && (
+                        <Button variant="outline" size="sm" onClick={suspendAutoRun} disabled={autoSuspending}>
+                          {autoSuspending ? "Suspending…" : "Suspend for later"}
+                        </Button>
+                      )}
                       <button type="button" className="wizard-link" onClick={handleManualContinue}>
                         Switch to Manual
                       </button>

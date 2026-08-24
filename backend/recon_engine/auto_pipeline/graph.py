@@ -67,7 +67,7 @@ def _build_graph():
         next_name = _NODE_ORDER[i + 1][0]
 
         def _router(state, _next=next_name):
-            return END if state.get("status") in ("failed", "cancelled") else _next
+            return END if state.get("status") in ("failed", "cancelled", "suspended") else _next
 
         graph.add_conditional_edges(name, _router, [next_name, END])
     graph.add_edge(_NODE_ORDER[-1][0], END)
@@ -185,6 +185,43 @@ def retry_auto_pipeline(
     values = {**seed, "status": "running", "failed_step": None, "error": None}
     _COMPILED.update_state(config, values, as_node=_NODE_BEFORE_RUN_BATCHES)
     return _stream_and_merge(None, config, seed=values, on_step=on_step)
+
+
+def resume_suspended_pipeline(
+    graph_run_id: str,
+    on_step: Callable[[str, AutoRunState], None] | None = None,
+) -> AutoRunState:
+    """Resume a SUSPENDED run from exactly the batch it was parked at, using
+    whatever ``run_batch_checkpoint`` row ``nodes._do_run_batches`` already
+    persisted for the batches that completed before the suspend took effect
+    (see ``storage.pipeline_run_store.save_run_batch_checkpoint``).
+
+    Copy-modeled on :func:`retry_auto_pipeline`, not :func:`resume_auto_pipeline`:
+    a suspend (like a hard failure) leaves no pending ``interrupt()`` to answer
+    via ``Command(resume=...)`` — it cooperatively returned ``status:
+    "suspended"`` from between two date-batches, routed straight to ``END`` by
+    ``_router``. So this rewrites the checkpoint via ``update_state(...,
+    as_node=_NODE_BEFORE_RUN_BATCHES)`` exactly like a retry, which is safe
+    here specifically because a suspend can only ever take effect once
+    ``plan_date_batches`` has already completed (see ``nodes.py``'s
+    ``_do_run_batches`` loop, the only place the suspend signal is checked) —
+    every field this rewrite implicitly relies on (contract_id, source_spec,
+    the batch plan) is therefore already present in the checkpointed state.
+    """
+    config = _thread_config(graph_run_id)
+    seed = _COMPILED.get_state(config).values or {}
+    values = {**seed, "status": "running", "failed_step": None, "error": None}
+    _COMPILED.update_state(config, values, as_node=_NODE_BEFORE_RUN_BATCHES)
+    return _stream_and_merge(None, config, seed=values, on_step=on_step)
+
+
+def get_run_state_values(graph_run_id: str) -> AutoRunState:
+    """The run's current checkpointed state — used by the suspend/resume
+    routes to read ``source_spec``/``target_spec``/``*_field_roles`` for the
+    staleness fingerprint (see ``data_fingerprint.py``) without duplicating
+    LangGraph's own checkpoint access. Empty dict if the thread has no
+    checkpoint yet (shouldn't happen for any run past ``CREATED``)."""
+    return _COMPILED.get_state(_thread_config(graph_run_id)).values or {}
 
 
 def get_pending_interrupt(graph_run_id: str) -> Any | None:

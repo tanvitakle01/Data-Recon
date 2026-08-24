@@ -34,7 +34,11 @@ from backend.recon_engine.run_registry import RunState
 from backend.recon_engine.sheet_identifier import identify_systems
 from backend.recon_engine.storage import pipeline_run_store
 from backend.routes import auto_pipeline
-from backend.routes.auto_pipeline import start_auto_run_from_data_state, start_auto_run_state
+from backend.routes.auto_pipeline import (
+    start_auto_run_from_data_state,
+    start_auto_run_state,
+    trigger_suspend,
+)
 from backend.routes.entity_join import live_entity_catalog
 
 logger = logging.getLogger("recon.chat_assistant.orchestrator")
@@ -186,15 +190,37 @@ def _start_run_from_state(state: dict[str, Any], *, session_id: str, prefix: str
 
 
 def _execute_staged_action(staged_action: dict[str, Any], *, session_id: str) -> dict[str, Any]:
-    if staged_action.get("type") == "start_new_run":
-        # The ORIGINALLY BOUND inputs, captured at stage-time — never a
-        # re-parse of whatever the "yes" message itself happens to say.
-        return _start_run_from_state(staged_action["resolved_state"], session_id=session_id)
-    return {
-        "reply": "Something went wrong resolving that confirmation — please try again.",
-        "state": _empty_state(),
-        "run": None,
-    }
+    """Concurrent runs are never supported — exactly two choices ever reach
+    here: discard run 1 (CANCELLING, cooperatively resolves to CANCELLED) or
+    park it (SUSPENDING, resumable later from Stored Runs), either way
+    followed by starting run 2 with ITS OWN ``resolved_state`` (the ORIGINALLY
+    BOUND inputs captured at stage-time — never a re-parse of whatever the
+    choice message itself happens to say)."""
+    action_type = staged_action.get("type")
+    active_run_id = staged_action.get("active_run_id")
+    prefix = ""
+
+    if action_type == "cancel_and_start":
+        run_registry.transition(active_run_id, RunState.CANCELLING, reason="replaced by new chat request")
+        prefix = f"Cancelling run {active_run_id}. "
+    elif action_type == "suspend_and_start":
+        try:
+            trigger_suspend(active_run_id, reason="replaced by new chat request")
+            prefix = f"Suspended run {active_run_id} — find it later under Stored Runs. "
+        except run_registry.IllegalTransition:
+            # Run 1 isn't in a suspendable state right now (e.g. it's
+            # waiting on a resolver-bot answer) — fall back to cancel rather
+            # than silently doing nothing to it while still starting run 2.
+            run_registry.transition(active_run_id, RunState.CANCELLING, reason="replaced by new chat request")
+            prefix = f"Run {active_run_id} couldn't be suspended right now, so it was cancelled instead. "
+    else:
+        return {
+            "reply": "Something went wrong resolving that confirmation — please try again.",
+            "state": _empty_state(),
+            "run": None,
+        }
+
+    return _start_run_from_state(staged_action["resolved_state"], session_id=session_id, prefix=prefix)
 
 
 def handle_message(
@@ -218,10 +244,11 @@ def handle_message(
         if pending["status"] == "expired":
             prefix = "(Your previous request timed out — please try again.) "
         else:
-            resolution = intent.interpret_yes_no(message)
+            resolution = intent.interpret_cancel_suspend_no(message)
             if resolution == "ambiguous":
                 # Never falls through to fresh classification — re-ask the
-                # identical question until it's answered yes/no.
+                # identical question until it's answered with one of the
+                # exactly two options (or a decline).
                 return {"reply": pending["question"], "state": state or _empty_state(), "run": None}
             confirmation_store.answer(pending["confirmation_id"], resolution)
             if resolution == "no":
@@ -230,7 +257,8 @@ def handle_message(
                     "state": state or _empty_state(),
                     "run": None,
                 }
-            return _execute_staged_action(pending["staged_action"], session_id=session_id)
+            staged_action = {**pending["staged_action"], "type": f"{resolution}_and_start"}
+            return _execute_staged_action(staged_action, session_id=session_id)
 
     state = dict(state) if state else _empty_state()
     for key in ("operation", "mapping_sheet", "source_data", "target_data"):
@@ -322,16 +350,21 @@ def handle_message(
         }
 
     # ── 4. NEW_RUN: gate on the session's active run before ever starting one ──
+    # Concurrent runs are never offered — exactly two choices: discard run 1
+    # (cancel) or park it for later (suspend), each followed by starting run 2
+    # with its own resolved_state (see _execute_staged_action).
     ready_to_start = bool(state["mapping_sheet"]) or bool(state["source_data"] and state["target_data"])
     if ready_to_start and active_run_id is not None:
         question = (
             f"You already have a reconciliation running (run {active_run_id}). "
-            "Start this new one instead and replace it? (yes/no)"
+            "Reply 'cancel' to cancel it and start this new one, 'suspend' to pause it "
+            "(resumable later from Stored Runs) and start this new one, or 'no' to keep "
+            "the current run going."
         )
         confirmation_store.stage(
             session_id,
             question=question,
-            staged_action={"type": "start_new_run", "resolved_state": state},
+            staged_action={"resolved_state": state, "active_run_id": active_run_id},
             target_run_ids=[active_run_id],
         )
         return {"reply": prefix + question, "state": state, "run": None}

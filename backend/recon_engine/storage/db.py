@@ -367,6 +367,22 @@ CREATE TABLE IF NOT EXISTS run_heartbeats (
     node       TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- One row per currently-SUSPENDED run (upserted by graph_run_id, not an event
+-- log — the full suspend/resume history already lives in `run_transitions`,
+-- see run_registry.transition). Everything else the Stored Runs tab needs
+-- (bound inputs, batches completed/total, partial-results pointer) is read by
+-- joining `run_batch_checkpoint`/`run_batch_plan`/`results` rather than
+-- duplicated here. Deleted (never left behind) when a suspended run is
+-- resumed, discarded, or expires — see pipeline_run_store.cleanup_run_artifacts.
+CREATE TABLE IF NOT EXISTS pipeline_run_suspensions (
+    graph_run_id           TEXT PRIMARY KEY,
+    user_name              TEXT,
+    suspended_at           TEXT NOT NULL,
+    suspend_reason         TEXT NOT NULL,
+    data_fingerprint_json  TEXT NOT NULL,
+    expires_at             TEXT NOT NULL
+);
 """
 
 _SHADOW_SCHEMA = """

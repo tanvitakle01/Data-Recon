@@ -39,7 +39,7 @@ from backend.API_conn.connectors import registry
 from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
 from backend.API_conn.connectors.s4_metadata_service import S4MetadataService
 from backend.recon_engine import heartbeat, ids, run_registry, service
-from backend.recon_engine.run_registry import CooperativeCancellation
+from backend.recon_engine.run_registry import CooperativeCancellation, CooperativeSuspension
 from backend.recon_engine.engine.executor import build_shadow_source
 from backend.recon_engine.engine.reconciler import reconcile
 from backend.recon_engine.llm import clear_llm_call_context, set_llm_call_context
@@ -61,7 +61,13 @@ from backend.recon_engine.value_pairing.extraction import distinct_values
 from backend.recon_engine.value_pairing.pipeline import _pair_batch
 
 from backend.recon_engine.auto_pipeline.candidate_keys import identify_candidate_keys
-from backend.recon_engine.auto_pipeline.date_batching import DateBatch, fetch_date_column, plan_batches
+from backend.recon_engine.auto_pipeline.date_batching import (
+    DateBatch,
+    client_for,
+    entity_and_field_for_batch,
+    fetch_date_column,
+    plan_batches,
+)
 from backend.recon_engine.auto_pipeline.field_matching import (
     detect_roles_for_columns,
     match_proposed_to_schema,
@@ -417,43 +423,17 @@ def _do_compile_contract(state: AutoRunState) -> dict[str, Any]:
 
 # ── step 4: plan the date-aligned streaming batches ──────────────────────────
 
-def _entity_and_field_for_batch(spec: dict[str, Any], kind: str, date_field: str) -> tuple[str, str]:
-    """Which entity to pull ``date_field`` from — for S4, the entity in the
-    join spec (primary or one of the joins) that actually carries it; for
-    IBP, the single entity."""
-    if kind == "ibp":
-        return spec["entity"], date_field
-    primary_entity = spec["primary"]["entity"]
-    if date_field in (spec["primary"].get("properties") or []):
-        return primary_entity, date_field
-    for j in spec.get("joins") or []:
-        if date_field in (j.get("properties") or []):
-            return j["entity"], date_field
-    # Not directly selected on any entity (e.g. a role-detected column that
-    # wasn't in the originally requested field list) — fall back to primary;
-    # preview_column will simply come back empty rather than erroring.
-    return primary_entity, date_field
-
-
-def _client_for(kind: str):
-    if kind == "s4":
-        return S4MetadataService()
-    if kind == "ibp":
-        return IBPMetadataService()
-    raise RuntimeError(f"No connector client for kind {kind!r}.")
-
-
 def _do_plan_date_batches(state: AutoRunState) -> dict[str, Any]:
     source_kind = state["source"]["kind"]
     target_kind = state["target"]["kind"]
     source_date_field = state["source_field_roles"]["date"]
     target_date_field = state["target_field_roles"]["date"]
 
-    source_entity, _ = _entity_and_field_for_batch(state["source_spec"], source_kind, source_date_field)
-    target_entity, _ = _entity_and_field_for_batch(state["target_spec"], target_kind, target_date_field)
+    source_entity, _ = entity_and_field_for_batch(state["source_spec"], source_kind, source_date_field)
+    target_entity, _ = entity_and_field_for_batch(state["target_spec"], target_kind, target_date_field)
 
-    source_dates = fetch_date_column(_client_for(source_kind), source_entity, source_date_field)
-    target_dates = fetch_date_column(_client_for(target_kind), target_entity, target_date_field)
+    source_dates = fetch_date_column(client_for(source_kind), source_entity, source_date_field)
+    target_dates = fetch_date_column(client_for(target_kind), target_entity, target_date_field)
 
     batches = plan_batches(source_dates, target_dates)
     if not batches:
@@ -614,12 +594,20 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
     mapping_sheet_context = state.get("mapping_sheet")
 
     for batch in batches[start_index:]:
-        # Cooperative-cancellation checkpoint — between date-batches, not
-        # mid-batch: each batch is already checkpointed on completion, so
-        # stopping here never loses partial work. See _run_step's own
-        # top-of-node check for the coarser (between-nodes) checkpoint.
+        # Cooperative-cancellation/-suspension checkpoint — between
+        # date-batches, not mid-batch: each batch is already checkpointed on
+        # completion, so stopping here never loses partial work (and, for
+        # suspend, never leaves a half-resolved batch's value pairings
+        # dangling — see value_pairing/pipeline.py's module docstring on why
+        # every resolved pairing is already durable in the global library the
+        # moment its batch completes). See _run_step's own top-of-node check
+        # for the coarser (between-nodes) checkpoint. Cancel is checked first:
+        # if both were somehow requested, a cancel wins (never park a run the
+        # user asked to discard).
         if run_registry.is_cancelling(graph_run_id):
             return {"status": "cancelled", "result_id": result_id, "batch_count": batch_count}
+        if run_registry.is_suspending(graph_run_id):
+            return {"status": "suspended", "result_id": result_id, "batch_count": batch_count}
 
         # A fresh batch_id per ATTEMPT (never reused across a retry) — chained
         # to whatever attempt it replaces via supersedes_batch_id, so a failed
@@ -1097,6 +1085,11 @@ def _run_step(state: AutoRunState, step: str, fn: Callable[[AutoRunState], dict[
         # observed mid-node — a clean stop, not a failure: no error_event.
         timestamps[step] = {"start": start, "end": time.time()}
         return {"step_timestamps": timestamps, "status": "cancelled", "failed_step": None, "error": None}
+    except CooperativeSuspension:
+        # Mirrors CooperativeCancellation above — a clean, deliberate park,
+        # not a failure: no error_event.
+        timestamps[step] = {"start": start, "end": time.time()}
+        return {"step_timestamps": timestamps, "status": "suspended", "failed_step": None, "error": None}
     except Exception as exc:  # noqa: BLE001 - any exception here is a genuine hard failure
         timestamps[step] = {"start": start, "end": time.time()}
         message = run_registry.format_failure(graph_run_id, step, detail=str(exc))
