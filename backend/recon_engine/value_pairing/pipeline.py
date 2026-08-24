@@ -504,12 +504,21 @@ def _pair_batch(
     """One batch's worth of steps 0-4 (library, identity, LLM proposal +
     verification, pattern reuse, resolve) — everything :func:`pair_values`
     used to do in one dataset-wide pass, now scoped to ``source_counts`` (this
-    batch's own distinct source values). ``target_values`` is always the
-    FULL, dataset-wide distinct-target set (see module docstring on why the
-    target side is never batch-scoped) and ``source_series``/``target_series``/
-    ``source_dates``/``target_dates`` are always the FULL, unsliced columns —
-    corroboration must see the whole dataset even for a batch-scoped value
-    (see the build prompt's "Verification/corroboration stays global" rule).
+    batch's own distinct source values).
+
+    ``target_values``/``target_series``/``target_dates`` scope is
+    CALLER-DEPENDENT, not fixed by this function:
+
+    - :func:`pair_values` (year-window batching, Manual mode and any caller
+      that still wants dataset-wide target matching) always passes the FULL,
+      unsliced target — see ``value_pairing.batching``'s module docstring on
+      why that caller never slices the target side by date.
+    - The Auto-mode streaming batch orchestrator
+      (``auto_pipeline.nodes.run_batches``) passes THIS BATCH's own
+      date-windowed target data instead — safe there specifically because
+      date is a confirmed, reliable part of the business key, so both sides
+      are windowed together by the same date-union batch and nothing can
+      legitimately match outside it.
 
     Returns ``(matches, all_failed)`` — ``all_failed`` is True only when this
     batch had real residual LLM work and every configured provider failed it

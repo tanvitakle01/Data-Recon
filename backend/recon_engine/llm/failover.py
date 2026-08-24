@@ -40,7 +40,9 @@ from typing import Callable
 from backend.recon_engine.compiler.base import ContractCompilerError
 from backend.recon_engine.config import get_settings
 from backend.recon_engine.llm.base import LLMProvider
+from backend.recon_engine.llm.call_context import get_llm_call_context
 from backend.recon_engine.llm.errors import AllProvidersUnavailableError, RetryableLLMError
+from backend.recon_engine.storage import llm_call_store
 
 logger = logging.getLogger("recon.llm.failover")
 
@@ -92,6 +94,16 @@ def reset_llm_outcome() -> None:
 
 def _record(outcome: LLMOutcome) -> None:
     _CURRENT_OUTCOME.set(outcome)
+    ctx = get_llm_call_context()
+    llm_call_store.record(
+        run_id=ctx.run_id,
+        batch_id=ctx.batch_id,
+        node=ctx.node,
+        preferred=outcome.preferred,
+        provider_used=outcome.provider_used,
+        fallback_occurred=outcome.fallback_occurred,
+        all_failed=outcome.all_failed,
+    )
 
 
 # ── circuit breaker (process-wide, shared across requests) ────────────────────

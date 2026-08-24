@@ -155,6 +155,133 @@ def clear_batch_checkpoints(graph_run_id: str) -> None:
         )
 
 
+def save_run_batch_plan(graph_run_id: str, batches: list[dict[str, Any]]) -> None:
+    """Persists the streaming batch plan (see ``auto_pipeline.date_batching.
+    plan_batches``) once, computed from the cheap distinct-date-union pull —
+    a retry must never recompute this (it would re-run that pull for no
+    reason), only read it back via :func:`get_run_batch_plan`."""
+    with main_db() as conn:
+        conn.execute(
+            """INSERT INTO run_batch_plan (graph_run_id, batches_json) VALUES (?, ?)
+               ON CONFLICT (graph_run_id) DO UPDATE SET batches_json = excluded.batches_json""",
+            (graph_run_id, json.dumps(batches)),
+        )
+
+
+def get_run_batch_plan(graph_run_id: str) -> list[dict[str, Any]] | None:
+    with main_db() as conn:
+        row = conn.execute(
+            "SELECT batches_json FROM run_batch_plan WHERE graph_run_id = ?", (graph_run_id,)
+        ).fetchone()
+    return json.loads(row["batches_json"]) if row else None
+
+
+def get_run_batch_checkpoint(graph_run_id: str) -> dict[str, Any] | None:
+    """The resume point for one run's ``run_batches`` node — which
+    ``result_store`` result it's appending to, how many batches already
+    completed (``next_batch_index``) — or ``None`` if this run hasn't started
+    its batch loop yet, or already completed and cleared it."""
+    with main_db() as conn:
+        row = conn.execute(
+            """SELECT result_id, next_batch_index, batch_count, summary_json
+               FROM run_batch_checkpoint WHERE graph_run_id = ?""",
+            (graph_run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "result_id": row["result_id"],
+        "next_batch_index": row["next_batch_index"],
+        "batch_count": row["batch_count"],
+        "summary": json.loads(row["summary_json"]),
+    }
+
+
+def save_run_batch_checkpoint(
+    graph_run_id: str,
+    *,
+    result_id: str,
+    next_batch_index: int,
+    batch_count: int,
+    summary: dict[str, Any],
+) -> None:
+    """Upserts the resume point after one batch of ``run_batches`` completes
+    (extract + pair + verify + reconcile + append all succeeded for it) —
+    ``summary`` is the running ``ReconciliationSummary`` accumulated so far
+    (see ``result_store.append_batch_result``), not just this batch's own."""
+    with main_db() as conn:
+        conn.execute(
+            """INSERT INTO run_batch_checkpoint
+               (graph_run_id, result_id, next_batch_index, batch_count, summary_json)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT (graph_run_id) DO UPDATE SET
+                   result_id = excluded.result_id,
+                   next_batch_index = excluded.next_batch_index,
+                   batch_count = excluded.batch_count,
+                   summary_json = excluded.summary_json""",
+            (graph_run_id, result_id, next_batch_index, batch_count, json.dumps(summary)),
+        )
+
+
+def record_batch_attempt(
+    graph_run_id: str,
+    *,
+    batch_id: str,
+    batch_index: int,
+    supersedes_batch_id: str | None,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Audit trail for ONE batch ATTEMPT (success or hard failure) — distinct
+    from :func:`save_run_batch_checkpoint`, which only ever tracks the single
+    current resume position. Never upserted: every attempt (including a
+    retried one, chained via ``supersedes_batch_id``) gets its own row, so a
+    failed attempt's trail survives rather than being overwritten."""
+    with main_db() as conn:
+        conn.execute(
+            """INSERT INTO run_batch_attempts
+               (batch_id, run_id, batch_index, supersedes_batch_id, status, error, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                batch_id, graph_run_id, batch_index, supersedes_batch_id, status, error,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def get_latest_batch_attempt(graph_run_id: str, batch_index: int) -> dict[str, Any] | None:
+    """The most recent attempt at this ``(graph_run_id, batch_index)`` — what
+    a new attempt's ``supersedes_batch_id`` should point at, or ``None`` if
+    this batch index has never been attempted before."""
+    with main_db() as conn:
+        row = conn.execute(
+            """SELECT * FROM run_batch_attempts WHERE run_id = ? AND batch_index = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (graph_run_id, batch_index),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def clear_run_batch_state(graph_run_id: str) -> None:
+    """Drops the batch plan + checkpoint for this run — called once
+    ``run_batches`` completes successfully (nothing left to resume) and when a
+    fresh run starts."""
+    with main_db() as conn:
+        conn.execute("DELETE FROM run_batch_plan WHERE graph_run_id = ?", (graph_run_id,))
+        conn.execute("DELETE FROM run_batch_checkpoint WHERE graph_run_id = ?", (graph_run_id,))
+
+
+def has_run_batch_checkpoint(graph_run_id: str) -> bool:
+    """True when this run has a resumable streaming-batch checkpoint — the
+    signal the ``/retry`` route and the polled status use to decide whether a
+    hard-failed ``run_batches`` step can resume from a batch."""
+    with main_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM run_batch_checkpoint WHERE graph_run_id = ?", (graph_run_id,)
+        ).fetchone()
+    return row is not None
+
+
 def has_batch_checkpoints(graph_run_id: str) -> bool:
     """True when at least one field pair has a resumable checkpoint — the
     signal the ``/retry`` route and the polled status use to decide whether a

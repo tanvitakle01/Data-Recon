@@ -382,6 +382,29 @@ code {
   border: 1px solid var(--border);
 }
 
+/* Short-form id chip (run/batch/record/pair id — see components/ShortId.jsx):
+   click copies the full value, hover shows it via the title tooltip. */
+.short-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.86em;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.short-id:hover {
+  border-color: var(--color-accent);
+}
+.short-id__copied {
+  color: var(--color-accent);
+  font-family: var(--font-sans, inherit);
+}
+
 /* ----------------------------------------------------------------
    Shared surface / control / table primitives — the app-wide
    vocabulary every page draws from. Reads entirely through tokens.

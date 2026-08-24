@@ -103,6 +103,7 @@ def test_build_comparison_workbook_is_three_sheets():
     assert rows[0] == (
         "Material (Original)", "PRDID (Paired)", "Plant (Original)", "LOCID (Paired)",
         "Date", "Status", "ReqQty", "SalesOrderRequest", "Delta",
+        "Run ID", "Batch ID", "Record ID", "Material Pair ID", "Plant Pair ID",
     )
 
     data = rows[1:]
@@ -142,6 +143,14 @@ def test_build_comparison_workbook_is_three_sheets():
     assert extra[0] is None and extra[1] == "D"
     assert extra[6] is None and extra[7] == 40 and extra[8] == -40
 
+    # Traceability columns (see recon_engine.ids): Run ID is always known,
+    # even for this Manual-mode run, which has no per-row batch/pair identity
+    # of its own — Batch ID/Record ID/Pair ID all stay blank.
+    for r in data:
+        assert r[9] == run_id
+        assert r[10] is None and r[11] is None
+        assert r[12] is None and r[13] is None
+
     # Whole row filled with the status colour (amber for quantity mismatch,
     # red for the unified mismatch bucket).
     qty_row = statuses.index("QUANTITY MISMATCH") + 2  # +1 header, +1 to 1-index
@@ -154,7 +163,7 @@ def test_build_comparison_workbook_is_three_sheets():
     hdr = ws.cell(row=1, column=1)
     assert hdr.font.bold and hdr.fill.fgColor.rgb.endswith("1F4E78")
     assert ws.freeze_panes == "A2"
-    assert ws.auto_filter.ref == "A1:I5"
+    assert ws.auto_filter.ref == "A1:N5"
 
     # ── Summary: Results table FIRST, trimmed Run Information, three charts ──
     summ = wb["Summary"]
@@ -215,7 +224,7 @@ def test_mapping_details_sheet_lists_both_field_pairs():
     rows = list(ws.iter_rows(values_only=True))
     assert rows[0] == (
         "Mapping", "Source Value", "Target Value", "Status", "Confidence",
-        "Corroboration", "Also Candidate For", "Row Count", "Reason",
+        "Corroboration", "Also Candidate For", "Row Count", "Reason", "Pair ID",
     )
 
     data = rows[1:]
@@ -226,6 +235,10 @@ def test_mapping_details_sheet_lists_both_field_pairs():
     a = by_source[("Material → PRDID", "A")]
     assert a[2] == "PA" and a[3] == "Paired" and a[4] == "Verified"
     assert a[5] is None and a[6] is None  # no competing candidates
+    # This Manual-mode contract's matches carry no pair_id (see
+    # recon_engine.ids/models.value_mapping — set only by the Auto-mode
+    # streaming wrapper).
+    assert a[9] is None
 
     b = by_source[("Material → PRDID", "B")]
     assert b[2] == "B" and b[3] == "Paired" and b[4] == "Identity"
@@ -243,7 +256,7 @@ def test_mapping_details_sheet_lists_both_field_pairs():
     assert ws.cell(row=a_row, column=1).fill.fgColor.rgb.endswith("C6EFCE")
 
     assert ws.freeze_panes == "A2"
-    assert ws.auto_filter.ref == f"A1:I{len(data) + 1}"
+    assert ws.auto_filter.ref == f"A1:J{len(data) + 1}"
 
 
 def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field():
@@ -316,6 +329,8 @@ def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field(
         "Date", "Status",
         "ReqQty", "SalesOrderRequest", "ReqQty → SalesOrderRequest Delta",
         "ReqQty2", "SalesOrderRequest2", "ReqQty2 → SalesOrderRequest2 Delta",
+        "Run ID", "Batch ID", "Record ID",
+        "Material Pair ID", "Plant Pair ID", "Region Pair ID",
     )
     data_row = next(ws.iter_rows(values_only=True, min_row=2))
     assert data_row[4] == "R1" and data_row[5] == "R1"  # Region (Original) / RegionCode (Paired)

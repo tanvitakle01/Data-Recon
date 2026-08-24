@@ -9,7 +9,7 @@ import requests
 
 from backend.API_conn.config.config_loader import load_config, resolve_verify
 from backend.API_conn.connectors.base_connector import SAPConnector
-from backend.API_conn.odata_utils import sap_odata_date_to_ddmmyyyy
+from backend.API_conn.odata_utils import sap_odata_date_to_ddmmyyyy, to_odata_datetime_literal
 
 
 @dataclass
@@ -114,10 +114,8 @@ class S4MetadataService(SAPConnector):
             headers["SAP-Client"] = self.cfg.client
         return headers
 
-    def _query(self, entity_set: str, params: dict[str, Any]) -> pd.DataFrame:
-        """Single OData read for ``entity_set``. Central chokepoint so future
-        pagination (``$skip``/``$skiptoken``) can be added without changing the
-        public methods."""
+    def _query_page(self, entity_set: str, params: dict[str, Any]) -> pd.DataFrame:
+        """Single OData page read for ``entity_set`` — no pagination."""
         url = f"{self._service_base_url()}/{entity_set}"
         query_params = {"$format": "json", **params}
 
@@ -142,6 +140,65 @@ class S4MetadataService(SAPConnector):
         if drop:
             df = df.drop(columns=drop)
         return _normalize_odata_dates(df)
+
+    def _query(
+        self,
+        entity_set: str,
+        params: dict[str, Any],
+        *,
+        paginate: bool = False,
+        page_size: int = 5000,
+    ) -> pd.DataFrame:
+        """Central chokepoint for entity reads.
+
+        ``paginate=False`` (default) is a single page read — used for bounded
+        calls (``$top``-capped previews) that already can't exceed one page.
+        ``paginate=True`` loops ``$skip`` in ``page_size`` steps until a page
+        comes back shorter than ``page_size`` — used for real extraction
+        (batch/full pulls), where the result can exceed any single server-side
+        page limit.
+        """
+        if not paginate:
+            return self._query_page(entity_set, params)
+
+        pages: list[pd.DataFrame] = []
+        skip = 0
+        while True:
+            page = self._query_page(
+                entity_set, {**params, "$top": str(page_size), "$skip": str(skip)}
+            )
+            if page.empty:
+                break
+            pages.append(page)
+            if len(page) < page_size:
+                break
+            skip += page_size
+        if not pages:
+            return pd.DataFrame()
+        return pd.concat(pages, ignore_index=True)
+
+    @staticmethod
+    def date_range_filter(field: str, start, end) -> str:
+        """``$filter`` clause for an inclusive ``[start, end]`` date-range
+        window on ``field`` — both bounds are OData V2 ``datetime'...'``
+        literals (see :func:`odata_utils.to_odata_datetime_literal`)."""
+        return (
+            f"{field} ge {to_odata_datetime_literal(start)} and "
+            f"{field} le {to_odata_datetime_literal(end)}"
+        )
+
+    def _apply_date_filter(
+        self, params: dict[str, Any], entity_name: str, date_filter: tuple[str, Any, Any]
+    ) -> None:
+        """Adds ``$filter`` to ``params`` IF ``entity_name`` actually carries
+        the date field named in ``date_filter`` — a date field usually lives
+        on only one entity in a join (e.g. S4's delivery date lives on the
+        schedule-line child, not the sales-order-item parent), so an entity
+        that doesn't have it is left unfiltered rather than erroring."""
+        field, start, end = date_filter
+        live_props = {p["name"] for p in self.get_entity_properties(entity_name)}
+        if field in live_props:
+            params["$filter"] = self.date_range_filter(field, start, end)
 
     # ------------------------------------------------------------------
     # Metadata parsing
@@ -341,13 +398,42 @@ class S4MetadataService(SAPConnector):
         df = self._query(entity_name, {"$select": ",".join(selected), "$top": str(top)})
         return _ensure_columns(df, selected)
 
+    def preview_column(
+        self,
+        entity_name: str,
+        field: str,
+        date_filter: tuple[Any, Any] | None = None,
+    ) -> pd.Series:
+        """Cheap, paginated single-column pull — used by the date-union batch
+        planner to get every distinct date (and per-date row count) without
+        pulling full rows. ``date_filter`` is an optional ``(start, end)``
+        window, same semantics as :meth:`fetch_joined_dataset`."""
+        params: dict[str, Any] = {"$select": field}
+        if date_filter is not None:
+            params["$filter"] = self.date_range_filter(field, *date_filter)
+        df = self._query(entity_name, params, paginate=True)
+        if df.empty or field not in df.columns:
+            return pd.Series([], dtype=object)
+        return df[field]
+
     def preview_join(self, spec: dict[str, Any]) -> pd.DataFrame:
         return self._build_joined(spec, sample_top=PREVIEW_SAMPLE_TOP).head(10)
 
-    def fetch_joined_dataset(self, spec: dict[str, Any]) -> pd.DataFrame:
-        return self._build_joined(spec, sample_top=None)
+    def fetch_joined_dataset(
+        self, spec: dict[str, Any], date_filter: tuple[str, Any, Any] | None = None
+    ) -> pd.DataFrame:
+        """``date_filter``, if given, is ``(field, start, end)`` — applied as
+        an identical ``$filter`` window to the primary entity AND every joined
+        entity (each side of a join must see the same date window, or the
+        merge would silently lose rows whose join partner fell outside it)."""
+        return self._build_joined(spec, sample_top=None, date_filter=date_filter)
 
-    def _build_joined(self, spec: dict[str, Any], sample_top: int | None) -> pd.DataFrame:
+    def _build_joined(
+        self,
+        spec: dict[str, Any],
+        sample_top: int | None,
+        date_filter: tuple[str, Any, Any] | None = None,
+    ) -> pd.DataFrame:
         """Fetch the primary entity + each joined entity and merge them.
 
         ``spec`` shape::
@@ -381,10 +467,14 @@ class S4MetadataService(SAPConnector):
             k["left"] for j in joins for k in (j.get("keys") or []) if k.get("left")
         )
         primary_select = _unique(primary_props + left_keys_needed)
-        params = {"$select": ",".join(primary_select)}
+        params: dict[str, Any] = {"$select": ",".join(primary_select)}
         if sample_top:
             params["$top"] = str(sample_top)
-        result = _ensure_columns(self._query(primary_entity, params), primary_select)
+        elif date_filter is not None:
+            self._apply_date_filter(params, primary_entity, date_filter)
+        result = _ensure_columns(
+            self._query(primary_entity, params, paginate=not sample_top), primary_select
+        )
 
         # Output columns accumulate the user's selections in a stable order.
         out_cols: list[str] = list(primary_props)
@@ -408,10 +498,14 @@ class S4MetadataService(SAPConnector):
             j_props = self._resolve_props(j_entity, j.get("properties"))
             right_keys = _unique(r for _, r in key_pairs)
             j_select = _unique(j_props + right_keys)
-            params = {"$select": ",".join(j_select)}
+            j_params: dict[str, Any] = {"$select": ",".join(j_select)}
             if sample_top:
-                params["$top"] = str(sample_top)
-            right_df = _ensure_columns(self._query(j_entity, params), j_select)
+                j_params["$top"] = str(sample_top)
+            elif date_filter is not None:
+                self._apply_date_filter(j_params, j_entity, date_filter)
+            right_df = _ensure_columns(
+                self._query(j_entity, j_params, paginate=not sample_top), j_select
+            )
 
             left_on = [l for l, _ in key_pairs]
             right_on = [r for _, r in key_pairs]

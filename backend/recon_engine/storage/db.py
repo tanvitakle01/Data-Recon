@@ -217,6 +217,97 @@ CREATE TABLE IF NOT EXISTS value_pair_library (
     UNIQUE (source_connector, target_connector, source_field, target_field,
             source_value, target_value)
 );
+
+-- Date-aligned streaming-batch plan for one Auto-mode run (see
+-- auto_pipeline/date_batching.py) — the ordered list of DateBatch windows
+-- computed once (from the cheap distinct-date-union pull) and then walked one
+-- batch at a time by the `run_batches` node. Recomputing this on every retry
+-- would re-run the date-union pull unnecessarily, so it's persisted once.
+CREATE TABLE IF NOT EXISTS run_batch_plan (
+    graph_run_id  TEXT PRIMARY KEY,
+    batches_json  TEXT NOT NULL
+);
+
+-- Streaming-batch resume checkpoint for one Auto-mode run's `run_batches`
+-- node — keyed by graph_run_id alone (unlike pipeline_batch_checkpoints,
+-- which is per field-pair) because one batch here covers extraction, pairing,
+-- AND reconciliation together. `summary_json` is the running
+-- ReconciliationSummary accumulated across every batch completed so far, so a
+-- run interrupted mid-way still has a correct, inspectable partial summary.
+CREATE TABLE IF NOT EXISTS run_batch_checkpoint (
+    graph_run_id      TEXT PRIMARY KEY,
+    result_id         TEXT NOT NULL,
+    next_batch_index  INTEGER NOT NULL,
+    batch_count       INTEGER NOT NULL,
+    summary_json      TEXT NOT NULL
+);
+
+-- Incremental corroboration evidence for one Auto-mode run's competing-
+-- candidate value pairings (see value_pairing/corroborate.py). Because a
+-- single date is never split across streaming batches, a real date-overlap
+-- between a source and target value is always fully visible within whichever
+-- batch contains the shared date — so this only needs to accumulate three
+-- booleans per candidate pair (OR-combined batch over batch), never the full
+-- date sets. Scoped to one run; cleared alongside its other checkpoints once
+-- the run completes.
+CREATE TABLE IF NOT EXISTS value_pair_corroboration (
+    graph_run_id   TEXT NOT NULL,
+    source_field   TEXT NOT NULL,
+    target_field   TEXT NOT NULL,
+    source_value   TEXT NOT NULL,
+    target_value   TEXT NOT NULL,
+    source_seen    INTEGER NOT NULL DEFAULT 0,
+    target_seen    INTEGER NOT NULL DEFAULT 0,
+    overlap        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (graph_run_id, source_field, target_field, source_value, target_value)
+);
+
+-- Audit trail for one Auto-mode run's `run_batches` node, one row per BATCH
+-- ATTEMPT (success or hard failure) — distinct from `run_batch_checkpoint`
+-- (which only ever tracks the single current resume position). A retried
+-- batch gets a fresh `batch_id` chained to the attempt it replaces via
+-- `supersedes_batch_id`, so a failed attempt's trail is preserved rather than
+-- overwritten (see auto_pipeline/nodes.py's `_do_run_batches`).
+CREATE TABLE IF NOT EXISTS run_batch_attempts (
+    batch_id            TEXT PRIMARY KEY,
+    run_id              TEXT NOT NULL,
+    batch_index         INTEGER NOT NULL,
+    supersedes_batch_id TEXT,
+    status              TEXT NOT NULL,
+    error               TEXT,
+    created_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_batch_attempts_run_index
+    ON run_batch_attempts (run_id, batch_index);
+
+-- One row per hard node failure across any Auto-mode pipeline step (see
+-- auto_pipeline/nodes.py's `_run_step`) — run_id/batch_id/node nullable
+-- because this store is reachable from contexts with no run identity too.
+CREATE TABLE IF NOT EXISTS error_events (
+    error_event_id TEXT PRIMARY KEY,
+    run_id         TEXT,
+    batch_id       TEXT,
+    node           TEXT NOT NULL,
+    message        TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+
+-- One row per LLM completion call (see llm/failover.py's `FailoverLLMClient.
+-- complete_json`, the single funnel every LLM call in the codebase goes
+-- through). run_id/batch_id/node are populated only when the caller set the
+-- call context (Auto-mode); Manual-mode/test callers leave them null.
+CREATE TABLE IF NOT EXISTS llm_calls (
+    llm_call_id       TEXT PRIMARY KEY,
+    run_id            TEXT,
+    batch_id          TEXT,
+    node              TEXT,
+    preferred         TEXT NOT NULL,
+    provider_used     TEXT,
+    fallback_occurred INTEGER NOT NULL,
+    all_failed        INTEGER NOT NULL,
+    created_at        TEXT NOT NULL
+);
 """
 
 _SHADOW_SCHEMA = """

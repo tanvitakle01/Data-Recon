@@ -299,19 +299,31 @@ async def start_auto_run_from_data(
     return {"graph_run_id": graph_run_id}
 
 
+def _has_resumable_checkpoint(graph_run_id: str, failed_step: str | None) -> bool:
+    """Which checkpoint mechanism applies depends on which of the two
+    compiled graphs owns this run (see ``_is_from_data``): the from-data
+    graph still batches only inside ``pair_values`` (year-window batches, one
+    checkpoint per field pair — see ``pipeline_run_store.
+    has_batch_checkpoints``); the live-connector graph batches the WHOLE
+    extract+pair+reconcile sequence inside ``run_batches`` (one checkpoint per
+    run — see ``pipeline_run_store.has_run_batch_checkpoint``)."""
+    if _is_from_data(graph_run_id):
+        return failed_step == "pair_values" and pipeline_run_store.has_batch_checkpoints(graph_run_id)
+    return failed_step == "run_batches" and pipeline_run_store.has_run_batch_checkpoint(graph_run_id)
+
+
 @router.get("/{graph_run_id}/status")
 def get_auto_run_status(graph_run_id: str) -> dict[str, Any]:
     run = pipeline_run_store.get(graph_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
-    # A batch-level interruption is retryable ONLY when it failed inside
-    # pair_values (the one step with a batch concept) AND at least one batch
-    # actually resolved before the failure — otherwise there's nothing to
-    # resume from and the frontend falls back to the plain generic error.
+    # A batch-level interruption is retryable ONLY when it failed inside the
+    # one step with a batch concept AND at least one batch actually resolved
+    # before the failure — otherwise there's nothing to resume from and the
+    # frontend falls back to the plain generic error.
     run["resumable"] = (
         run.get("status") == "failed"
-        and run.get("failed_step") == "pair_values"
-        and pipeline_run_store.has_batch_checkpoints(graph_run_id)
+        and _has_resumable_checkpoint(graph_run_id, run.get("failed_step"))
     )
     return run
 
@@ -354,26 +366,23 @@ async def resolve_auto_run(graph_run_id: str, req: AutoRunResolveRequest) -> dic
 
 @router.post("/{graph_run_id}/retry")
 async def retry_auto_run(graph_run_id: str) -> dict[str, Any]:
-    """Retry a hard-failed ``pair_values`` step from exactly the batch it
-    stopped at (see ``retry_auto_pipeline``) — never restarts the whole run.
+    """Retry a hard-failed batch step from exactly the batch it stopped at
+    (see ``retry_auto_pipeline``/``retry_auto_pipeline_from_data``) — never
+    restarts the whole run.
 
     409s when there is nothing resumable: the run isn't currently failed, it
-    failed somewhere other than ``pair_values`` (no batch concept there), or
-    it failed on the very first batch before any checkpoint existed — the
-    same cases the polled status's ``resumable`` flag already reflects.
+    failed somewhere other than the one step with a batch concept
+    (``run_batches`` for a live-connector run, ``pair_values`` for a from-data
+    run), or it failed before any batch completed — the same cases the polled
+    status's ``resumable`` flag already reflects.
     """
     run = pipeline_run_store.get(graph_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
-    if run.get("status") != "failed" or run.get("failed_step") != "pair_values":
+    if run.get("status") != "failed" or not _has_resumable_checkpoint(graph_run_id, run.get("failed_step")):
         raise HTTPException(
             status_code=409,
             detail=f"Auto-run '{graph_run_id}' has no resumable batch failure to retry.",
-        )
-    if not pipeline_run_store.has_batch_checkpoints(graph_run_id):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Auto-run '{graph_run_id}' failed before any batch completed — nothing to resume from.",
         )
 
     pipeline_run_store.update(

@@ -18,6 +18,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, FileText, Paperclip, Plus, Send, X } from "lucide-react";
 import api from "../../services/api";
+import ShortId from "../ShortId";
 import styles from "./assistantBot.module.css";
 
 const GREETING = {
@@ -138,9 +139,20 @@ function RunProgress({ run, onResolve }) {
   const [resolveText, setResolveText] = useState("");
   if (!run) return null;
 
+  // The short-form run id (see components/ShortId.jsx) is shown alongside
+  // every status — waiting/completed/failed/running alike — so a user can
+  // reference or copy this specific run's full id from the chat at any point
+  // in its lifecycle, not just once it finishes.
+  const idBadge = run.graphRunId && (
+    <div className={styles.runIdBadge}>
+      <ShortId value={run.graphRunId} prefix="Run " />
+    </div>
+  );
+
   if (run.status === "waiting_for_input" && run.interrupt) {
     return (
       <div className={styles.resolver}>
+        {idBadge}
         <p className={styles.resolverMessage}>{run.interrupt.message}</p>
         {run.interrupt.options?.length > 0 && (
           <div className={styles.resolverChips}>
@@ -175,28 +187,44 @@ function RunProgress({ run, onResolve }) {
   }
 
   if (run.status === "completed") {
-    return <ResultBadges summary={run.result?.result_summary?.summary} />;
+    return (
+      <>
+        {idBadge}
+        <ResultBadges summary={run.result?.result_summary?.summary} />
+      </>
+    );
   }
 
   if (run.status === "failed") {
     if (run.resumable) {
       const bp = run.batch_progress;
       return (
-        <p className={styles.runInterrupted}>
-          {bp
-            ? `Reconciliation was interrupted after completing batch ${bp.batch_index + 1} of ` +
-              `${bp.batch_count} (${bp.batch_label}). It can continue from where it left off.`
-            : "Reconciliation was interrupted. It can continue from where it left off."}
-        </p>
+        <>
+          {idBadge}
+          <p className={styles.runInterrupted}>
+            {bp
+              ? `Reconciliation was interrupted after completing batch ${bp.batch_index + 1} of ` +
+                `${bp.batch_count} (${bp.batch_label}). It can continue from where it left off.`
+              : "Reconciliation was interrupted. It can continue from where it left off."}
+          </p>
+        </>
       );
     }
-    return <p className={styles.runError}>{run.error || "Something went wrong."}</p>;
+    return (
+      <>
+        {idBadge}
+        <p className={styles.runError}>{run.error || "Something went wrong."}</p>
+      </>
+    );
   }
 
   return (
-    <p className={styles.runStatusLine}>
-      {STEP_LABELS[run.current_step] || STATUS_LABELS[run.status] || "Working…"}
-    </p>
+    <>
+      {idBadge}
+      <p className={styles.runStatusLine}>
+        {STEP_LABELS[run.current_step] || STATUS_LABELS[run.status] || "Working…"}
+      </p>
+    </>
   );
 }
 

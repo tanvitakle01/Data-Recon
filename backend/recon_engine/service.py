@@ -1295,6 +1295,13 @@ def _export_columns_for_contract(contract: Any) -> list[str]:
     per compare field its raw source column, raw target column, and a signed
     Delta column. Computed fresh per run instead of a fixed list, so it scales
     to however many key/compare pairs the contract actually has.
+
+    Traceability columns (Run ID/Batch ID/Record ID, then one Pair ID per
+    value-mapped key pair — see ``recon_engine.ids``) are appended LAST so a
+    consumer indexing by position over the pre-existing columns is unaffected.
+    They resolve to a real value for Auto-mode runs (which stamp them; see
+    ``auto_pipeline.nodes._do_run_batches``) and blank for Manual-mode runs,
+    which have no per-row batch/pair identity to report.
     """
     key_specs = _business_key_export_specs(contract)
     compare_specs = _compare_field_export_specs(contract)
@@ -1310,6 +1317,12 @@ def _export_columns_for_contract(contract: Any) -> list[str]:
         columns.append(sf)
         columns.append(tf)
         columns.append(_delta_column_name(sf, tf, compare_specs))
+    columns.append("Run ID")
+    columns.append("Batch ID")
+    columns.append("Record ID")
+    for sf, tf, vm in key_specs:
+        if vm is not None:
+            columns.append(f"{sf} Pair ID")
     return columns
 
 
@@ -1391,8 +1404,9 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     key_specs = _business_key_export_specs(contract)
     compare_specs = _compare_field_export_specs(contract)
 
-    detail = result_store.load_result_frame(result.result_id)
+    detail = result_store.load_result_frame_any(result.result_id)
     has_field_diffs = "field_diffs" in detail.columns
+    has_pair_ids = "pair_ids" in detail.columns
 
     shadow_by_key: dict[str, pd.Series] = {}
     target_by_key: dict[str, pd.Series] = {}
@@ -1460,6 +1474,9 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
         diffs = d["field_diffs"] if has_field_diffs else []
         if not isinstance(diffs, list):
             diffs = []
+        pair_ids = d["pair_ids"] if has_pair_ids else {}
+        if not isinstance(pair_ids, dict):
+            pair_ids = {}
 
         record: dict[str, Any] = {
             "business_key": key,
@@ -1484,6 +1501,16 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             record[sf] = _jsonable(source_val)
             record[tf] = _jsonable(target_val)
             record[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
+        # Traceability (see recon_engine.ids): Run ID is always known (this
+        # function's own run_id) even for Manual-mode rows, which carry no
+        # per-row run_id of their own; Batch ID/Record ID/Pair ID are blank
+        # for Manual mode (no batch/pair identity exists there).
+        record["Run ID"] = d.get("run_id") or run_id
+        record["Batch ID"] = d.get("batch_id")
+        record["Record ID"] = d.get("record_id")
+        for sf, tf, vm in key_specs:
+            if vm is not None:
+                record[f"{sf} Pair ID"] = pair_ids.get(sf)
         rows.append(record)
 
     return pd.DataFrame(rows)
@@ -1528,7 +1555,7 @@ _CONFIDENCE_LABELS: dict[str, str] = {
 # tell the two apart.
 _MAPPING_DETAIL_COLUMNS = [
     "Mapping", "Source Value", "Target Value", "Status", "Confidence",
-    "Corroboration", "Also Candidate For", "Row Count", "Reason",
+    "Corroboration", "Also Candidate For", "Row Count", "Reason", "Pair ID",
 ]
 
 
@@ -1789,6 +1816,7 @@ def build_comparison_workbook(run_id: str) -> bytes:
                 label, m.source_value, m.target_value, status,
                 _CONFIDENCE_LABELS.get(m.confidence.value, m.confidence.value),
                 corroboration, ", ".join(siblings), m.row_count, m.evidence,
+                m.pair_id,
             ]
             fill = PatternFill("solid", fgColor="C6EFCE" if paired else "FFC7CE")
             for col, value in enumerate(values, start=1):

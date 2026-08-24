@@ -22,7 +22,7 @@ from typing import Any
 
 import pandas as pd
 
-from backend.recon_engine.engine.executor import LINEAGE_COL
+from backend.recon_engine.engine.executor import LINEAGE_COL, pair_id_col
 from backend.recon_engine.models.contract import MatchType, TransformationContract
 from backend.recon_engine.models.results import RecordClass, ReconciliationSummary
 from backend.recon_engine.operations import get_operation
@@ -102,6 +102,7 @@ def reconcile(
                 detail=detail,
                 lineage=s_row.get(LINEAGE_COL),
                 field_diffs=field_diffs,
+                pair_ids=_extract_pair_ids(s_row, src_key_fields),
             )
         )
 
@@ -114,6 +115,7 @@ def reconcile(
                 key=key,
                 detail="Business key present in source, absent in target.",
                 lineage=s_row.get(LINEAGE_COL),
+                pair_ids=_extract_pair_ids(s_row, src_key_fields),
             )
         )
 
@@ -136,6 +138,20 @@ def reconcile(
     return ReconcileResult(detail_df=detail_df, summary=summary)
 
 
+def _extract_pair_ids(s_row: pd.Series, source_key_fields: list[str]) -> dict[str, str]:
+    """Every business-key field's ``pair_id`` riding along on this shadow row
+    (see ``engine.executor``'s ``__pair_id_<field>__`` reserved columns) —
+    keyed by SOURCE field name, same convention as
+    ``models.results.excluded_unmapped_counts``. Empty when the field had no
+    value mapping (e.g. a date key) or the row predates this column existing."""
+    pair_ids: dict[str, str] = {}
+    for field in source_key_fields:
+        value = s_row.get(pair_id_col(field))
+        if isinstance(value, str) and value:
+            pair_ids[field] = value
+    return pair_ids
+
+
 def _record(
     cls: RecordClass,
     *,
@@ -143,6 +159,7 @@ def _record(
     detail: str,
     lineage: Any,
     field_diffs: list[dict[str, Any]] | None = None,
+    pair_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
         "business_key": key,
@@ -150,6 +167,7 @@ def _record(
         "detail": detail,
         "source_row_ids": lineage if isinstance(lineage, str) else None,
         "field_diffs": field_diffs or [],
+        "pair_ids": pair_ids or {},
     }
 
 

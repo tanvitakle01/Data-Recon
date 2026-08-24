@@ -9,7 +9,7 @@ import requests
 
 from backend.API_conn.config.config_loader import load_config, resolve_verify
 from backend.API_conn.connectors.base_connector import SAPConnector
-from backend.API_conn.odata_utils import sap_odata_date_to_ddmmyyyy
+from backend.API_conn.odata_utils import sap_odata_date_to_ddmmyyyy, to_odata_datetime_literal
 
 
 @dataclass
@@ -123,13 +123,8 @@ class IBPMetadataService(SAPConnector):
             headers["sap-client"] = self.cfg.client
         return headers
 
-    def _query(self, entity_set: str, params: dict[str, Any]) -> pd.DataFrame:
-        """Run a single OData read for ``entity_set`` with the given query params.
-
-        Central chokepoint for reads so future work (pagination via
-        ``$skip``/``$skiptoken``, chunked loading) can extend it without
-        touching the public ``preview_entity`` / ``fetch_entity`` signatures.
-        """
+    def _query_page(self, entity_set: str, params: dict[str, Any]) -> pd.DataFrame:
+        """Single OData page read for ``entity_set``."""
         url = f"{self._service_base_url()}/{entity_set}"
 
         # OData V2 uses `$` params; keep $format=json always present.
@@ -157,6 +152,49 @@ class IBPMetadataService(SAPConnector):
             df = df.drop(columns=["__metadata"])
 
         return _normalize_odata_dates(df)
+
+    def _query(
+        self,
+        entity_set: str,
+        params: dict[str, Any],
+        *,
+        paginate: bool = False,
+        page_size: int = 5000,
+    ) -> pd.DataFrame:
+        """Central chokepoint for entity reads.
+
+        ``paginate=False`` (default) is a single page read — used for bounded
+        calls (``$top``-capped previews). ``paginate=True`` loops ``$skip`` in
+        ``page_size`` steps until a page comes back shorter than
+        ``page_size`` — used for real extraction (batch/full pulls).
+        """
+        if not paginate:
+            return self._query_page(entity_set, params)
+
+        pages: list[pd.DataFrame] = []
+        skip = 0
+        while True:
+            page = self._query_page(
+                entity_set, {**params, "$top": str(page_size), "$skip": str(skip)}
+            )
+            if page.empty:
+                break
+            pages.append(page)
+            if len(page) < page_size:
+                break
+            skip += page_size
+        if not pages:
+            return pd.DataFrame()
+        return pd.concat(pages, ignore_index=True)
+
+    @staticmethod
+    def date_range_filter(field: str, start, end) -> str:
+        """``$filter`` clause for an inclusive ``[start, end]`` date-range
+        window on ``field`` (OData V2 ``datetime'...'`` literals)."""
+        return (
+            f"{field} ge {to_odata_datetime_literal(start)} and "
+            f"{field} le {to_odata_datetime_literal(end)}"
+        )
 
     # ------------------------------------------------------------------
     # Metadata
@@ -314,14 +352,39 @@ class IBPMetadataService(SAPConnector):
         df = self._query(entity_name, {"$select": ",".join(selected), "$top": str(top)})
         return _ensure_columns(df, selected)
 
+    def preview_column(
+        self,
+        entity_name: str,
+        field: str,
+        date_filter: tuple[Any, Any] | None = None,
+    ) -> pd.Series:
+        """Cheap, paginated single-column pull — used by the date-union batch
+        planner to get every distinct date (and per-date row count) without
+        pulling full rows. ``date_filter`` is an optional ``(start, end)``
+        window, same semantics as :meth:`fetch_entity`."""
+        selected = self._resolve_selection(entity_name, [field])
+        params: dict[str, Any] = {"$select": ",".join(selected)}
+        if date_filter is not None:
+            params["$filter"] = self.date_range_filter(field, *date_filter)
+        df = self._query(entity_name, params, paginate=True)
+        if df.empty or field not in df.columns:
+            return pd.Series([], dtype=object)
+        return df[field]
+
     def fetch_entity(
         self,
         entity_name: str,
         selected_properties: list[str],
+        date_filter: tuple[str, Any, Any] | None = None,
     ) -> pd.DataFrame:
+        """``date_filter``, if given, is ``(field, start, end)`` — windows the
+        pull to an inclusive date range instead of the full dataset."""
         selected = self._resolve_selection(entity_name, selected_properties)
-        # No $top — pull the full dataset. Comma-joined with no spaces.
-        df = self._query(entity_name, {"$select": ",".join(selected)})
+        params: dict[str, Any] = {"$select": ",".join(selected)}
+        if date_filter is not None:
+            field, start, end = date_filter
+            params["$filter"] = self.date_range_filter(field, start, end)
+        df = self._query(entity_name, params, paginate=True)
         return _ensure_columns(df, selected)
 
 

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getComparisonUrl } from "../lib/reconRun";
 import api from "../../services/api";
+import ShortId from "../../components/ShortId";
 import { Button, Badge } from "@bristlecone/canopy";
 
 // Outcome -> Canopy semantic color (matches the Badge outcome language:
@@ -109,6 +110,7 @@ function ContractRunResults({ result }) {
     <div className="ct-col">
       {/* Post-run actions — outcomes and next steps first (business users). */}
       <div className="contract-actions results-actions">
+        <ShortId value={runId} prefix="Run " />
         <Button
           type="button"
           variant="primary"
@@ -231,6 +233,7 @@ function ContractRunResults({ result }) {
                   <th>Classification</th>
                   <th>Differences</th>
                   <th>Detail</th>
+                  <th>Record</th>
                 </tr>
               </thead>
               <tbody>
@@ -246,12 +249,16 @@ function ContractRunResults({ result }) {
                         <FieldDiffs diffs={row.field_diffs} />
                       </td>
                       <td>{row.detail}</td>
+                      {/* record_id is only stamped on Auto-mode streaming rows
+                          (see auto_pipeline/nodes.py) — blank for Manual mode,
+                          which has no per-row batch identity to report. */}
+                      <td>{row.record_id ? <ShortId value={row.record_id} /> : "—"}</td>
                     </tr>
                   );
                 })}
                 {exceptionRows.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="wizard-field__help">
+                    <td colSpan={5} className="wizard-field__help">
                       No exceptions in the previewed rows.
                     </td>
                   </tr>
@@ -267,7 +274,7 @@ function ContractRunResults({ result }) {
           <div className="ct-card__head">
             <h3 className="ct-card__title">Run audit trail</h3>
             <span className="ct-card__spacer" />
-            <span className="ct-card__hint mono">Run: {runId}</span>
+            <ShortId value={runId} prefix="Run " />
           </div>
           <div className="ct-table-wrap">
             <table className="ct-table">

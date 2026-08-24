@@ -4,6 +4,7 @@ import json
 
 import pandas as pd
 
+from backend.recon_engine import ids as id_module
 from backend.recon_engine.engine import LINEAGE_COL, build_shadow_source, reconcile
 from backend.recon_engine.models.contract import DraftContract, TransformationContract
 from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
@@ -267,6 +268,102 @@ def test_value_mapping_sees_post_transform_values():
     # it looks up "MAT-A" (the transform's output) and matches.
     assert built.shadow_df["Material"].tolist() == ["MAT-A"]
     assert built.held_out == []
+
+
+def test_result_rows_carry_the_pair_id_that_produced_their_key():
+    """A result row's ``pair_ids`` must resolve to the actual ValueMatch that
+    substituted its business-key field — the traceability contract behind
+    "why did this row match/miss" (see engine.executor's `__pair_id_<field>__`
+    reserved columns and reconciler._extract_pair_ids)."""
+    fm_id = id_module.field_mapping_id("s4", "ibp", "auto", "Material", "PRDID")
+    material_pair_id = id_module.pair_id(fm_id, "MAT-A", "MAT-A")
+    contract = _contract(
+        operations=[],
+        business_key=[{"source_field": "Material", "target_field": "PRDID"}],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
+        source_schema=["Material", "Qty"],
+        target_schema=["PRDID", "QTY"],
+        value_mappings=[
+            ValueMapping(
+                source_field="Material",
+                target_field="PRDID",
+                field_mapping_id=fm_id,
+                matches=[
+                    ValueMatch(
+                        source_value="MAT-A", target_value="MAT-A",
+                        confidence=Confidence.VERY_HIGH, rule="t", evidence="e",
+                        pair_id=material_pair_id,
+                    ),
+                ],
+            ),
+        ],
+    )
+    raw = pd.DataFrame({"Material": ["MAT-A"], "Qty": [10]})
+    built = build_shadow_source(contract, raw)
+    target = pd.DataFrame({"PRDID": ["MAT-A"], "QTY": [10]})
+    recon = reconcile(contract, built.shadow_df, target)
+
+    assert recon.summary.match == 1
+    row = recon.detail_df.iloc[0]
+    assert row["pair_ids"] == {"Material": material_pair_id}
+
+
+def test_missing_in_source_rows_have_no_pair_ids():
+    """A target-only row has no shadow row to read a pair_id off of."""
+    contract = _contract(
+        operations=[],
+        business_key=[{"source_field": "Material", "target_field": "PRDID"}],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
+        source_schema=["Material", "Qty"],
+        target_schema=["PRDID", "QTY"],
+    )
+    raw = pd.DataFrame({"Material": [], "Qty": []})
+    built = build_shadow_source(contract, raw)
+    target = pd.DataFrame({"PRDID": ["MAT-A"], "QTY": [10]})
+    recon = reconcile(contract, built.shadow_df, target)
+
+    assert recon.summary.total == 1
+    assert recon.detail_df.iloc[0]["pair_ids"] == {}
+
+
+def test_multi_candidate_expansion_carries_each_candidates_own_pair_id():
+    """Each duplicated shadow row (one per verified candidate — see
+    executor._expand_multi_candidate_rows) must carry ITS candidate's own
+    pair_id, not a shared/first one."""
+    fm_id = id_module.field_mapping_id("s4", "ibp", "auto", "Material", "PRDID")
+    pair_a = id_module.pair_id(fm_id, "MAT-A", "CAND-1")
+    pair_b = id_module.pair_id(fm_id, "MAT-A", "CAND-2")
+    contract = _contract(
+        operations=[],
+        business_key=[{"source_field": "Material", "target_field": "PRDID"}],
+        compare_fields=[{"source_field": "Qty", "target_field": "QTY"}],
+        source_schema=["Material", "Qty"],
+        target_schema=["PRDID", "QTY"],
+        value_mappings=[
+            ValueMapping(
+                source_field="Material",
+                target_field="PRDID",
+                field_mapping_id=fm_id,
+                matches=[
+                    ValueMatch(
+                        source_value="MAT-A", target_value="CAND-1",
+                        confidence=Confidence.HIGH, rule="t", evidence="e",
+                        pair_id=pair_a, candidates=["CAND-1", "CAND-2"],
+                    ),
+                    ValueMatch(
+                        source_value="MAT-A", target_value="CAND-2",
+                        confidence=Confidence.HIGH, rule="t", evidence="e",
+                        pair_id=pair_b, candidates=["CAND-1", "CAND-2"],
+                    ),
+                ],
+            ),
+        ],
+    )
+    raw = pd.DataFrame({"Material": ["MAT-A"], "Qty": [10]})
+    built = build_shadow_source(contract, raw)
+
+    by_material = dict(zip(built.shadow_df["Material"], built.shadow_df["__pair_id_Material__"]))
+    assert by_material == {"CAND-1": pair_a, "CAND-2": pair_b}
 
 
 def test_reconciler_classifies_all_buckets():

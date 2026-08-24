@@ -11,13 +11,12 @@ from typing import Any, TypedDict
 
 STEP_NAMES = (
     "select_source",
-    "import_source",
     "select_target",
-    "import_target",
-    "identify_candidate_keys",
-    "extract_unique_keys",
-    "pair_values",
-    "compile_and_run",
+    "resolve_schema",
+    "compile_contract",
+    "plan_date_batches",
+    "run_batches",
+    "finalize",
 )
 
 
@@ -44,26 +43,36 @@ class AutoRunState(TypedDict, total=False):
     source: SideState
     target: SideState
 
-    unique_values: dict[str, Any]
+    # Resolved connector query spec per side (S4: {"primary": {...}, "joins":
+    # [...]}; IBP: {"entity": str, "selected": [...]}) — set once by
+    # resolve_schema, reused unchanged by every batch in run_batches (no
+    # re-resolution, no interrupts possible inside the batch loop).
+    source_spec: dict[str, Any]
+    target_spec: dict[str, Any]
 
     # Stage 3 (LLM ONLY): {"source": {"product": {...}, "location": {...}},
     # "target": {...}} — candidate business-identifier keys, used exclusively
-    # to drive value pairing (extract_unique_keys/pair_values). Never fed into
-    # business_key (see compile_and_run) — that stays a separate, deterministic
-    # concept. Set by identify_candidate_keys.
+    # to drive value pairing (run_batches). Never fed into business_key (see
+    # compile_contract) — that stays a separate, deterministic concept. Set by
+    # resolve_schema.
     candidate_keys: dict[str, Any]
 
-    # role ("product"/"location"/"date"/"quantity") -> the actual fetched
-    # column name detected for it (never a hardcoded literal) — set by
-    # pair_values_step, reused by compile_and_run so both stay consistent.
+    # role ("product"/"location"/"date"/"quantity") -> the actual (preview-
+    # verified) column name detected for it (never a hardcoded literal) — set
+    # by resolve_schema, reused by compile_contract/plan_date_batches/
+    # run_batches so all three stay consistent.
     source_field_roles: dict[str, str]
     target_field_roles: dict[str, str]
 
-    product_mapping: dict[str, Any] | None
-    location_mapping: dict[str, Any] | None
-
     contract_id: str | None
     contract_version: int | None
+
+    # storage.result_store result id the streaming batch loop appends to —
+    # set by run_batches's first batch (or read back from
+    # pipeline_run_store.get_run_batch_checkpoint on a retry).
+    result_id: str | None
+    batch_count: int | None
+
     run_id: str | None
     result_summary: dict[str, Any] | None
 

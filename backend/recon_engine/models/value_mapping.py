@@ -85,6 +85,13 @@ class ValueMatch(BaseModel):
     # `recon_engine.value_pairing.pipeline`). `None` for identity pre-pass
     # hits, library-reused pairings, or anything else already final.
     library_id: str | None = None
+    # Deterministic uuid5 (see `recon_engine.ids.pair_id`) identifying THIS
+    # (field_mapping_id, source_value, target_value) pair — stable across
+    # runs, so a result row can point back at the match that produced it
+    # without re-deriving it. Set only by the Auto-mode streaming wrapper
+    # (`auto_pipeline.nodes._pair_field_for_batch`); `None` for Manual mode,
+    # which has no run/batch identity to link it to.
+    pair_id: str | None = None
 
 
 class ValueMapping(BaseModel):
@@ -100,6 +107,11 @@ class ValueMapping(BaseModel):
     source_field: str
     target_field: str
     matches: list[ValueMatch] = Field(default_factory=list)
+    # Deterministic uuid5 (see `recon_engine.ids.field_mapping_id`) identifying
+    # this (source_connector, target_connector, comparison_type, source_field,
+    # target_field) field mapping — stable across runs. Set only by the
+    # Auto-mode streaming wrapper; `None` for Manual mode.
+    field_mapping_id: str | None = None
 
     def executable_mapping(self) -> dict[str, str]:
         """VERY_HIGH/HIGH matches only — what the engine actually applies."""

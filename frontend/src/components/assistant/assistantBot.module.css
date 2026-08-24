@@ -176,6 +176,9 @@
   color: var(--muted);
   font-style: italic;
 }
+.runIdBadge {
+  margin: 8px 0 0;
+}
 .runError {
   margin: 8px 0 0;
   font-size: 13px;

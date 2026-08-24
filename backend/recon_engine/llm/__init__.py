@@ -12,6 +12,11 @@ Public surface:
 """
 
 from backend.recon_engine.llm.base import LLMProvider
+from backend.recon_engine.llm.call_context import (
+    clear_llm_call_context,
+    get_llm_call_context,
+    set_llm_call_context,
+)
 from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
 from backend.recon_engine.llm.errors import (
     AllProvidersUnavailableError,
@@ -34,6 +39,9 @@ from backend.recon_engine.llm.openrouter_client import OpenRouterJSONClient
 
 __all__ = [
     "LLMProvider",
+    "set_llm_call_context",
+    "get_llm_call_context",
+    "clear_llm_call_context",
     "AllProvidersUnavailableError",
     "RetryableLLMError",
     "is_retryable_exception",

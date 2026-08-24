@@ -50,6 +50,16 @@ _PERIOD_FREQ: dict[AggregationType, str] = {
 # Reserved column names (double-underscore, dropped from any comparison/join).
 POS_COL = "__pos__"
 LINEAGE_COL = "__source_row_ids__"
+# One per business-key field that has a value mapping (e.g. "__pair_id_Material__")
+# — carries the deterministic ValueMatch.pair_id (see recon_engine.ids.pair_id)
+# applied at THIS row, riding along on the shadow row exactly like LINEAGE_COL
+# does for raw-row lineage, so the reconciler can read back "which value pair
+# produced this row's key" without re-deriving it.
+PAIR_ID_COL_PREFIX = "__pair_id_"
+
+
+def pair_id_col(source_field: str) -> str:
+    return f"{PAIR_ID_COL_PREFIX}{source_field}__"
 
 
 def shadow_fingerprint(shadow_df: pd.DataFrame) -> str:
@@ -84,9 +94,12 @@ def _is_blank(value: Any) -> bool:
 
 
 def _expand_multi_candidate_rows(
-    df: pd.DataFrame, keep_mask: pd.Series, field: str, expand: dict[Any, list[str]]
+    df: pd.DataFrame,
+    keep_mask: pd.Series,
+    field: str,
+    expand: dict[Any, list[tuple[str, str | None]]],
 ) -> tuple[pd.DataFrame, pd.Series]:
-    """Duplicate each row in ``expand`` once per candidate target value.
+    """Duplicate each row in ``expand`` once per (target_value, pair_id) candidate.
 
     A source value can carry more than one verified candidate (see
     ``value_pairing.pipeline`` module docstring) — rather than picking one,
@@ -99,18 +112,22 @@ def _expand_multi_candidate_rows(
     if not expand:
         return df, keep_mask
 
+    col = pair_id_col(field)
     pieces: list[pd.DataFrame] = []
     keep_pieces: list[pd.Series] = []
     for idx in df.index:
-        targets = expand.get(idx)
-        if targets is None:
+        candidates = expand.get(idx)
+        if candidates is None:
             pieces.append(df.loc[[idx]])
             keep_pieces.append(pd.Series([keep_mask.at[idx]]))
             continue
-        block = pd.concat([df.loc[[idx]]] * len(targets), ignore_index=True)
+        targets = [t for t, _ in candidates]
+        pair_ids = [p for _, p in candidates]
+        block = pd.concat([df.loc[[idx]]] * len(candidates), ignore_index=True)
         block[field] = targets
+        block[col] = pair_ids
         pieces.append(block)
-        keep_pieces.append(pd.Series([keep_mask.at[idx]] * len(targets)))
+        keep_pieces.append(pd.Series([keep_mask.at[idx]] * len(candidates)))
 
     new_df = pd.concat(pieces, ignore_index=True)
     new_keep_mask = pd.concat(keep_pieces, ignore_index=True)
@@ -180,9 +197,10 @@ def _apply_value_mappings(
         for m in vm.matches:
             matches_by_value.setdefault(m.source_value, []).append(m)
 
+        df[pair_id_col(source_field)] = None
         hold_reasons: dict[str, dict[str, Any]] = {}
         hold_mask = pd.Series(False, index=df.index)
-        expand_rows: dict[Any, list[str]] = {}
+        expand_rows: dict[Any, list[tuple[str, str | None]]] = {}
 
         for idx, raw_val in col.items():
             if _is_blank(raw_val):
@@ -246,8 +264,9 @@ def _apply_value_mappings(
                 hold_mask.at[idx] = True
             elif len(accepted) == 1:
                 df.at[idx, source_field] = accepted[0].target_value
+                df.at[idx, pair_id_col(source_field)] = accepted[0].pair_id
             else:
-                expand_rows[idx] = [m.target_value for m in accepted]
+                expand_rows[idx] = [(m.target_value, m.pair_id) for m in accepted]
 
         held_out.extend(hold_reasons.values())
         keep_mask &= ~hold_mask

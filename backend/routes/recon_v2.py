@@ -361,7 +361,7 @@ def get_result(result_id: str, preview: int = 200) -> dict[str, Any]:
     result = result_store.get_result(result_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Unknown result.")
-    detail = result_store.load_result_frame(result_id).head(max(0, preview))
+    detail = result_store.load_result_frame_any(result_id).head(max(0, preview))
     rows = detail.astype(object).where(pd.notna(detail), None).to_dict(orient="records")
     return {"result": result.model_dump(mode="json"), "preview_rows": rows}
 

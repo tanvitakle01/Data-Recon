@@ -29,14 +29,18 @@ from backend.recon_engine.config import get_settings
 
 _NODE_ORDER = [
     ("select_source", nodes.select_source),
-    ("import_source", nodes.import_source),
     ("select_target", nodes.select_target),
-    ("import_target", nodes.import_target),
-    ("identify_candidate_keys", nodes.identify_candidate_keys_step),
-    ("extract_unique_keys", nodes.extract_unique_keys),
-    ("pair_values", nodes.pair_values_step),
-    ("compile_and_run", nodes.compile_and_run),
+    ("resolve_schema", nodes.resolve_schema),
+    ("compile_contract", nodes.compile_contract),
+    ("plan_date_batches", nodes.plan_date_batches),
+    ("run_batches", nodes.run_batches),
+    ("finalize", nodes.finalize),
 ]
+
+# The node immediately before "run_batches" — retry_auto_pipeline() rewrites
+# graph state as if THIS node just completed, so LangGraph schedules
+# run_batches next (see that function's docstring).
+_NODE_BEFORE_RUN_BATCHES = "plan_date_batches"
 
 
 def _open_checkpointer() -> SqliteSaver:
@@ -157,29 +161,29 @@ def retry_auto_pipeline(
     graph_run_id: str,
     on_step: Callable[[str, AutoRunState], None] | None = None,
 ) -> AutoRunState:
-    """Retry a HARD-FAILED ``pair_values`` node from exactly the batch it
-    stopped at, using whatever ``pipeline_batch_checkpoints`` rows
-    ``nodes._make_batch_progress_cb`` already persisted for the batches that
-    resolved before the failure.
+    """Retry a HARD-FAILED ``run_batches`` node from exactly the date batch it
+    stopped at, using whatever ``run_batch_checkpoint`` row
+    ``nodes._do_run_batches`` already persisted for the batches that resolved
+    before the failure (see ``storage.pipeline_run_store.
+    save_run_batch_checkpoint``).
 
     Unlike :func:`resume_auto_pipeline` (which resumes a live ``interrupt()``
     pause via ``Command(resume=...)``), a hard failure (``status: "failed"``,
     routed straight to ``END`` by ``_router``) leaves no pending interrupt to
     resume — ``get_pending_interrupt`` returns ``None`` for this thread. So
     instead this rewrites the checkpoint via ``update_state(...,
-    as_node="extract_unique_keys")`` — the node immediately before
-    ``pair_values`` — clearing ``status``/``failed_step``/``error`` as part of
-    the same write. LangGraph then schedules whatever node
-    ``extract_unique_keys``'s own edge points at (``pair_values``) as the next
-    step, so invoking with no new input re-executes ONLY ``pair_values``, not
-    the whole graph from ``START``. ``pair_values`` itself reads the
-    checkpoint rows via ``nodes._resume_state_for`` and skips every batch
-    already resolved.
+    as_node=_NODE_BEFORE_RUN_BATCHES)`` — the node immediately before
+    ``run_batches`` — clearing ``status``/``failed_step``/``error`` as part of
+    the same write. LangGraph then schedules whatever node that node's own
+    edge points at (``run_batches``) as the next step, so invoking with no new
+    input re-executes ONLY ``run_batches``, not the whole graph from
+    ``START``. ``run_batches`` itself reads ``pipeline_run_store.
+    get_run_batch_checkpoint`` and skips every batch already resolved.
     """
     config = _thread_config(graph_run_id)
     seed = _COMPILED.get_state(config).values or {}
     values = {**seed, "status": "running", "failed_step": None, "error": None}
-    _COMPILED.update_state(config, values, as_node="extract_unique_keys")
+    _COMPILED.update_state(config, values, as_node=_NODE_BEFORE_RUN_BATCHES)
     return _stream_and_merge(None, config, seed=values, on_step=on_step)
 
 
