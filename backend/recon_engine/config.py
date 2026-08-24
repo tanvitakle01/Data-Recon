@@ -12,7 +12,7 @@ GROQ_API_KEY        API key for the Groq LLM (the PRIMARY provider, tier 1).
                     draft a contract. Not needed for validation, approval, or
                     reconciliation.
 GROQ_MODEL          Groq model id used for contract drafting.
-                    Default: ``llama-3.3-70b-versatile``.
+                    Default: ``openai/gpt-oss-120b``.
 GROQ_BASE_URL       Optional override for the Groq API base URL.
 GEMINI_API_KEY      API key for Gemini (fallback tier 2), called via Gemini's
                     OpenAI-compatible endpoint. Optional.
@@ -265,7 +265,7 @@ def get_settings() -> Settings:
 
     groq = GroqSettings(
         api_key=os.environ.get("GROQ_API_KEY") or None,
-        model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         base_url=os.environ.get("GROQ_BASE_URL") or None,
     )
     gemini = GeminiSettings(
