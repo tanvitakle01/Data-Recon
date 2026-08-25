@@ -173,6 +173,89 @@ def test_no_answer_leaves_the_active_run_running(monkeypatch):
     assert session_store.get_active_run(SESSION) == "autorun_active_4"
 
 
+def test_a_started_runs_resolved_fields_do_not_leak_into_a_later_replace_confirmation(monkeypatch):
+    """Regression: ``state`` round-trips through the frontend (see
+    orchestrator.py's module docstring), and a resolved field is never
+    re-asked about. Before ``_start_run_from_state`` reset ``state`` to a
+    clean slate on success, a mapping-sheet run's now-consumed
+    ``mapping_sheet`` reference stuck around in the state the frontend kept
+    sending back — so staging a LATER, unrelated new-run request (new
+    source/target attachments) captured a ``resolved_state`` still carrying
+    run 1's stale mapping sheet. Since ``_start_run_from_state`` checks
+    ``mapping_sheet`` first, confirming 'suspend' started run 2 from run 1's
+    OLD mapping sheet instead of the newly attached source/target files."""
+
+    def _fake_start_auto_run_state(payload):
+        graph_run_id = payload["graph_run_id"]
+        pipeline_run_store.create(graph_run_id)
+        run_registry.transition(graph_run_id, RunState.RUNNING, reason="test setup")
+
+    monkeypatch.setattr(
+        orchestrator.intent,
+        "classify",
+        lambda *, message, attachment_previews: {
+            "is_reconciliation": True,
+            "roles": {p["filename"]: "mapping_sheet" for p in attachment_previews},
+            "degraded": False,
+            "degraded_reason": None,
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator, "parse_mapping_sheet", lambda content, filename=None: {"headers": ["a"], "rows": [{"a": 1}]}
+    )
+    monkeypatch.setattr(orchestrator.registry, "get_configured_connectors", lambda: [{"kind": "sap_s4"}])
+    monkeypatch.setattr(orchestrator, "live_entity_catalog", lambda kinds: ({}, []))
+    monkeypatch.setattr(
+        orchestrator,
+        "identify_systems",
+        lambda parsed, entity_catalog: {"source": {"kind": "sap_s4"}, "target": {"kind": "sap_ibp"}},
+    )
+    monkeypatch.setattr(orchestrator, "start_auto_run_state", _fake_start_auto_run_state)
+    monkeypatch.setattr(pipeline_run_store, "new_graph_run_id", lambda: "autorun_mapping_1")
+
+    run1_reply = orchestrator.handle_message(
+        message="reconcile using this mapping sheet",
+        new_attachments=[("mapping.xlsx", b"whatever")],
+        state=None,
+        session_id=SESSION,
+    )
+    assert run1_reply["run"] == {"graph_run_id": "autorun_mapping_1"}
+    # The state handed back to the frontend must be a clean slate — not still
+    # pointing at run 1's now-consumed mapping sheet.
+    assert run1_reply["state"] == orchestrator._empty_state()
+
+    _stub_reconciliation_classification(monkeypatch)
+    monkeypatch.setattr(
+        orchestrator.auto_pipeline, "_capture_fingerprint_for", lambda graph_run_id: None
+    )
+    started_run_2 = {}
+    monkeypatch.setattr(
+        orchestrator,
+        "start_auto_run_from_data_state",
+        lambda **kw: started_run_2.update(kw) or "autorun_mapping_2",
+    )
+
+    staged_reply = orchestrator.handle_message(
+        message="reconcile these instead",
+        new_attachments=[("Source_S4_Sample.xlsx", b"a\n1\n"), ("Target_IBP_Sample.xlsx", b"a\n1\n")],
+        state=run1_reply["state"],
+        session_id=SESSION,
+    )
+    assert staged_reply["run"] is None
+    # The confirmation must never have captured run 1's leftover mapping sheet.
+    assert staged_reply["state"]["mapping_sheet"] is None
+
+    result = orchestrator.handle_message(
+        message="suspend", new_attachments=[], state=staged_reply["state"], session_id=SESSION
+    )
+
+    assert result["run"] == {"graph_run_id": "autorun_mapping_2"}
+    assert started_run_2["source_name"] == "Source_S4_Sample.xlsx"
+    assert started_run_2["target_name"] == "Target_IBP_Sample.xlsx"
+    assert run_registry.current_state("autorun_mapping_1") == RunState.SUSPENDING
+    assert pipeline_run_store.get_suspension("autorun_mapping_1") is not None
+
+
 def test_cancel_transitions_the_active_run_to_cancelling(monkeypatch):
     _make_active_run("autorun_to_cancel")
 

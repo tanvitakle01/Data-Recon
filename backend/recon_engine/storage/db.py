@@ -332,9 +332,10 @@ CREATE INDEX IF NOT EXISTS idx_run_transitions_run_id ON run_transitions (run_id
 -- session. NEW_RUN while this is set raises a confirmation instead of
 -- silently replacing it (see chat_assistant/orchestrator.py).
 CREATE TABLE IF NOT EXISTS chat_run_sessions (
-    session_id    TEXT PRIMARY KEY,
-    active_run_id TEXT,
-    updated_at    TEXT NOT NULL
+    session_id                       TEXT PRIMARY KEY,
+    active_run_id                    TEXT,
+    pending_suspension_name_run_id   TEXT,
+    updated_at                       TEXT NOT NULL
 );
 
 -- A pending yes/no confirmation gating a staged, not-yet-executed chat action
@@ -573,6 +574,20 @@ def _migrate_pipeline_runs_add_interrupt(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE pipeline_runs ADD COLUMN interrupt_json TEXT")
 
 
+def _migrate_chat_run_sessions_add_pending_name_prompt(conn: sqlite3.Connection) -> None:
+    """One-time migration adding ``pending_suspension_name_run_id`` to
+    ``chat_run_sessions`` — the graph_run_id awaiting an optional name from
+    the chat user, set right after that run is suspended (see
+    ``chat_assistant/orchestrator.py``'s post-suspend naming follow-up).
+    Nullable, no backfill needed — same safe ``ADD COLUMN`` as the
+    ``pipeline_runs`` migrations above.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(chat_run_sessions)")}
+    if not cols or "pending_suspension_name_run_id" in cols:
+        return  # table doesn't exist yet, or already on the current schema
+    conn.execute("ALTER TABLE chat_run_sessions ADD COLUMN pending_suspension_name_run_id TEXT")
+
+
 def init_storage() -> None:
     """Create store directories and both databases with their schemas.
 
@@ -588,6 +603,7 @@ def init_storage() -> None:
         _migrate_value_pair_library_drop_approval_columns(conn)
         _migrate_pipeline_runs_add_batch_progress(conn)
         _migrate_pipeline_runs_add_interrupt(conn)
+        _migrate_chat_run_sessions_add_pending_name_prompt(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

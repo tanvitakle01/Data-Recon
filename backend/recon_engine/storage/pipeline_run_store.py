@@ -364,6 +364,19 @@ def save_suspension(
         )
 
 
+def set_suspension_name(graph_run_id: str, name: str) -> None:
+    """Renames an existing suspension row — used by the chat orchestrator's
+    post-suspend naming follow-up, answered a turn after ``save_suspension``
+    already wrote the row with its auto-generated default name. A no-op if
+    the suspension is already gone (resumed/discarded/expired before the
+    user answered)."""
+    with main_db() as conn:
+        conn.execute(
+            "UPDATE pipeline_run_suspensions SET user_name = ? WHERE graph_run_id = ?",
+            (name, graph_run_id),
+        )
+
+
 def get_suspension(graph_run_id: str) -> dict[str, Any] | None:
     with main_db() as conn:
         row = conn.execute(

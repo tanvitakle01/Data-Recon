@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -42,6 +43,8 @@ from backend.recon_engine.auto_pipeline.state import AutoRunState
 from backend.recon_engine.models.snapshot import RawLayer
 from backend.recon_engine.run_registry import RunState
 from backend.recon_engine.storage import pipeline_run_store, result_store
+
+logger = logging.getLogger("recon.routes.auto_pipeline")
 
 router = APIRouter(prefix="/api/recon/auto-run", tags=["recon-auto-pipeline"])
 
@@ -406,14 +409,27 @@ def _capture_fingerprint_for(graph_run_id: str) -> dict[str, Any] | None:
     required = ("source_spec", "target_spec", "source_field_roles", "target_field_roles")
     if any(state.get(k) is None for k in required):
         return None
-    return data_fingerprint.capture_fingerprint(
-        source_kind=state["source"]["kind"],
-        source_spec=state["source_spec"],
-        source_date_field=state["source_field_roles"]["date"],
-        target_kind=state["target"]["kind"],
-        target_spec=state["target_spec"],
-        target_date_field=state["target_field_roles"]["date"],
-    )
+    try:
+        return data_fingerprint.capture_fingerprint(
+            source_kind=state["source"]["kind"],
+            source_spec=state["source_spec"],
+            source_date_field=state["source_field_roles"]["date"],
+            target_kind=state["target"]["kind"],
+            target_spec=state["target_spec"],
+            target_date_field=state["target_field_roles"]["date"],
+        )
+    except Exception:
+        # A live connector call (count_entity) backs this fingerprint — a
+        # transient connector failure (e.g. a TLS trust issue or a 403 from
+        # SAP) must never block the suspend itself. ``fingerprint_matches``
+        # already treats a missing fingerprint as "does not match" (fail-safe
+        # degrade to asking the user at resume time), so losing it here is
+        # safe; crashing the whole chat turn over it is not.
+        logger.warning(
+            "Could not capture suspend fingerprint for run %s; proceeding without one.",
+            graph_run_id, exc_info=True,
+        )
+        return None
 
 
 def trigger_suspend(graph_run_id: str, *, name: str | None = None, reason: str = "user requested suspend") -> None:

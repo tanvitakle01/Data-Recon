@@ -28,7 +28,13 @@ from typing import Any
 from backend.API_conn.connectors import registry
 from backend.excel_comparator.core.loader import load_tabular
 from backend.recon_engine import run_registry
-from backend.recon_engine.chat_assistant import attachment_store, confirmation_store, intent, session_store
+from backend.recon_engine.chat_assistant import (
+    attachment_store,
+    confirmation_store,
+    intent,
+    session_store,
+    stored_run_lookup,
+)
 from backend.recon_engine.mapping_sheet_parser import parse_mapping_sheet
 from backend.recon_engine.run_registry import RunState
 from backend.recon_engine.sheet_identifier import identify_systems
@@ -162,7 +168,14 @@ def _start_run_from_state(state: dict[str, Any], *, session_id: str, prefix: str
         session_store.set_active_run(session_id, graph_run_id)
         return {
             "reply": prefix + "Got it — running reconciliation from your mapping sheet now.",
-            "state": state,
+            # Reset to a clean slate now that these inputs have been consumed
+            # into a run — leaving the resolved fields in place would let a
+            # LATER, unrelated request's attachments get silently gated behind
+            # (or worse, overridden by) this run's already-used mapping sheet,
+            # since a resolved field is never re-asked about (see module
+            # docstring). This is what a run being replaced from confirmation
+            # must never inherit.
+            "state": _empty_state(),
             "run": {"graph_run_id": graph_run_id},
         }
 
@@ -182,23 +195,95 @@ def _start_run_from_state(state: dict[str, Any], *, session_id: str, prefix: str
         session_store.set_active_run(session_id, graph_run_id)
         return {
             "reply": prefix + "Got it — running reconciliation on your source and target data now.",
-            "state": state,
+            "state": _empty_state(),  # see the mapping-sheet branch above
             "run": {"graph_run_id": graph_run_id},
         }
 
     return {"reply": prefix + _missing_data_reply(state), "state": state, "run": None}
 
 
+def _resume_stored_run(graph_run_id: str, *, session_id: str, prefix: str = "") -> dict[str, Any]:
+    """Unparks a SUSPENDED run — the chat-side counterpart of
+    ``POST /{id}/resume``, reusing ``trigger_resume`` directly rather than
+    duplicating its fingerprint-staleness/background-kickoff logic."""
+    try:
+        auto_pipeline.trigger_resume(graph_run_id)
+    except ValueError:
+        return {
+            "reply": prefix + (
+                f"Run {graph_run_id}'s source/target data looks like it has changed since it was "
+                "suspended, so I didn't resume it automatically to avoid mixing two data vintages. "
+                "Discard it and start fresh, or check with whoever manages that connection."
+            ),
+            "state": _empty_state(),
+            "run": None,
+        }
+    session_store.set_active_run(session_id, graph_run_id)
+    return {
+        "reply": prefix + f"Resuming run {graph_run_id} from where it left off.",
+        "state": _empty_state(),
+        "run": {"graph_run_id": graph_run_id},
+    }
+
+
+def _format_stored_run_option(suspension: dict[str, Any]) -> str:
+    label = suspension["user_name"] or "(unnamed)"
+    return f"- {label} — run {suspension['graph_run_id']}, suspended {suspension['suspended_at']}"
+
+
+def _handle_resume_query(
+    query: str, *, session_id: str, active_run_id: str | None, state: dict[str, Any], prefix: str
+) -> dict[str, Any]:
+    """Resolves a "resume <identifier>" chat request (see
+    ``intent.parse_resume_stored_query``) against Stored Runs. Never guesses:
+    zero matches says so plainly, more than one lists every candidate and
+    asks which, and exactly one goes through the same cancel/suspend/no
+    confirmation gate as NEW_RUN when another run is currently active."""
+    matches = stored_run_lookup.find(query)
+    if not matches:
+        return {
+            "reply": prefix + f"I couldn't find a stored run matching {query!r}.",
+            "state": state,
+            "run": None,
+        }
+    if len(matches) > 1:
+        options = "\n".join(_format_stored_run_option(m) for m in matches)
+        return {
+            "reply": prefix + f"I found more than one stored run matching that — which one?\n{options}",
+            "state": state,
+            "run": None,
+        }
+
+    target_run_id = matches[0]["graph_run_id"]
+    if active_run_id is not None:
+        question = (
+            f"Resuming run {target_run_id} ({matches[0]['user_name'] or 'unnamed'}) means replacing "
+            f"your current run ({active_run_id}). Reply 'cancel' to cancel it and resume the stored "
+            "run, 'suspend' to pause it and resume the stored run, or 'no' to keep the current run going."
+        )
+        confirmation_store.stage(
+            session_id,
+            question=question,
+            staged_action={"resume_graph_run_id": target_run_id, "active_run_id": active_run_id},
+            target_run_ids=[active_run_id],
+        )
+        return {"reply": prefix + question, "state": state, "run": None}
+
+    return _resume_stored_run(target_run_id, session_id=session_id, prefix=prefix)
+
+
 def _execute_staged_action(staged_action: dict[str, Any], *, session_id: str) -> dict[str, Any]:
     """Concurrent runs are never supported — exactly two choices ever reach
     here: discard run 1 (CANCELLING, cooperatively resolves to CANCELLED) or
     park it (SUSPENDING, resumable later from Stored Runs), either way
-    followed by starting run 2 with ITS OWN ``resolved_state`` (the ORIGINALLY
-    BOUND inputs captured at stage-time — never a re-parse of whatever the
-    choice message itself happens to say)."""
+    followed by starting run 2 — either from ITS OWN ``resolved_state`` (the
+    ORIGINALLY BOUND inputs captured at stage-time — never a re-parse of
+    whatever the choice message itself happens to say) or, for a staged
+    "resume a stored run" action, by unparking that stored run instead."""
     action_type = staged_action.get("type")
     active_run_id = staged_action.get("active_run_id")
     prefix = ""
+    suspended_successfully = False
 
     if action_type == "cancel_and_start":
         run_registry.transition(active_run_id, RunState.CANCELLING, reason="replaced by new chat request")
@@ -207,6 +292,7 @@ def _execute_staged_action(staged_action: dict[str, Any], *, session_id: str) ->
         try:
             trigger_suspend(active_run_id, reason="replaced by new chat request")
             prefix = f"Suspended run {active_run_id} — find it later under Stored Runs. "
+            suspended_successfully = True
         except run_registry.IllegalTransition:
             # Run 1 isn't in a suspendable state right now (e.g. it's
             # waiting on a resolver-bot answer) — fall back to cancel rather
@@ -220,7 +306,25 @@ def _execute_staged_action(staged_action: dict[str, Any], *, session_id: str) ->
             "run": None,
         }
 
-    return _start_run_from_state(staged_action["resolved_state"], session_id=session_id, prefix=prefix)
+    if "resume_graph_run_id" in staged_action:
+        result = _resume_stored_run(staged_action["resume_graph_run_id"], session_id=session_id, prefix=prefix)
+    else:
+        result = _start_run_from_state(staged_action["resolved_state"], session_id=session_id, prefix=prefix)
+
+    if suspended_successfully:
+        # Ask for an optional name, but never gate run 2 (already started
+        # above) on the answer — the next message this session sends is
+        # interpreted as that answer by the pending-name-prompt gate in
+        # handle_message, unless it turns out to carry new attachments of
+        # its own, in which case the prompt is dropped rather than hijacking
+        # that message.
+        session_store.set_pending_name_prompt(session_id, active_run_id)
+        result = {
+            **result,
+            "reply": result["reply"]
+            + " Want to give the suspended run a name so it's easier to find later? Reply with a name, or say 'skip'.",
+        }
+    return result
 
 
 def handle_message(
@@ -264,8 +368,34 @@ def handle_message(
     for key in ("operation", "mapping_sheet", "source_data", "target_data"):
         state.setdefault(key, None)
 
+    # ── 1.5. pending suspended-run naming follow-up ──
+    # Set right after a successful suspend (see _execute_staged_action). New
+    # attachments take priority over answering it — the prompt is dropped
+    # silently rather than swallowing a message that's clearly moving on to
+    # something else.
+    pending_name_run_id = session_store.get_pending_name_prompt(session_id)
+    if pending_name_run_id is not None:
+        session_store.set_pending_name_prompt(session_id, None)
+        if not new_attachments:
+            name = intent.interpret_name_or_skip(message)
+            if name:
+                pipeline_run_store.set_suspension_name(pending_name_run_id, name)
+                return {"reply": prefix + f"Got it — named that suspended run {name!r}.", "state": state, "run": None}
+            return {
+                "reply": prefix + "No problem — you can still find it later by its run ID.",
+                "state": state,
+                "run": None,
+            }
+
     # ── 2. run-mutating intent, classified against THIS session's run state ──
     active_run_id = _active_run_id(session_id)
+
+    resume_query = intent.parse_resume_stored_query(message)
+    if resume_query:
+        return _handle_resume_query(
+            resume_query, session_id=session_id, active_run_id=active_run_id, state=state, prefix=prefix
+        )
+
     control_intent = intent.classify_intent(message, run_snapshot={"active_run_id": active_run_id})
 
     if control_intent == "CANCEL":

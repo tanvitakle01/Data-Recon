@@ -50,6 +50,30 @@ def clear_active_run_if(session_id: str, run_id: str) -> None:
         )
 
 
+def get_pending_name_prompt(session_id: str) -> str | None:
+    """The graph_run_id of a just-suspended run still awaiting an optional
+    name from this session's chat user, if any (see the post-suspend naming
+    follow-up in ``chat_assistant/orchestrator.py``)."""
+    with main_db() as conn:
+        row = conn.execute(
+            "SELECT pending_suspension_name_run_id FROM chat_run_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    return row["pending_suspension_name_run_id"] if row else None
+
+
+def set_pending_name_prompt(session_id: str, run_id: str | None) -> None:
+    with main_db() as conn:
+        conn.execute(
+            """INSERT INTO chat_run_sessions (session_id, pending_suspension_name_run_id, updated_at)
+               VALUES (?,?,?)
+               ON CONFLICT (session_id) DO UPDATE SET
+                   pending_suspension_name_run_id = excluded.pending_suspension_name_run_id,
+                   updated_at = excluded.updated_at""",
+            (session_id, run_id, _now()),
+        )
+
+
 def sessions_bound_to(run_id: str) -> list[str]:
     with main_db() as conn:
         rows = conn.execute(

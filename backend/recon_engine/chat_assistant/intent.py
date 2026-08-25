@@ -109,6 +109,45 @@ def interpret_cancel_suspend_no(message: str) -> Literal["cancel", "suspend", "n
         return "no"
     return "ambiguous"
 
+
+_SKIP_NAME_WORDS = _NO_WORDS | {
+    "skip", "none", "no thanks", "no thank you", "not now", "never mind", "nevermind",
+}
+
+
+def interpret_name_or_skip(message: str) -> str | None:
+    """Deterministic answer-interpretation for the post-suspend "want to name
+    it?" follow-up: a name is arbitrary free text, so anything that isn't an
+    explicit decline is taken verbatim as the name. Never LLM-based — same
+    rationale as :func:`interpret_yes_no`."""
+    text = (message or "").strip()
+    if not text or text.lower().rstrip(".!") in _SKIP_NAME_WORDS:
+        return None
+    return text
+
+
+_RESUME_STORED_PATTERN = re.compile(r"^\s*resume\b(.*)$", re.IGNORECASE)
+_BARE_RESUME_PHRASES = {"", "it", "this", "this run", "the run", "current run", "the current run"}
+
+
+def parse_resume_stored_query(message: str) -> str | None:
+    """A bare "resume" (or "resume it"/"resume this run") means retry the
+    session's own active run — see :func:`classify_intent`'s RETRY keyword,
+    which still handles that case. Anything else following "resume" names a
+    STORED (suspended) run to look up instead — a name, a run_id, or a time
+    reference (e.g. "resume the run from this morning") — and is returned
+    verbatim as the lookup query. Returns ``None`` when the message isn't a
+    "resume <something>" request at all, or is one of the bare phrases
+    above."""
+    match = _RESUME_STORED_PATTERN.match((message or "").strip())
+    if match is None:
+        return None
+    rest = match.group(1).strip().rstrip(".!")
+    if rest.lower() in _BARE_RESUME_PHRASES:
+        return None
+    return rest
+
+
 _SYSTEM_PREAMBLE = """You triage chat messages for a data-reconciliation
 assistant. Given the user's message text and a preview of each newly
 attached file (filename, column headers, and its first populated data row),
