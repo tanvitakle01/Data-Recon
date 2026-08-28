@@ -5,7 +5,6 @@ import CommandCenter from "../components/cockpit/CommandCenter";
 import InsightsTabs from "../components/cockpit/InsightsTabs";
 import ExecutiveSummaryView from "../components/executive/ExecutiveSummaryView";
 import SkeletonCards from "../components/insights/SkeletonCards";
-import { useTicketing } from "../ticketing/useTicketing";
 
 function useQuery() {
   const { search } = useLocation();
@@ -49,7 +48,6 @@ function InsightsPageInner() {
 
   const mode = runId ? "fromRunId" : fileId ? "fromFileId" : "upload";
   const isAutoMode = mode === "fromRunId" || mode === "fromFileId";
-  const insightKey = runId || fileId;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -62,7 +60,6 @@ function InsightsPageInner() {
   const [pdfBusy, setPdfBusy] = useState(false);
 
   const cockpitSectionRef = useRef(null);
-  const { ensureTicketsForPayload } = useTicketing();
 
   const onDownloadPdf = async () => {
     if (!runId) return;
@@ -93,7 +90,6 @@ function InsightsPageInner() {
           : await api.post("/insights/from-file-id", { file_id: fileId });
         const data = res.data?.payload ?? null;
         setPayload(data);
-        ensureTicketsForPayload(data?.cockpit?.rootCauseExplorer, insightKey);
 
         requestAnimationFrame(() => {
           if (cockpitSectionRef.current) {
@@ -108,7 +104,7 @@ function InsightsPageInner() {
     };
 
     runAuto();
-  }, [runId, fileId, insightKey, ensureTicketsForPayload]);
+  }, [runId, fileId]);
 
   const onUploadGenerate = async () => {
     if (!uploadFile) return;
@@ -126,7 +122,6 @@ function InsightsPageInner() {
       });
       const data = res.data?.payload ?? null;
       setPayload(data);
-      ensureTicketsForPayload(data?.cockpit?.rootCauseExplorer, `upload-${Date.now()}`);
 
       requestAnimationFrame(() => {
         if (cockpitSectionRef.current) {

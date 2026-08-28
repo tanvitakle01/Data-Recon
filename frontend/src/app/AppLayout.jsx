@@ -9,12 +9,10 @@ import {
   FiSidebar,
   FiMenu,
   FiX,
-  FiClipboard,
   FiBookOpen,
   FiArchive,
 } from "react-icons/fi";
 import { BristleconeLogo } from "@bristlecone/canopy";
-import { useTicketing } from "../ticketing/useTicketing";
 import canopyPkg from "@bristlecone/canopy/package.json";
 import UserMenu from "./UserMenu";
 import AssistantBot from "../components/assistant/AssistantBot";
@@ -65,7 +63,6 @@ function AppLayout({ children }) {
     if (p.startsWith("/insights")) return "insights";
     if (p.startsWith("/library")) return "library";
     if (p.startsWith("/stored-runs")) return "stored-runs";
-    if (p.startsWith("/ticketing")) return "ticketing";
     if (p.startsWith("/data-sources")) return "data-sources";
     if (p.startsWith("/settings")) return "settings";
     return "home";
@@ -94,15 +91,6 @@ function AppLayout({ children }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileOpen]);
 
-  // Tickets not yet Resolved/Closed — a real, live count (this ticketing
-  // store is genuine app state, not mock data), shown on the nav badge the
-  // same way the Enterprise UI mock shows an open-item count.
-  const { tickets } = useTicketing();
-  const openTicketCount = useMemo(
-    () => tickets.filter((t) => t.status !== "Resolved" && t.status !== "Closed").length,
-    [tickets],
-  );
-
   // Ungrouped (mirrors the mock's own header identity, which already covers
   // "home") + the mock's Reconcile / Operate / Govern sections, applied to
   // this app's real, unchanged routes.
@@ -119,7 +107,6 @@ function AppLayout({ children }) {
     {
       label: "Operate",
       items: [
-        { key: "ticketing", to: "/ticketing", icon: FiClipboard, label: "Ticketing", badge: openTicketCount },
         { key: "stored-runs", to: "/stored-runs", icon: FiArchive, label: "Stored Runs" },
         { key: "data-sources", to: "/data-sources", icon: FiDatabase, label: "Data Sources" },
       ],

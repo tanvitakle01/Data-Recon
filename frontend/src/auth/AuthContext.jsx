@@ -4,11 +4,11 @@ import { registerUnauthorizedHandler } from "../services/api";
 import * as authApi from "./authApi";
 
 /**
- * Mirrors the existing per-feature Context convention (see
- * TicketingContext.jsx) — plain useState/useCallback, no library. The
- * difference here is every mutation is a real network call: this app has no
- * client-side session of its own, the httpOnly cookie is the only session,
- * and this context just reflects what the backend already decided.
+ * Mirrors the existing per-feature Context convention — plain
+ * useState/useCallback, no library. The difference here is every mutation is
+ * a real network call: this app has no client-side session of its own, the
+ * httpOnly cookie is the only session, and this context just reflects what
+ * the backend already decided.
  */
 export function AuthProvider({ children }) {
   const [status, setStatus] = useState("loading"); // loading | authenticated | anonymous

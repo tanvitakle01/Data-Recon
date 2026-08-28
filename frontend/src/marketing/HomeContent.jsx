@@ -30,14 +30,6 @@ const CAPABILITIES = [
       "Executive summary, hotspot heatmaps, root-cause boards and a readiness radar built from the run's own diagnostics.",
   },
   {
-    key: "ticketing",
-    to: "/ticketing",
-    accent: "var(--qty)",
-    title: "Ticketing",
-    description:
-      "Exceptions become routed, SLA-tracked tickets assigned to the owning team, with email notification on every transition.",
-  },
-  {
     key: "stored-runs",
     to: "/stored-runs",
     accent: "var(--extra)",
@@ -73,7 +65,7 @@ const STEPS = [
   {
     step: "STEP 04",
     title: "Run & resolve",
-    description: "Matches, gaps and quantity breaks land in results — and exceptions become tickets.",
+    description: "Matches, gaps and quantity breaks land in results, ready to investigate.",
   },
 ];
 
@@ -89,12 +81,6 @@ const DEMOS = [
     title: "Mapping review & confidence tiers",
     duration: "05:40",
     description: "How proposed field matches are scored, edited and approved before a run.",
-  },
-  {
-    key: "exception-to-ticket",
-    title: "From exception to resolved ticket",
-    duration: "04:05",
-    description: "Routing rules, SLA tracking and team assignment on reconciliation breaks.",
   },
 ];
 
@@ -117,7 +103,7 @@ const SUPPORT_CARDS = [
     key: "contact",
     tone: "home-support-card--plain",
     title: "Talk to the team",
-    description: "Raise a support ticket or book a walkthrough with the reconciliation platform team.",
+    description: "Reach out or book a walkthrough with the reconciliation platform team.",
     label: "Contact support →",
   },
 ];
@@ -147,7 +133,7 @@ function HomeContent({ authed = false }) {
 
   const supportHref = (key) => {
     if (key !== "contact") return "#support";
-    return authed ? "/ticketing" : "mailto:support@bristlecone.com";
+    return "mailto:support@bristlecone.com";
   };
 
   return (
@@ -203,7 +189,7 @@ function HomeContent({ authed = false }) {
       </section>
 
       <section id="capabilities" className="home-section">
-        <h2 className="home-h2">One workspace, six connected surfaces</h2>
+        <h2 className="home-h2">One workspace, five connected surfaces</h2>
         <p className="home-section-sub">
           Every module in the platform reads the same contracts, the same mappings and the same run history.
         </p>

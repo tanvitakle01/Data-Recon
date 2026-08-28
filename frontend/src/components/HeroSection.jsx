@@ -52,9 +52,8 @@ function HeroSection() {
         </div>
 
         <p className="recon-hero-exec-desc" data-recon-hero-desc>
-          AI-powered reconciliation, variance analysis, ticket generation, and
-          executive-ready reporting for enterprise planning and operational
-          data.
+          AI-powered reconciliation, variance analysis, and executive-ready
+          reporting for enterprise planning and operational data.
         </p>
 
         <div className="recon-hero-divider" aria-hidden="true" />
