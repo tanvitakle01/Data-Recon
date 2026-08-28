@@ -15,7 +15,6 @@ import io
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -32,12 +31,6 @@ from backend.recon_engine.auto_pipeline.graph import (
     resume_suspended_pipeline,
     retry_auto_pipeline,
     stream_auto_pipeline,
-)
-from backend.recon_engine.auto_pipeline.graph_from_data import (
-    get_pending_interrupt_from_data,
-    resume_auto_pipeline_from_data,
-    retry_auto_pipeline_from_data,
-    stream_auto_pipeline_from_data,
 )
 from backend.recon_engine.auto_pipeline.state import AutoRunState
 from backend.recon_engine.models.snapshot import RawLayer
@@ -56,17 +49,6 @@ SUSPENSION_EXPIRY_DAYS = 30
 # guarantee a task survives if nothing else holds it, and the request that
 # created it returns immediately.
 _background_tasks: set[asyncio.Task] = set()
-
-# Distinguishes a "from-data" run (chat-uploaded files, entering the graph at
-# identify_candidate_keys — see graph_from_data.py) from a normal full-graph
-# run, purely by id prefix — avoids a pipeline_runs schema migration just to
-# record which of the two compiled graphs owns a given run.
-_FROM_DATA_PREFIX = "autorun_fd_"
-
-
-def _is_from_data(graph_run_id: str) -> bool:
-    return graph_run_id.startswith(_FROM_DATA_PREFIX)
-
 
 class AutoRunStartRequest(BaseModel):
     mapping_sheet: Any = Field(default_factory=dict)
@@ -144,15 +126,10 @@ def _finish(graph_run_id: str, final_state: AutoRunState) -> None:
 
     A pause never returns a "completed"/"failed" status from the stream
     itself (the interrupting node raised instead of returning) — checked via
-    the owning graph's own checkpoint (full graph vs. from-data graph,
-    dispatched by id prefix), the single source of truth for whether a
+    the graph's own checkpoint, the single source of truth for whether a
     thread is actually waiting.
     """
-    pending = (
-        get_pending_interrupt_from_data(graph_run_id)
-        if _is_from_data(graph_run_id)
-        else get_pending_interrupt(graph_run_id)
-    )
+    pending = get_pending_interrupt(graph_run_id)
     if pending is not None:
         run_registry.transition(graph_run_id, RunState.PAUSED_FOR_INPUT, reason="node interrupted, awaiting input")
         pipeline_run_store.update_progress(
@@ -199,9 +176,8 @@ def _fail_hard(graph_run_id: str, exc: Exception) -> None:
 
 
 def _execute(graph_run_id: str, initial_state: AutoRunState) -> None:
-    stream_fn = stream_auto_pipeline_from_data if _is_from_data(graph_run_id) else stream_auto_pipeline
     try:
-        final_state = stream_fn(initial_state, on_step=lambda step, s: _on_step(graph_run_id, step, s))
+        final_state = stream_auto_pipeline(initial_state, on_step=lambda step, s: _on_step(graph_run_id, step, s))
     except Exception as exc:  # noqa: BLE001 - a bug in the graph itself, not a modeled step failure
         _fail_hard(graph_run_id, exc)
         return
@@ -209,9 +185,8 @@ def _execute(graph_run_id: str, initial_state: AutoRunState) -> None:
 
 
 def _execute_resume(graph_run_id: str, resume_value: str) -> None:
-    resume_fn = resume_auto_pipeline_from_data if _is_from_data(graph_run_id) else resume_auto_pipeline
     try:
-        final_state = resume_fn(
+        final_state = resume_auto_pipeline(
             graph_run_id, resume_value, on_step=lambda step, s: _on_step(graph_run_id, step, s)
         )
     except Exception as exc:  # noqa: BLE001 - a bug in the graph itself, not a modeled step failure
@@ -221,9 +196,8 @@ def _execute_resume(graph_run_id: str, resume_value: str) -> None:
 
 
 def _execute_retry(graph_run_id: str) -> None:
-    retry_fn = retry_auto_pipeline_from_data if _is_from_data(graph_run_id) else retry_auto_pipeline
     try:
-        final_state = retry_fn(graph_run_id, on_step=lambda step, s: _on_step(graph_run_id, step, s))
+        final_state = retry_auto_pipeline(graph_run_id, on_step=lambda step, s: _on_step(graph_run_id, step, s))
     except Exception as exc:  # noqa: BLE001 - a bug in the graph itself, not a modeled step failure
         _fail_hard(graph_run_id, exc)
         return
@@ -264,10 +238,14 @@ def start_auto_run_from_data_state(
     comparison_type: str | None = None,
     actor: str = "auto",
 ) -> str:
-    """Ingests two already-loaded DataFrames as snapshots and starts the
-    from-data graph (identify_candidate_keys onwards) — shared by the
-    ``/start-from-data`` route and the chat orchestrator."""
-    graph_run_id = _FROM_DATA_PREFIX + uuid4().hex
+    """Ingests two already-loaded DataFrames as snapshots and starts the SAME
+    7-node Auto-mode graph a mapping-sheet/live-connector run uses — with
+    ``kind="upload"`` on both sides, select_source/select_target/
+    resolve_schema simply skip live entity/schema resolution (see
+    ``auto_pipeline/nodes.py``) since everything needed is already known from
+    the ingested snapshot. Shared by the ``/start-from-data`` route and the
+    chat orchestrator."""
+    graph_run_id = pipeline_run_store.new_graph_run_id()
 
     source_snap = service.ingest_snapshot(
         source_df, layer=RawLayer.SOURCE, source_type="upload",
@@ -335,8 +313,8 @@ async def start_auto_run_from_data(
     actor: str = Form("auto"),
 ) -> dict[str, Any]:
     """Chat/quick-reconcile entry point: two uploaded files, no mapping sheet,
-    no live connector — enters the Auto-mode graph from identify_candidate_keys
-    onwards (see graph_from_data.py) instead of the full 8-node graph."""
+    no live connector — runs the same Auto-mode graph as any other run (see
+    ``start_auto_run_from_data_state``)."""
     source_bytes = await source_file.read()
     target_bytes = await target_file.read()
     if not source_bytes or not target_bytes:
@@ -357,15 +335,9 @@ async def start_auto_run_from_data(
 
 
 def _has_resumable_checkpoint(graph_run_id: str, failed_step: str | None) -> bool:
-    """Which checkpoint mechanism applies depends on which of the two
-    compiled graphs owns this run (see ``_is_from_data``): the from-data
-    graph still batches only inside ``pair_values`` (year-window batches, one
-    checkpoint per field pair — see ``pipeline_run_store.
-    has_batch_checkpoints``); the live-connector graph batches the WHOLE
+    """Every run — regardless of source kind — batches the WHOLE
     extract+pair+reconcile sequence inside ``run_batches`` (one checkpoint per
     run — see ``pipeline_run_store.has_run_batch_checkpoint``)."""
-    if _is_from_data(graph_run_id):
-        return failed_step == "pair_values" and pipeline_run_store.has_batch_checkpoints(graph_run_id)
     return failed_step == "run_batches" and pipeline_run_store.has_run_batch_checkpoint(graph_run_id)
 
 
@@ -720,8 +692,7 @@ async def resolve_auto_run(graph_run_id: str, req: AutoRunResolveRequest) -> dic
 @router.post("/{graph_run_id}/retry")
 async def retry_auto_run(graph_run_id: str) -> dict[str, Any]:
     """Retry a hard-failed batch step from exactly the batch it stopped at
-    (see ``retry_auto_pipeline``/``retry_auto_pipeline_from_data``) — never
-    restarts the whole run.
+    (see ``retry_auto_pipeline``) — never restarts the whole run.
 
     409s when there is nothing resumable: the run isn't currently failed, it
     failed somewhere other than the one step with a batch concept

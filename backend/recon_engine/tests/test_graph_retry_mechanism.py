@@ -7,9 +7,9 @@ re-executes EXACTLY the named node's successor — never the whole graph from
 
 ``auto_pipeline.graph.retry_auto_pipeline`` depends on exactly this behavior to
 re-run ``run_batches`` after a batch failure without rewinding to
-``select_source``/``resolve_schema``; ``graph_from_data.
-retry_auto_pipeline_from_data`` depends on it the same way to re-run
-``pair_values`` without rewinding to ``identify_candidate_keys``. This test mirrors this repo's
+``select_source``/``resolve_schema`` — for every run, regardless of source
+kind (live connector or manually-uploaded files both go through this same
+graph; see ``auto_pipeline/nodes.py``'s upload branches). This test mirrors this repo's
 actual graph shape (``StateGraph`` + ``SqliteSaver`` + a conditional edge that
 hard-stops to ``END`` on ``status == "failed"`` — see ``auto_pipeline/graph.py``)
 with tiny synthetic nodes instead of real Auto-mode business logic, so it is

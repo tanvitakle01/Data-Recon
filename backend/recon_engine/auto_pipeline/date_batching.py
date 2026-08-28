@@ -116,16 +116,22 @@ def fetch_date_column(
 def _normalized_date_counts(dates: pd.Series) -> pd.Series:
     """Per-normalized-calendar-day row counts, unparseable/missing dropped.
 
-    Parsed with the EXACT ``dd.mm.yyyy`` format the connectors always
-    normalize OData dates to (see ``odata_utils.sap_odata_date_to_ddmmyyyy``)
-    — never the bare dateutil-guessing parser, which silently transposes
-    day/month for any date where both are <=12 (dayfirst is ambiguous without
-    an explicit format). Getting this wrong here would send the WRONG
-    ``$filter`` date range to the connector for that batch (see
-    ``odata_utils.to_odata_datetime_literal``, fed straight from
-    ``DateBatch.start_date``/``end_date`` below).
+    An already-``datetime64``-typed series (an "upload" side, pre-parsed by
+    ``auto_pipeline.nodes`` via ``excel_comparator.core.date_alignment.
+    parse_dates`` — uploaded files carry no guaranteed format) is normalized
+    as-is. Anything else is parsed with the EXACT ``dd.mm.yyyy`` format the
+    connectors always normalize OData dates to (see ``odata_utils.
+    sap_odata_date_to_ddmmyyyy``) — never the bare dateutil-guessing parser,
+    which silently transposes day/month for any date where both are <=12
+    (dayfirst is ambiguous without an explicit format). Getting this wrong
+    here would send the WRONG ``$filter`` date range to the connector for
+    that batch (see ``odata_utils.to_odata_datetime_literal``, fed straight
+    from ``DateBatch.start_date``/``end_date`` below).
     """
-    parsed = pd.to_datetime(dates, format="%d.%m.%Y", errors="coerce").dropna()
+    if pd.api.types.is_datetime64_any_dtype(dates):
+        parsed = dates.dropna()
+    else:
+        parsed = pd.to_datetime(dates, format="%d.%m.%Y", errors="coerce").dropna()
     if parsed.empty:
         return pd.Series([], dtype="int64")
     return parsed.dt.normalize().value_counts()

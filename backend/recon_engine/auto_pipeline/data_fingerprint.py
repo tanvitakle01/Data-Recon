@@ -23,6 +23,7 @@ from backend.recon_engine.auto_pipeline.date_batching import (
     entity_and_field_for_batch,
     fetch_date_column,
 )
+from backend.recon_engine.storage import snapshot_store
 
 
 def _max_date(dates: pd.Series) -> str | None:
@@ -34,6 +35,19 @@ def _max_date(dates: pd.Series) -> str | None:
 
 
 def _capture_side(kind: str, spec: dict[str, Any], date_field: str) -> dict[str, Any]:
+    if kind == "upload":
+        # An ingested snapshot is immutable once created (already relied on
+        # elsewhere — see shadow_store.create_shadow's raw_snapshot_hash), so
+        # its own content hash IS the staleness signal: no live re-read
+        # needed, and it can never legitimately drift between suspend and
+        # resume. Reuses the "max_date" key (never parsed as a date by
+        # fingerprint_matches, only compared for equality) rather than
+        # reshaping the fingerprint dict for this one kind.
+        snap = snapshot_store.get_snapshot(spec["snapshot_id"])
+        return {
+            "row_count": snap.row_count if snap else None,
+            "max_date": snap.snapshot_hash if snap else None,
+        }
     client = client_for(kind)
     entity, _ = entity_and_field_for_batch(spec, kind, date_field)
     return {

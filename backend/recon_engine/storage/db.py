@@ -179,23 +179,6 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     interrupt_json      TEXT
 );
 
--- Batch-level checkpoint for one field pair's pair_values() call within an
--- Auto-mode `pair_values` node, keyed by (graph_run_id, field_pair) — e.g.
--- ("autorun_ab12", "Material -> PRDID"). Written after every batch that
--- resolves successfully (see auto_pipeline/nodes.py's _make_batch_progress_cb)
--- so a batch that later fails (ValuePairingUnavailable) can be retried from
--- exactly next_batch_index instead of redoing the whole field pair — see
--- auto_pipeline/graph.py's retry_auto_pipeline. Cleared once the owning
--- `pair_values` node completes successfully for both field pairs.
-CREATE TABLE IF NOT EXISTS pipeline_batch_checkpoints (
-    graph_run_id      TEXT NOT NULL,
-    field_pair        TEXT NOT NULL,
-    next_batch_index  INTEGER NOT NULL,
-    batch_count       INTEGER NOT NULL,
-    matches_json      TEXT NOT NULL,
-    PRIMARY KEY (graph_run_id, field_pair)
-);
-
 -- Value-pair library: a source_value -> target_value pairing for one Key
 -- field pair (e.g. Material -> PRDID), discovered by the LLM-pairing pipeline
 -- and deterministically verified before it is ever stored here. Every stored
@@ -214,6 +197,19 @@ CREATE TABLE IF NOT EXISTS value_pair_library (
     added_by            TEXT NOT NULL,
     added_on            TEXT NOT NULL,
     version             INTEGER NOT NULL,
+    -- Run-scoping for suspend/cancel/discard: a pairing discovered mid-run is
+    -- 'provisional' and tagged with the discovering run's graph_run_id, so it
+    -- is visible only to THAT run's own later batches (see value_pair_store.
+    -- lookup_pairs) until value_pair_store.promote_run marks it 'promoted' at
+    -- that run's successful finalize — never at suspend. A run that never
+    -- reaches finalize (cancelled, or a parked SUSPENDED run that expires)
+    -- has its provisional rows deleted by value_pair_store.discard_run,
+    -- called from pipeline_run_store.cleanup_run_artifacts, so a discarded
+    -- run's guesses never leak into another run's library lookups. Rows with
+    -- no run context (Manual mode / live pairing, graph_run_id NULL) are
+    -- promoted immediately, matching pre-existing behavior for those callers.
+    graph_run_id        TEXT,
+    status              TEXT NOT NULL DEFAULT 'promoted',
     UNIQUE (source_connector, target_connector, source_field, target_field,
             source_value, target_value)
 );
@@ -229,11 +225,11 @@ CREATE TABLE IF NOT EXISTS run_batch_plan (
 );
 
 -- Streaming-batch resume checkpoint for one Auto-mode run's `run_batches`
--- node — keyed by graph_run_id alone (unlike pipeline_batch_checkpoints,
--- which is per field-pair) because one batch here covers extraction, pairing,
--- AND reconciliation together. `summary_json` is the running
--- ReconciliationSummary accumulated across every batch completed so far, so a
--- run interrupted mid-way still has a correct, inspectable partial summary.
+-- node — keyed by graph_run_id alone, since every run (regardless of source
+-- kind) checkpoints its WHOLE extraction+pairing+reconciliation sequence one
+-- batch at a time here. `summary_json` is the running ReconciliationSummary
+-- accumulated across every batch completed so far, so a run interrupted
+-- mid-way still has a correct, inspectable partial summary.
 CREATE TABLE IF NOT EXISTS run_batch_checkpoint (
     graph_run_id      TEXT PRIMARY KEY,
     result_id         TEXT NOT NULL,
@@ -586,6 +582,24 @@ def _migrate_chat_run_sessions_add_pending_name_prompt(conn: sqlite3.Connection)
     if not cols or "pending_suspension_name_run_id" in cols:
         return  # table doesn't exist yet, or already on the current schema
     conn.execute("ALTER TABLE chat_run_sessions ADD COLUMN pending_suspension_name_run_id TEXT")
+
+
+def _migrate_value_pair_library_add_run_scope(conn: sqlite3.Connection) -> None:
+    """One-time migration adding ``graph_run_id``/``status`` to
+    ``value_pair_library`` (see the table's DDL comment above).
+
+    Both columns are nullable-or-defaulted with no existing data to backfill
+    beyond the default itself (every pre-existing row is, correctly, already
+    a promoted/global mapping — it was written before run-scoping existed) —
+    same safe ``ALTER TABLE ... ADD COLUMN`` as the ``pipeline_runs``
+    migrations below, not the UNIQUE-constraint rebuild the older
+    value_pair_library migrations above needed.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(value_pair_library)")}
+    if not cols or "status" in cols:
+        return  # table doesn't exist yet, or already on the current schema
+    conn.execute("ALTER TABLE value_pair_library ADD COLUMN graph_run_id TEXT")
+    conn.execute("ALTER TABLE value_pair_library ADD COLUMN status TEXT NOT NULL DEFAULT 'promoted'")
 
 
 def init_storage() -> None:

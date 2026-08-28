@@ -6,7 +6,9 @@ import { AuthProvider } from "./auth/AuthContext";
 import { useAuth } from "./auth/useAuth";
 import RequireAuth from "./auth/RequireAuth";
 import PublicLayout from "./auth/PublicLayout";
+import AuthSplashLayout from "./auth/AuthSplashLayout";
 import LoginPage from "./auth/LoginPage";
+import LandingPage from "./marketing/LandingPage";
 import SignUpPage from "./auth/SignUpPage";
 import PasswordResetRequestPage from "./auth/PasswordResetRequestPage";
 import PasswordResetConfirmPage from "./auth/PasswordResetConfirmPage";
@@ -63,13 +65,16 @@ function AppRoutes() {
   if (status === "anonymous") {
     return (
       <Routes>
-        <Route element={<PublicLayout />}>
+        <Route path="/" element={<LandingPage />} />
+        <Route element={<AuthSplashLayout />}>
           <Route path="/login" element={<LoginPage />} />
+        </Route>
+        <Route element={<PublicLayout />}>
           <Route path="/signup" element={<SignUpPage />} />
           <Route path="/password-reset" element={<PasswordResetRequestPage />} />
           <Route path="/password-reset/confirm" element={<PasswordResetConfirmPage />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
         </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     );
   }

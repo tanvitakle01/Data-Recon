@@ -1,0 +1,83 @@
+.auth-splash {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  box-sizing: border-box;
+  background: var(--ink);
+  overflow: hidden;
+}
+
+.auth-splash-backdrop {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(1200px 600px at 15% 10%, rgba(248, 159, 91, 0.16), transparent 60%),
+    radial-gradient(900px 500px at 85% 90%, rgba(79, 70, 229, 0.14), transparent 60%), var(--ink);
+}
+
+.auth-splash-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(33, 47, 61, 0.55) 0%, rgba(33, 47, 61, 0.3) 40%, rgba(33, 47, 61, 0.65) 100%);
+  pointer-events: none;
+}
+
+.auth-splash-brand {
+  position: absolute;
+  top: 24px;
+  left: 32px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+}
+.auth-splash-brand-text {
+  font-weight: 700;
+  font-size: 13px;
+  color: #ffffff;
+}
+
+.auth-splash-card {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 24px 60px rgba(10, 14, 20, 0.45);
+  padding: 36px 36px 30px;
+  box-sizing: border-box;
+}
+
+.auth-splash-back {
+  position: absolute;
+  top: 20px;
+  right: 32px;
+  height: 34px;
+  padding: 0 16px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.auth-splash-back:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+@media (max-width: 480px) {
+  .auth-splash-brand {
+    top: 16px;
+    left: 20px;
+  }
+  .auth-splash-back {
+    top: 16px;
+    right: 20px;
+  }
+}

@@ -43,7 +43,11 @@ def write_frame(df: pd.DataFrame, path: Path | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
-        json.dump(_to_payload(df), fh, ensure_ascii=False)
+        # default=str: an uploaded Excel file's date-formatted cells come back
+        # from load_tabular as native datetime/Timestamp objects (never
+        # normalized before ingestion — see auto_pipeline/nodes.py's upload
+        # branches), which json.dump cannot serialize on its own.
+        json.dump(_to_payload(df), fh, ensure_ascii=False, default=str)
 
 
 def read_frame(path: Path | str) -> pd.DataFrame:
@@ -75,7 +79,7 @@ def append_frame(df: pd.DataFrame, path: Path | str) -> None:
         if write_header:
             fh.write(json.dumps({"columns": payload["columns"]}, ensure_ascii=False) + "\n")
         for row in payload["data"]:
-            fh.write(json.dumps({"row": row}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"row": row}, ensure_ascii=False, default=str) + "\n")
 
 
 def read_frame_jsonl(path: Path | str) -> pd.DataFrame:

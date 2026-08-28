@@ -107,62 +107,6 @@ def update_batch_progress(
         )
 
 
-def get_batch_checkpoint(graph_run_id: str, field_pair: str) -> dict[str, Any] | None:
-    """The resume point for one field pair's ``pair_values()`` call — how many
-    of its batches already resolved (``next_batch_index``) and their combined
-    matches so far, or ``None`` if this field pair has no checkpoint yet
-    (either it hasn't started, or its ``pair_values`` node already completed
-    and :func:`clear_batch_checkpoints` removed it)."""
-    with main_db() as conn:
-        row = conn.execute(
-            """SELECT next_batch_index, batch_count, matches_json
-               FROM pipeline_batch_checkpoints WHERE graph_run_id = ? AND field_pair = ?""",
-            (graph_run_id, field_pair),
-        ).fetchone()
-    if row is None:
-        return None
-    return {
-        "next_batch_index": row["next_batch_index"],
-        "batch_count": row["batch_count"],
-        "matches": json.loads(row["matches_json"]),
-    }
-
-
-def save_batch_checkpoint(
-    graph_run_id: str,
-    *,
-    field_pair: str,
-    next_batch_index: int,
-    batch_count: int,
-    matches: list[dict[str, Any]],
-) -> None:
-    """Upserts the resume point for one field pair after one of its batches
-    resolves — ``matches`` is the FULL accumulated list for this field pair so
-    far (the caller reads the prior checkpoint, if any, and extends it), never
-    just the newest batch's matches."""
-    with main_db() as conn:
-        conn.execute(
-            """INSERT INTO pipeline_batch_checkpoints
-               (graph_run_id, field_pair, next_batch_index, batch_count, matches_json)
-               VALUES (?,?,?,?,?)
-               ON CONFLICT (graph_run_id, field_pair) DO UPDATE SET
-                   next_batch_index = excluded.next_batch_index,
-                   batch_count = excluded.batch_count,
-                   matches_json = excluded.matches_json""",
-            (graph_run_id, field_pair, next_batch_index, batch_count, json.dumps(matches)),
-        )
-
-
-def clear_batch_checkpoints(graph_run_id: str) -> None:
-    """Drops every field pair's checkpoint for this run — called once the
-    owning ``pair_values`` node completes successfully (nothing left to
-    resume) and when a fresh run starts."""
-    with main_db() as conn:
-        conn.execute(
-            "DELETE FROM pipeline_batch_checkpoints WHERE graph_run_id = ?", (graph_run_id,)
-        )
-
-
 def save_run_batch_plan(graph_run_id: str, batches: list[dict[str, Any]]) -> None:
     """Persists the streaming batch plan (see ``auto_pipeline.date_batching.
     plan_batches``) once, computed from the cheap distinct-date-union pull —
@@ -286,19 +230,6 @@ def has_run_batch_checkpoint(graph_run_id: str) -> bool:
     with main_db() as conn:
         row = conn.execute(
             "SELECT 1 FROM run_batch_checkpoint WHERE graph_run_id = ?", (graph_run_id,)
-        ).fetchone()
-    return row is not None
-
-
-def has_batch_checkpoints(graph_run_id: str) -> bool:
-    """True when at least one field pair has a resumable checkpoint — the
-    signal the ``/retry`` route and the polled status use to decide whether a
-    hard-failed ``pair_values`` step can resume from a batch, rather than
-    only being retryable from scratch."""
-    with main_db() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM pipeline_batch_checkpoints WHERE graph_run_id = ? LIMIT 1",
-            (graph_run_id,),
         ).fetchone()
     return row is not None
 

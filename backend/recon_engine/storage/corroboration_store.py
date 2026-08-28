@@ -82,7 +82,7 @@ def get_overlap(
 def clear(graph_run_id: str) -> None:
     """Drops every candidate pair's corroboration state for this run — called
     once the run completes, alongside ``pipeline_run_store.
-    clear_batch_checkpoints``."""
+    clear_run_batch_state``."""
     with main_db() as conn:
         conn.execute(
             "DELETE FROM value_pair_corroboration WHERE graph_run_id = ?", (graph_run_id,)

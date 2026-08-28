@@ -38,6 +38,7 @@ from langgraph.errors import GraphBubbleUp
 from backend.API_conn.connectors import registry
 from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
 from backend.API_conn.connectors.s4_metadata_service import S4MetadataService
+from backend.excel_comparator.core.date_alignment import parse_dates
 from backend.recon_engine import heartbeat, ids, run_registry, service
 from backend.recon_engine.run_registry import CooperativeCancellation, CooperativeSuspension
 from backend.recon_engine.engine.executor import build_shadow_source
@@ -55,7 +56,6 @@ from backend.recon_engine.storage import (
     run_store,
     snapshot_store,
 )
-from backend.recon_engine.value_pairing import BatchProgress
 from backend.recon_engine.value_pairing.corroborate import corroboration_evidence
 from backend.recon_engine.value_pairing.extraction import distinct_values
 from backend.recon_engine.value_pairing.pipeline import _pair_batch
@@ -109,10 +109,16 @@ def _select_side(identification: dict[str, Any], role: str) -> SideState:
 
 
 def _do_select_source(state: AutoRunState) -> dict[str, Any]:
+    if (state.get("source") or {}).get("kind") == "upload":
+        # Already fully resolved by the caller (service.ingest_snapshot) before
+        # the graph started — nothing to select from a live connector.
+        return {}
     return {"source": _select_side(state["identification"]["source"], registry.SOURCE)}
 
 
 def _do_select_target(state: AutoRunState) -> dict[str, Any]:
+    if (state.get("target") or {}).get("kind") == "upload":
+        return {}
     return {"target": _select_side(state["identification"]["target"], registry.TARGET)}
 
 
@@ -288,7 +294,20 @@ def _preview_columns(kind: str, spec: dict[str, Any]) -> list[str]:
     return [str(c) for c in df.columns]
 
 
+def _resolve_upload_side_schema(side: SideState) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """No live connector to resolve against — the caller (service.
+    ingest_snapshot, via start_auto_run_from_data_state) already fully
+    populated ``side["columns"]``/``["snapshot_id"]`` before the graph
+    started. ``spec`` carries just enough for plan_date_batches/run_batches
+    to locate the already-ingested snapshot."""
+    if not side.get("columns"):
+        raise RuntimeError("Uploaded data has no columns to resolve a schema from.")
+    return {"snapshot_id": side["snapshot_id"]}, {"primary_entity": side["primary_entity"]}, list(side["columns"])
+
+
 def _resolve_side_schema(side: SideState, role: str) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    if side["kind"] == "upload":
+        return _resolve_upload_side_schema(side)
     resolver = _SPEC_RESOLVERS.get(side["kind"])
     if resolver is None:
         raise RuntimeError(f"No schema resolver for connector kind {side['kind']!r}.")
@@ -423,17 +442,29 @@ def _do_compile_contract(state: AutoRunState) -> dict[str, Any]:
 
 # ── step 4: plan the date-aligned streaming batches ──────────────────────────
 
+def _fetch_side_date_column(kind: str, spec: dict[str, Any], date_field: str) -> pd.Series:
+    """The date column for one side, for batch planning — a cheap paginated
+    live pull for a connector side, or the already-local snapshot's own
+    column (parsed with the same flexible, upload-safe parser used elsewhere
+    for uploaded data — see date_batching._normalized_date_counts, which
+    passes an already-datetime64 series like this one straight through
+    rather than re-parsing it with the connectors' rigid dd.mm.yyyy format)
+    for an "upload" side."""
+    if kind == "upload":
+        df = snapshot_store.load_snapshot_frame(spec["snapshot_id"])
+        return parse_dates(df[date_field])
+    entity, _ = entity_and_field_for_batch(spec, kind, date_field)
+    return fetch_date_column(client_for(kind), entity, date_field)
+
+
 def _do_plan_date_batches(state: AutoRunState) -> dict[str, Any]:
     source_kind = state["source"]["kind"]
     target_kind = state["target"]["kind"]
     source_date_field = state["source_field_roles"]["date"]
     target_date_field = state["target_field_roles"]["date"]
 
-    source_entity, _ = entity_and_field_for_batch(state["source_spec"], source_kind, source_date_field)
-    target_entity, _ = entity_and_field_for_batch(state["target_spec"], target_kind, target_date_field)
-
-    source_dates = fetch_date_column(client_for(source_kind), source_entity, source_date_field)
-    target_dates = fetch_date_column(client_for(target_kind), target_entity, target_date_field)
+    source_dates = _fetch_side_date_column(source_kind, state["source_spec"], source_date_field)
+    target_dates = _fetch_side_date_column(target_kind, state["target_spec"], target_date_field)
 
     batches = plan_batches(source_dates, target_dates)
     if not batches:
@@ -449,13 +480,28 @@ def _do_plan_date_batches(state: AutoRunState) -> dict[str, Any]:
 # ── step 5: run the streaming batch loop ─────────────────────────────────────
 
 def _fetch_batch_dataset(
-    kind: str, spec: dict[str, Any], date_filter: tuple[str, Any, Any]
+    kind: str,
+    spec: dict[str, Any],
+    date_filter: tuple[str, Any, Any],
+    *,
+    upload_frame: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     if kind == "s4":
         return S4MetadataService().fetch_joined_dataset(spec, date_filter=date_filter)
     if kind == "ibp":
         field, start, end = date_filter
         return IBPMetadataService().fetch_entity(spec["entity"], spec["selected"], date_filter=(field, start, end))
+    if kind == "upload":
+        # Already fully local — "fetching" a batch means slicing the whole
+        # (once-loaded, once-parsed) frame by this batch's date window rather
+        # than issuing a live call. upload_frame/its parsed dates are
+        # preloaded by _do_run_batches so this never re-reads the snapshot
+        # from disk once per batch.
+        field, start, end = date_filter
+        df = upload_frame if upload_frame is not None else snapshot_store.load_snapshot_frame(spec["snapshot_id"])
+        dates = parse_dates(df[field]).dt.normalize()
+        mask = dates.notna() & (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))
+        return df[mask].reset_index(drop=True)
     raise RuntimeError(f"No batch fetcher for connector kind {kind!r}.")
 
 
@@ -593,6 +639,15 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
     actor = state.get("actor", "auto")
     mapping_sheet_context = state.get("mapping_sheet")
 
+    # An "upload" side is already fully local — load it once here rather
+    # than once per batch (see _fetch_batch_dataset's upload_frame param).
+    source_upload_frame = (
+        snapshot_store.load_snapshot_frame(source_spec["snapshot_id"]) if source_kind == "upload" else None
+    )
+    target_upload_frame = (
+        snapshot_store.load_snapshot_frame(target_spec["snapshot_id"]) if target_kind == "upload" else None
+    )
+
     for batch in batches[start_index:]:
         # Cooperative-cancellation/-suspension checkpoint — between
         # date-batches, not mid-batch: each batch is already checkpointed on
@@ -630,10 +685,16 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
             )
 
             source_df = _fetch_batch_dataset(
-                source_kind, source_spec, (source_roles["date"], batch.start_date, batch.end_date)
+                source_kind,
+                source_spec,
+                (source_roles["date"], batch.start_date, batch.end_date),
+                upload_frame=source_upload_frame,
             )
             target_df = _fetch_batch_dataset(
-                target_kind, target_spec, (target_roles["date"], batch.start_date, batch.end_date)
+                target_kind,
+                target_spec,
+                (target_roles["date"], batch.start_date, batch.end_date),
+                upload_frame=target_upload_frame,
             )
 
             if source_df.empty and target_df.empty:
@@ -806,248 +867,6 @@ def _do_finalize(state: AutoRunState) -> dict[str, Any]:
         "result_summary": out,
         "status": "completed",
     }
-
-
-# ── legacy, full-dataset nodes — kept ONLY for graph_from_data.py's chat/
-# "from data" pipeline (uploaded files, no live connector, no date-windowed
-# extraction possible since there's nothing to window: the whole file is
-# already local). None of these are wired into graph.py's live-connector
-# sequence anymore (see the streaming nodes above) — do not add new callers.
-
-def _do_identify_candidate_keys(state: AutoRunState) -> dict[str, Any]:
-    """Identify the product/location candidate keys for value pairing (LLM).
-
-    Used EXCLUSIVELY to drive value pairing (extract_unique_keys/pair_values)
-    below — never fed into ``business_key`` (see compile_and_run), which stays
-    a separate, deterministic concept sourced from date/quantity role
-    detection. Hard-stops on degradation: Auto mode has no human checkpoint to
-    catch a silently-skipped LLM stage the way Manual mode's approval step
-    would.
-    """
-    source_df = snapshot_store.load_snapshot_frame(state["source"]["snapshot_id"])
-    target_df = snapshot_store.load_snapshot_frame(state["target"]["snapshot_id"])
-    result = identify_candidate_keys(
-        [str(c) for c in source_df.columns],
-        [str(c) for c in target_df.columns],
-        mapping_sheet_context=state.get("mapping_sheet"),
-    )
-    if result.get("degraded"):
-        raise RuntimeError(
-            f"Candidate-key identification failed: {result.get('degraded_reason')}"
-        )
-    missing = [
-        f"{side}.{role}"
-        for side in ("source", "target")
-        for role in _CANDIDATE_KEY_ROLES
-        if not result[side][role]["field"]
-    ]
-    if missing:
-        raise RuntimeError(
-            f"Could not identify a candidate key for {missing} from the fetched "
-            f"columns (source={list(source_df.columns)!r}, "
-            f"target={list(target_df.columns)!r})."
-        )
-    return {"candidate_keys": result}
-
-
-def _do_extract_unique_keys(state: AutoRunState) -> dict[str, Any]:
-    source_df = snapshot_store.load_snapshot_frame(state["source"]["snapshot_id"])
-    # Which column plays the product/location role is the Stage-3 LLM's
-    # candidate-key output (never a hardcoded literal, never alias-detected) —
-    # see identify_candidate_keys_step.
-    candidate_keys = state["candidate_keys"]["source"]
-    product_field = candidate_keys["product"]["field"]
-    location_field = candidate_keys["location"]["field"]
-    return {
-        "unique_values": {
-            "source_product": distinct_values(source_df[product_field]),
-            "source_location": distinct_values(source_df[location_field]),
-        }
-    }
-
-
-def _make_batch_progress_cb(graph_run_id: str) -> Any:
-    """Live "batch N of M (label)" progress for the Auto-mode process card —
-    pair_values() calls this after every year-range batch resolves, for both
-    the product and location pairing calls below (a fresh closure per call,
-    so the polled status always reflects whichever field pair is currently
-    mid-flight rather than stale progress from the other one).
-
-    Also persists a resumable per-batch checkpoint (accumulated matches +
-    next_batch_index) for this field pair — what lets a LATER batch's hard
-    failure (``ValuePairingUnavailable``) be retried from exactly where it
-    stopped instead of redoing the whole field pair (see
-    ``auto_pipeline.graph.retry_auto_pipeline`` and ``_resume_state_for``
-    below). A batch that itself triggers the failure never reaches this
-    callback (see ``value_pairing.pipeline.pair_values``), so the checkpoint
-    always reflects only batches that actually resolved.
-    """
-
-    def _on_batch(progress: BatchProgress, batch_matches: list[ValueMatch]) -> None:
-        heartbeat.beat(graph_run_id, node="pair_values")
-        pipeline_run_store.update_batch_progress(
-            graph_run_id,
-            field_pair=progress.field_pair,
-            batch_index=progress.batch_index,
-            batch_count=progress.batch_count,
-            batch_label=progress.batch_label,
-        )
-        existing = pipeline_run_store.get_batch_checkpoint(graph_run_id, progress.field_pair)
-        accumulated = (existing["matches"] if existing else []) + [
-            m.model_dump(mode="json") for m in batch_matches
-        ]
-        pipeline_run_store.save_batch_checkpoint(
-            graph_run_id,
-            field_pair=progress.field_pair,
-            next_batch_index=progress.batch_index + 1,
-            batch_count=progress.batch_count,
-            matches=accumulated,
-        )
-        # Checked AFTER this batch's checkpoint is persisted, never before —
-        # cancelling must never discard a batch that already finished.
-        # pair_values() (value_pairing/pipeline.py) has no try/except around
-        # this callback, so this propagates straight out of the pair_values()
-        # call and up into _run_step's CooperativeCancellation handler.
-        run_registry.transition_or_raise_cancelled(graph_run_id)
-
-    return _on_batch
-
-
-def _resume_state_for(graph_run_id: str, source_field: str, target_field: str) -> dict[str, Any]:
-    """Batch-level resume state for one field pair's ``pair_values()`` call —
-    read from a checkpoint a PRIOR (failed) attempt on this same
-    ``graph_run_id`` left behind (see ``_make_batch_progress_cb``). Empty/zero
-    when this is the first attempt, or this field pair has no checkpoint
-    (never started yet, or already completed and cleared)."""
-    checkpoint = pipeline_run_store.get_batch_checkpoint(graph_run_id, f"{source_field} -> {target_field}")
-    if checkpoint is None:
-        return {"start_batch_index": 0, "resume_matches": None}
-    return {
-        "start_batch_index": checkpoint["next_batch_index"],
-        "resume_matches": [ValueMatch(**m) for m in checkpoint["matches"]],
-    }
-
-
-def _do_compile_and_run(state: AutoRunState) -> dict[str, Any]:
-    source_snap_id = state["source"]["snapshot_id"]
-    target_snap_id = state["target"]["snapshot_id"]
-    source_df = snapshot_store.load_snapshot_frame(source_snap_id)
-    target_df = snapshot_store.load_snapshot_frame(target_snap_id)
-    actor = state.get("actor", "auto")
-
-    # Reuse the exact roles pair_values_step already detected and validated —
-    # never a fresh hardcoded assumption, and guarantees business_key/
-    # compare_fields agree with whatever was actually paired.
-    source_roles = state.get("source_field_roles") or {}
-    target_roles = state.get("target_field_roles") or {}
-    missing = [
-        role for role in _REQUIRED_ROLES
-        if role not in source_roles or role not in target_roles
-    ]
-    if missing:
-        raise RuntimeError(
-            f"Missing a detected business role for {missing} on one or both sides — "
-            "cannot build the business key/compare fields for reconciliation."
-        )
-
-    business_key = [
-        {"source_field": source_roles[role], "target_field": target_roles[role]}
-        for role in ("product", "location", "date")
-    ]
-    compare_fields = [
-        {
-            "source_field": source_roles["quantity"],
-            "target_field": target_roles["quantity"],
-            "match_type": "exact",
-        },
-    ]
-    value_mappings = [m for m in (state.get("product_mapping"), state.get("location_mapping")) if m]
-
-    draft, degraded_reason = service.compile_draft(
-        mapping_sheet=state.get("mapping_sheet") or [],
-        rules="",
-        business_key=business_key,
-        compare_fields=compare_fields,
-        value_mappings=value_mappings,
-        source_schema=[str(c) for c in source_df.columns],
-        target_schema=[str(c) for c in target_df.columns],
-        comparison_type=state.get("comparison_type") or "auto",
-        source_type=state["source"]["kind"],
-        target_type=state["target"]["kind"],
-        actor=actor,
-    )
-    if degraded_reason is not None:
-        # Auto mode has no human checkpoint to catch a silently stub-compiled
-        # contract the way Manual mode's approval step would — hard-stop
-        # regardless of the global RECON_GROQ_STRICT setting rather than let
-        # deterministic regex rules silently stand in for the LLM compiler.
-        raise RuntimeError(
-            f"Contract compilation degraded to the deterministic stub compiler: "
-            f"{degraded_reason} — Auto mode requires a real LLM compile."
-        )
-    approved = service.approve_contract(draft, approved_by=actor)
-
-    started = time.time()
-    out = service.run_reconciliation(
-        contract_id=approved.contract_id,
-        contract_version=approved.contract_version,
-        source_snapshot_id=source_snap_id,
-        target_snapshot_id=target_snap_id,
-        actor=actor,
-    )
-    # Mirror the exact enrichment recon_v2.py's `POST /api/recon/runs` route
-    # adds (contract/snapshot summaries) plus the result detail `GET
-    # /api/recon/results/{id}` returns, so the frontend can drop this straight
-    # into `reconciliation` state and render Results identically to a manual
-    # contract run — no extra API round-trips needed after landing.
-    out["runtime_ms"] = int((time.time() - started) * 1000)
-    run = run_store.get_run(out["run_id"])
-    if run is not None:
-        out["run"] = run.model_dump(mode="json")
-        run_contract = contract_store.get_contract(run.contract_id, run.contract_version)
-        if run_contract is not None:
-            out["contract"] = {
-                "contract_id": run_contract.contract_id,
-                "contract_version": run_contract.contract_version,
-                "compiler": run_contract.compiler,
-                "approved_by": run_contract.approved_by,
-                "approved_at": run_contract.approved_at.isoformat() if run_contract.approved_at else None,
-            }
-    for key, snap_id in (("source_snapshot", source_snap_id), ("target_snapshot", target_snap_id)):
-        snap = snapshot_store.get_snapshot(snap_id)
-        if snap is not None:
-            out[key] = snap.model_dump(mode="json")
-
-    result_row = result_store.get_result(out["result_id"])
-    preview_rows: list[dict[str, Any]] = []
-    if result_row is not None:
-        detail_df = result_store.load_result_frame(out["result_id"]).head(200)
-        preview_rows = detail_df.astype(object).where(pd.notna(detail_df), None).to_dict(orient="records")
-    out["detail"] = {
-        "result": result_row.model_dump(mode="json") if result_row else None,
-        "preview_rows": preview_rows,
-    }
-    out["engine"] = "contract"
-
-    return {
-        "contract_id": approved.contract_id,
-        "contract_version": approved.contract_version,
-        "run_id": out["run_id"],
-        "result_summary": out,
-        "status": "completed",
-    }
-
-
-def identify_candidate_keys_step(state: AutoRunState) -> dict[str, Any]:
-    return _run_step(state, "identify_candidate_keys", _do_identify_candidate_keys)
-
-
-def extract_unique_keys(state: AutoRunState) -> dict[str, Any]:
-    return _run_step(state, "extract_unique_keys", _do_extract_unique_keys)
-
-
-def compile_and_run(state: AutoRunState) -> dict[str, Any]:
-    return _run_step(state, "compile_and_run", _do_compile_and_run)
 
 
 # ── per-node timing + hard-stop wrapper ──────────────────────────────────────

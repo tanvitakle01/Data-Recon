@@ -42,7 +42,9 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _make_failed_run(graph_run_id: str, *, failed_step: str, with_checkpoint: bool) -> None:
+def _make_failed_run(graph_run_id: str, *, failed_step: str) -> None:
+    """A hard-failed run with no resumable checkpoint at all (see
+    ``_make_failed_run_batches_run`` below for the resumable case)."""
     pipeline_run_store.create(graph_run_id)
     run_registry.transition(graph_run_id, RunState.RUNNING, reason="test setup")
     run_registry.transition(graph_run_id, RunState.FAILED, reason="test setup")
@@ -51,14 +53,6 @@ def _make_failed_run(graph_run_id: str, *, failed_step: str, with_checkpoint: bo
         failed_step=failed_step,
         error="All configured AI providers are unavailable for value-pairing.",
     )
-    if with_checkpoint:
-        pipeline_run_store.save_batch_checkpoint(
-            graph_run_id,
-            field_pair="Material -> PRDID",
-            next_batch_index=2,
-            batch_count=4,
-            matches=[{"source_value": "A", "target_value": "A"}],
-        )
 
 
 def test_retry_404s_for_unknown_run(client):
@@ -72,25 +66,24 @@ def test_retry_409s_when_run_is_not_failed(client):
     assert res.status_code == 409
 
 
-def test_retry_409s_when_failed_step_is_not_pair_values(client):
-    _make_failed_run("autorun_other_step", failed_step="resolve_schema", with_checkpoint=False)
+def test_retry_409s_when_failed_step_is_not_run_batches(client):
+    _make_failed_run("autorun_other_step", failed_step="resolve_schema")
     res = client.post("/api/recon/auto-run/autorun_other_step/retry")
     assert res.status_code == 409
 
 
 def test_retry_409s_when_no_batch_completed_yet(client):
-    _make_failed_run("autorun_no_checkpoint", failed_step="run_batches", with_checkpoint=False)
+    _make_failed_run("autorun_no_checkpoint", failed_step="run_batches")
     res = client.post("/api/recon/auto-run/autorun_no_checkpoint/retry")
     assert res.status_code == 409
 
 
 def _make_failed_run_batches_run(graph_run_id: str) -> None:
-    """Like ``_make_failed_run``, but for a live-connector (non-from-data) run
-    — its batch checkpoint lives in ``run_batch_checkpoint`` (keyed by
-    graph_run_id alone, one batch covering extraction+pairing+reconcile
-    together), not the from-data graph's field-pair-keyed
-    ``pipeline_batch_checkpoints``. See ``_has_resumable_checkpoint`` in
-    ``routes/auto_pipeline.py``."""
+    """Like ``_make_failed_run``, but with an actual resumable checkpoint —
+    every run (regardless of source kind) batches the WHOLE
+    extract+pair+reconcile sequence inside ``run_batches``, checkpointed via
+    ``run_batch_checkpoint`` (keyed by graph_run_id alone). See
+    ``_has_resumable_checkpoint`` in ``routes/auto_pipeline.py``."""
     pipeline_run_store.create(graph_run_id)
     run_registry.transition(graph_run_id, RunState.RUNNING, reason="test setup")
     run_registry.transition(graph_run_id, RunState.FAILED, reason="test setup")
@@ -129,14 +122,14 @@ def test_status_reports_resumable_true_only_with_a_pair_values_checkpoint(client
 
 
 def test_status_reports_resumable_false_without_a_checkpoint(client):
-    _make_failed_run("autorun_status_no_checkpoint", failed_step="run_batches", with_checkpoint=False)
+    _make_failed_run("autorun_status_no_checkpoint", failed_step="run_batches")
     res = client.get("/api/recon/auto-run/autorun_status_no_checkpoint/status")
     assert res.status_code == 200
     assert res.json()["resumable"] is False
 
 
-def test_status_reports_resumable_false_for_a_non_pair_values_failure(client):
-    _make_failed_run("autorun_status_other_step", failed_step="finalize", with_checkpoint=False)
+def test_status_reports_resumable_false_for_a_non_run_batches_failure(client):
+    _make_failed_run("autorun_status_other_step", failed_step="finalize")
     res = client.get("/api/recon/auto-run/autorun_status_other_step/status")
     assert res.status_code == 200
     assert res.json()["resumable"] is False
