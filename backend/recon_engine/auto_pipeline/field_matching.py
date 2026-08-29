@@ -26,12 +26,17 @@ from __future__ import annotations
 
 import re
 
-from backend.recon_engine.field_roles import ROLE_ALIASES, detect_roles_for_columns
+from backend.recon_engine.field_roles import (
+    ROLE_ALIASES,
+    detect_roles_for_columns,
+    detect_roles_from_sample,
+)
 
 __all__ = [
     "match_proposed_to_schema",
     "ROLE_ALIASES",
     "detect_roles_for_columns",
+    "detect_roles_from_sample",
 ]
 
 # ── schema verification (port of fieldMatching.js) ──────────────────────────

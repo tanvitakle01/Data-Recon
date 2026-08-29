@@ -54,6 +54,7 @@ from backend.recon_engine.storage import (
     pipeline_run_store,
     result_store,
     run_store,
+    run_value_mapping_store,
     snapshot_store,
 )
 from backend.recon_engine.value_pairing.corroborate import corroboration_evidence
@@ -70,6 +71,7 @@ from backend.recon_engine.auto_pipeline.date_batching import (
 )
 from backend.recon_engine.auto_pipeline.field_matching import (
     detect_roles_for_columns,
+    detect_roles_from_sample,
     match_proposed_to_schema,
 )
 from backend.recon_engine.auto_pipeline.interrupts import (
@@ -82,6 +84,12 @@ from backend.recon_engine.auto_pipeline.state import AutoRunState, SideState
 _REQUIRED_ROLES = ("product", "location", "date", "quantity")
 _CANDIDATE_KEY_ROLES = ("product", "location")
 _BUSINESS_KEY_ROLES = ("date", "quantity")
+
+# How many preview rows resolve_schema samples for the content-based
+# date/quantity fallback (detect_roles_from_sample) once alias matching on
+# column names alone comes up short — small and bounded, same preview fetch
+# already made for the column list, never an extra round trip.
+_SCHEMA_SAMPLE_ROWS = 3
 
 
 # ── step 1: select connector/entity ──────────────────────────────────────────
@@ -279,10 +287,12 @@ _SPEC_RESOLVERS: dict[str, Callable[[SideState, str], tuple[dict[str, Any], dict
 }
 
 
-def _preview_columns(kind: str, spec: dict[str, Any]) -> list[str]:
+def _preview_columns(kind: str, spec: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
     """A small, bounded preview fetch (already capped by the metadata
-    service's own preview methods) — just enough to get real column names,
-    never a source of full rows."""
+    service's own preview methods) — real column names plus up to
+    ``_SCHEMA_SAMPLE_ROWS`` real rows, the latter used only as a fallback
+    signal for detect_roles_from_sample when name-alias matching is
+    inconclusive (never a source of full rows for anything else)."""
     if kind == "s4":
         client = S4MetadataService()
         df = client.preview_join(spec)
@@ -291,10 +301,14 @@ def _preview_columns(kind: str, spec: dict[str, Any]) -> list[str]:
         df = client.preview_entity(spec["entity"], spec["selected"])
     else:
         raise RuntimeError(f"No schema previewer for connector kind {kind!r}.")
-    return [str(c) for c in df.columns]
+    columns = [str(c) for c in df.columns]
+    sample_rows = df.head(_SCHEMA_SAMPLE_ROWS).to_dict("records")
+    return columns, sample_rows
 
 
-def _resolve_upload_side_schema(side: SideState) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+def _resolve_upload_side_schema(
+    side: SideState,
+) -> tuple[dict[str, Any], dict[str, Any], list[str], list[dict[str, Any]]]:
     """No live connector to resolve against — the caller (service.
     ingest_snapshot, via start_auto_run_from_data_state) already fully
     populated ``side["columns"]``/``["snapshot_id"]`` before the graph
@@ -302,28 +316,46 @@ def _resolve_upload_side_schema(side: SideState) -> tuple[dict[str, Any], dict[s
     to locate the already-ingested snapshot."""
     if not side.get("columns"):
         raise RuntimeError("Uploaded data has no columns to resolve a schema from.")
-    return {"snapshot_id": side["snapshot_id"]}, {"primary_entity": side["primary_entity"]}, list(side["columns"])
+    sample_rows: list[dict[str, Any]] = []
+    if side.get("snapshot_id"):
+        try:
+            sample_rows = (
+                snapshot_store.load_snapshot_frame(side["snapshot_id"])
+                .head(_SCHEMA_SAMPLE_ROWS)
+                .to_dict("records")
+            )
+        except Exception:  # noqa: BLE001 - sample rows are a best-effort fallback signal only
+            sample_rows = []
+    spec = {"snapshot_id": side["snapshot_id"]}
+    resolved = {"primary_entity": side["primary_entity"]}
+    return spec, resolved, list(side["columns"]), sample_rows
 
 
-def _resolve_side_schema(side: SideState, role: str) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+def _resolve_side_schema(
+    side: SideState, role: str
+) -> tuple[dict[str, Any], dict[str, Any], list[str], list[dict[str, Any]]]:
     if side["kind"] == "upload":
         return _resolve_upload_side_schema(side)
     resolver = _SPEC_RESOLVERS.get(side["kind"])
     if resolver is None:
         raise RuntimeError(f"No schema resolver for connector kind {side['kind']!r}.")
     spec, resolved = resolver(side, role)
-    columns = _preview_columns(side["kind"], spec)
+    columns, sample_rows = _preview_columns(side["kind"], spec)
     if not columns:
         raise RuntimeError(
             f"{role.capitalize()} schema preview returned no columns "
             f"(entity={resolved.get('primary_entity')!r})."
         )
-    return spec, resolved, columns
+    return spec, resolved, columns, sample_rows
 
 
 def _do_resolve_schema(state: AutoRunState) -> dict[str, Any]:
-    source_spec, source_resolved, source_columns = _resolve_side_schema(state["source"], registry.SOURCE)
-    target_spec, target_resolved, target_columns = _resolve_side_schema(state["target"], registry.TARGET)
+    source_spec, source_resolved, source_columns, source_sample = _resolve_side_schema(
+        state["source"], registry.SOURCE
+    )
+    target_spec, target_resolved, target_columns, target_sample = _resolve_side_schema(
+        state["target"], registry.TARGET
+    )
 
     candidate_keys = identify_candidate_keys(
         source_columns, target_columns, mapping_sheet_context=state.get("mapping_sheet")
@@ -346,6 +378,25 @@ def _do_resolve_schema(state: AutoRunState) -> dict[str, Any]:
 
     source_bkey_roles = detect_roles_for_columns(source_columns)
     target_bkey_roles = detect_roles_for_columns(target_columns)
+
+    # Name-alias matching alone came up short on one or both sides — fall
+    # back to sniffing the (already-fetched, top _SCHEMA_SAMPLE_ROWS) preview
+    # rows: a column is claimed as quantity/date only when every sampled
+    # value for it agrees (see detect_roles_from_sample). Never reconsiders a
+    # column already claimed by a candidate key or an alias-matched role.
+    if any(r not in source_bkey_roles for r in _BUSINESS_KEY_ROLES):
+        source_claimed = {f["field"] for f in candidate_keys["source"].values() if f["field"]}
+        source_claimed |= set(source_bkey_roles.values())
+        source_bkey_roles.update(
+            detect_roles_from_sample(source_columns, source_sample, source_claimed)
+        )
+    if any(r not in target_bkey_roles for r in _BUSINESS_KEY_ROLES):
+        target_claimed = {f["field"] for f in candidate_keys["target"].values() if f["field"]}
+        target_claimed |= set(target_bkey_roles.values())
+        target_bkey_roles.update(
+            detect_roles_from_sample(target_columns, target_sample, target_claimed)
+        )
+
     missing_source = [r for r in _BUSINESS_KEY_ROLES if r not in source_bkey_roles]
     missing_target = [r for r in _BUSINESS_KEY_ROLES if r not in target_bkey_roles]
     if missing_source or missing_target:
@@ -749,10 +800,25 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
                 batch_label=batch.label,
             )
 
+            # Persisted per-run (see run_value_mapping_store) since this
+            # batch's resolved mapping never makes it back to contract_store
+            # — without this, a run's Mapping Details / Original-Paired
+            # export columns would have nothing to read after the fact.
+            run_value_mapping_store.record_batch_mapping(graph_run_id, product_mapping)
+            run_value_mapping_store.record_batch_mapping(graph_run_id, location_mapping)
+
             batch_contract = contract.model_copy(update={"value_mappings": [product_mapping, location_mapping]})
             built = build_shadow_source(batch_contract, source_df)
             recon = reconcile(batch_contract, built.shadow_df, target_df)
             recon.summary.excluded_unmapped = excluded_unmapped_counts(built.held_out)
+            # Stamps real field values onto each row NOW, while source_df/
+            # target_df/the shadow are still live in memory — see
+            # service.attach_field_values's docstring on why this can't be
+            # reconstructed later the way Manual mode's export used to try.
+            recon.detail_df = service.attach_field_values(
+                recon.detail_df, batch_contract, shadow_df=built.shadow_df, target_df=target_df,
+                raw_source_df=source_df,
+            )
 
             detail_df = recon.detail_df
             if not detail_df.empty:

@@ -258,6 +258,28 @@ CREATE TABLE IF NOT EXISTS value_pair_corroboration (
     PRIMARY KEY (graph_run_id, source_field, target_field, source_value, target_value)
 );
 
+-- Per-run accumulator of every value-pairing decision an Auto-mode run's
+-- date-batches resolved (see storage.run_value_mapping_store). Each batch
+-- pairs only its own slice of distinct values into a throwaway per-batch
+-- contract copy (auto_pipeline/nodes.py's `_do_run_batches`) that is never
+-- written back to `contracts`, so this is the only place a run's full
+-- value-mapping picture (the comparison workbook's "Mapping Details" sheet,
+-- and the "All Records" sheet's Original/Paired columns) can be
+-- reconstructed from afterward. One row per distinct source value per field
+-- pair per run; deliberately never cleared on run completion/cancellation —
+-- same "outlives the run" rule as `results` (see pipeline_run_store.
+-- cleanup_run_artifacts's docstring).
+CREATE TABLE IF NOT EXISTS run_value_mapping_matches (
+    graph_run_id     TEXT NOT NULL,
+    source_field     TEXT NOT NULL,
+    target_field     TEXT NOT NULL,
+    field_mapping_id TEXT,
+    source_value     TEXT NOT NULL,
+    target_value     TEXT,
+    match_json       TEXT NOT NULL,
+    PRIMARY KEY (graph_run_id, source_field, target_field, source_value)
+);
+
 -- Audit trail for one Auto-mode run's `run_batches` node, one row per BATCH
 -- ATTEMPT (success or hard failure) — distinct from `run_batch_checkpoint`
 -- (which only ever tracks the single current resume position). A retried

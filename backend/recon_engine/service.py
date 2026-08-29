@@ -68,6 +68,7 @@ from backend.recon_engine.storage import (
     contract_store,
     result_store,
     run_store,
+    run_value_mapping_store,
     script_store,
     shadow_store,
     snapshot_store,
@@ -841,6 +842,9 @@ def run_reconciliation(
 
         recon = reconcile(contract, built.shadow_df, raw_target)
         recon.summary.excluded_unmapped = excluded_unmapped_counts(built.held_out)
+        recon.detail_df = attach_field_values(
+            recon.detail_df, contract, shadow_df=built.shadow_df, target_df=raw_target, raw_source_df=raw_source,
+        )
         result = result_store.save_result(
             run_id=run.run_id,
             contract_id=contract.contract_id,
@@ -1362,14 +1366,158 @@ def _signed_delta(source_value: Any, target_value: Any) -> float | None:
     return (src or 0.0) - (tgt or 0.0)
 
 
+def _index_by_key(df: pd.DataFrame | None, fields: list[str], options: dict[str, Any]) -> dict[str, pd.Series]:
+    """``business_key -> row`` for a frame, using the same normalisation as
+    :func:`engine.reconciler.reconcile`. Shared by :func:`attach_field_values`
+    (fresh in-memory frames, right after reconciliation) and
+    :func:`build_enriched_detail`'s legacy fallback (frames re-loaded from
+    storage, which may be missing/expired)."""
+    from backend.recon_engine.engine.reconciler import _build_key
+
+    by_key: dict[str, pd.Series] = {}
+    if df is None or df.empty:
+        return by_key
+    for k, (_, row) in zip(_build_key(df, fields, options), df.iterrows()):
+        by_key.setdefault(k, row)
+    return by_key
+
+
+def _vals(row: pd.Series | None, fields: list[str]) -> str:
+    if row is None:
+        return ""
+    return "; ".join(f"{f}={_jsonable(row[f])}" for f in fields if f in row.index)
+
+
+def _unified(s_row: pd.Series | None, t_row: pd.Series | None, sf: str, tf: str) -> Any:
+    if s_row is not None and sf in s_row.index:
+        val = _jsonable(s_row[sf])
+        if val is not None:
+            return val
+    if t_row is not None and tf in t_row.index:
+        return _jsonable(t_row[tf])
+    return None
+
+
+def _original_raw_value(s_row: pd.Series | None, field: str | None, raw_source_df: pd.DataFrame | None) -> Any:
+    """The pre-value-mapping raw source value for ``field``, resolved via the
+    shadow row's lineage back to Raw_Source. The shadow's own column already
+    holds the POST-mapping (target-paired) value, so this must go back to the
+    raw frame rather than reading the shadow row directly."""
+    if s_row is None or field is None or raw_source_df is None:
+        return None
+    if LINEAGE_COL not in s_row.index:
+        return None
+    try:
+        row_ids = json.loads(s_row[LINEAGE_COL] or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not row_ids:
+        return None
+    row_id = row_ids[0]
+    if not (0 <= row_id < len(raw_source_df)) or field not in raw_source_df.columns:
+        return None
+    return _jsonable(raw_source_df.iloc[row_id][field])
+
+
+def attach_field_values(
+    detail_df: pd.DataFrame,
+    contract: Any,
+    *,
+    shadow_df: pd.DataFrame,
+    target_df: pd.DataFrame,
+    raw_source_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Stamp every detail row with the actual field values that produced it,
+    computed HERE while ``shadow_df``/``target_df``/``raw_source_df`` are
+    still live in-memory frames from this reconciliation — not reconstructed
+    later from a ``shadow_id``/``snapshot_id`` that may have expired (Manual
+    mode's shadow TTL) or never existed as one whole-dataset frame at all
+    (Auto mode's per-batch streaming extracts; see
+    ``auto_pipeline.nodes._do_finalize``). Called right after
+    :func:`engine.reconciler.reconcile` at every call site (Manual mode's
+    ``run_reconciliation`` and Auto mode's ``auto_pipeline.nodes.
+    _do_run_batches``), so the results pipeline is identical for every mode —
+    only the later delivery of the export differs.
+
+    Adds one new column, ``field_values`` — a plain per-row dict keyed
+    exactly like :func:`_export_columns_for_contract`'s column names (plus
+    ``source_values``/``target_values``, the same joined ``field=value``
+    strings :func:`build_enriched_detail` used to compute from a live re-join)
+    — same JSON-able-column convention as the existing ``field_diffs``/
+    ``pair_ids`` columns. Every other column is left untouched. A no-op on an
+    empty frame or a run with no contract.
+    """
+    if detail_df.empty or contract is None:
+        return detail_df
+
+    options = contract.options or {}
+    bk_src = [k.source_field for k in contract.business_key]
+    bk_tgt = [k.target_field for k in contract.business_key]
+    cf_src = [c.source_field for c in contract.compare_fields]
+    cf_tgt = [c.target_field for c in contract.compare_fields]
+    key_specs = _business_key_export_specs(contract)
+    compare_specs = _compare_field_export_specs(contract)
+
+    shadow_by_key = _index_by_key(shadow_df, bk_src, options)
+    target_by_key = _index_by_key(target_df, bk_tgt, options)
+
+    values_col: list[dict[str, Any]] = []
+    for key in detail_df["business_key"]:
+        s_row = shadow_by_key.get(key)
+        t_row = target_by_key.get(key)
+        rec: dict[str, Any] = {
+            "source_values": _vals(s_row, [*bk_src, *cf_src]),
+            "target_values": _vals(t_row, [*bk_tgt, *cf_tgt]),
+        }
+        for sf, tf, vm in key_specs:
+            if vm is not None:
+                rec[f"{sf} (Original)"] = _original_raw_value(s_row, sf, raw_source_df)
+                rec[f"{tf} (Paired)"] = _unified(s_row, t_row, sf, tf)
+            else:
+                rec[sf] = _unified(s_row, t_row, sf, tf)
+        for sf, tf in compare_specs:
+            source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
+            target_val = t_row[tf] if t_row is not None and tf in t_row.index else None
+            rec[sf] = _jsonable(source_val)
+            rec[tf] = _jsonable(target_val)
+            rec[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
+        values_col.append(rec)
+
+    out = detail_df.copy()
+    out["field_values"] = values_col
+    return out
+
+
+def _effective_contract(contract: Any, run_id: str) -> Any:
+    """The contract whose ``value_mappings`` actually produced this run's
+    field values. Manual-mode runs execute the stored contract's own
+    ``value_mappings`` directly, so an empty per-run accumulator (nothing
+    ever recorded for this ``run_id``) falls back to it unchanged. Auto-mode
+    runs resolve product/location pairing independently per date-batch into a
+    throwaway per-batch contract copy (see ``auto_pipeline.nodes.
+    _do_run_batches``) that is never written back to ``contract_store`` —
+    the run-scoped union of every batch's resolved matches (see
+    ``storage.run_value_mapping_store``) stands in for it here.
+    """
+    if contract is None:
+        return None
+    run_mappings = run_value_mapping_store.get_run_mappings(run_id)
+    if not run_mappings:
+        return contract
+    return contract.model_copy(update={"value_mappings": run_mappings})
+
+
 def build_enriched_detail(run_id: str) -> pd.DataFrame:
     """Reconstruct a run's detail rows enriched with source/target field values.
 
-    Read-only. Re-joins the persisted Shadow_Source and Raw_Target on the
-    (already-computed) business key so every detail row carries the actual field
-    values, in addition to the stored classification, flattened ``detail`` and
-    structured ``field_diffs``. This single frame backs both the 2-sheet
-    comparison workbook and the insights bridge.
+    Prefers each row's ``field_values`` column, persisted at reconciliation
+    time by :func:`attach_field_values` (current pipeline, every mode).
+    Falls back to re-joining the persisted Shadow_Source and Raw_Target on
+    the (already-computed) business key ONLY for rows that predate that
+    column (older Manual-mode runs) — that re-join is fragile (the shadow
+    may have expired; Auto-mode runs have no whole-dataset shadow/snapshot
+    to re-join at all, see ``auto_pipeline.nodes._do_finalize``), which is
+    exactly why it is no longer the primary path.
 
     Per row the frame carries: ``business_key``, ``classification`` (raw enum
     value), ``classification_label`` / ``remark`` (business-friendly),
@@ -1382,11 +1530,8 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     (e.g. a date key), ``Status``, and per compare field its raw source
     value, raw target value, and a signed Delta (see :func:`_signed_delta`).
     Scales to however many key/compare pairs the contract has — not fixed to
-    two keys and one compare field. The shadow may have expired (TTL) —
-    source-derived values are then blank but every record is still listed.
+    two keys and one compare field.
     """
-    from backend.recon_engine.engine.reconciler import _build_key
-
     init_storage()
     run = run_store.get_run(run_id)
     if run is None:
@@ -1396,6 +1541,7 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
         raise KeyError(f"No reconciliation result found for run '{run_id}'.")
 
     contract = contract_store.get_contract(run.contract_id, run.contract_version)
+    contract = _effective_contract(contract, run_id)
     options = (contract.options if contract else {}) or {}
     bk_src = [k.source_field for k in contract.business_key] if contract else []
     bk_tgt = [k.target_field for k in contract.business_key] if contract else []
@@ -1407,76 +1553,52 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     detail = result_store.load_result_frame_any(result.result_id)
     has_field_diffs = "field_diffs" in detail.columns
     has_pair_ids = "pair_ids" in detail.columns
+    has_field_values = "field_values" in detail.columns
 
+    # Legacy fallback lookups — only built (and only ever consulted) for rows
+    # missing the eagerly-persisted ``field_values`` column; see the
+    # docstring above.
+    needs_legacy_join = not has_field_values or bool(
+        detail["field_values"].apply(lambda v: not isinstance(v, dict) or not v).any()
+    )
     shadow_by_key: dict[str, pd.Series] = {}
     target_by_key: dict[str, pd.Series] = {}
-    try:
-        if run.shadow_id:
-            shadow = shadow_store.load_shadow_frame(run.shadow_id)
-            for k, (_, row) in zip(_build_key(shadow, bk_src, options), shadow.iterrows()):
-                shadow_by_key.setdefault(k, row)
-    except Exception:  # noqa: BLE001 - expired/missing shadow is non-fatal
-        logger.warning("Enriched detail: shadow frame unavailable for run %s", run_id)
-    try:
-        target = snapshot_store.load_snapshot_frame(run.target_snapshot_id)
-        for k, (_, row) in zip(_build_key(target, bk_tgt, options), target.iterrows()):
-            target_by_key.setdefault(k, row)
-    except Exception:  # noqa: BLE001
-        logger.warning("Enriched detail: target frame unavailable for run %s", run_id)
-
     raw_source_df: pd.DataFrame | None = None
-    try:
-        raw_source_df = snapshot_store.load_snapshot_frame(run.source_snapshot_id)
-    except Exception:  # noqa: BLE001 - non-fatal; original-value columns are then blank
-        logger.warning("Enriched detail: raw source frame unavailable for run %s", run_id)
+    if needs_legacy_join:
+        try:
+            if run.shadow_id:
+                shadow = shadow_store.load_shadow_frame(run.shadow_id)
+                shadow_by_key = _index_by_key(shadow, bk_src, options)
+        except Exception:  # noqa: BLE001 - expired/missing shadow is non-fatal
+            logger.warning("Enriched detail: shadow frame unavailable for run %s", run_id)
+        try:
+            target = snapshot_store.load_snapshot_frame(run.target_snapshot_id)
+            target_by_key = _index_by_key(target, bk_tgt, options)
+        except Exception:  # noqa: BLE001
+            logger.warning("Enriched detail: target frame unavailable for run %s", run_id)
+        try:
+            raw_source_df = snapshot_store.load_snapshot_frame(run.source_snapshot_id)
+        except Exception:  # noqa: BLE001 - non-fatal; original-value columns are then blank
+            logger.warning("Enriched detail: raw source frame unavailable for run %s", run_id)
 
-    def _vals(row: pd.Series | None, fields: list[str]) -> str:
+    def _legacy_vals(row: pd.Series | None, fields: list[str]) -> str:
         if row is None:
             return ""
         return "; ".join(f"{f}={_jsonable(row[f])}" for f in fields if f in row.index)
-
-    def _unified(s_row: pd.Series | None, t_row: pd.Series | None, sf: str, tf: str) -> Any:
-        if s_row is not None and sf in s_row.index:
-            val = _jsonable(s_row[sf])
-            if val is not None:
-                return val
-        if t_row is not None and tf in t_row.index:
-            return _jsonable(t_row[tf])
-        return None
-
-    def _original_raw_value(s_row: pd.Series | None, field: str | None) -> Any:
-        """The pre-value-mapping raw source value for ``field``, resolved via
-        the shadow row's lineage back to Raw_Source. The shadow's own column
-        already holds the POST-mapping (target-paired) value, so this must go
-        back to the raw snapshot rather than reading the shadow row directly.
-        """
-        if s_row is None or field is None or raw_source_df is None:
-            return None
-        if LINEAGE_COL not in s_row.index:
-            return None
-        try:
-            row_ids = json.loads(s_row[LINEAGE_COL] or "[]")
-        except (TypeError, ValueError):
-            return None
-        if not row_ids:
-            return None
-        row_id = row_ids[0]
-        if not (0 <= row_id < len(raw_source_df)) or field not in raw_source_df.columns:
-            return None
-        return _jsonable(raw_source_df.iloc[row_id][field])
 
     rows: list[dict[str, Any]] = []
     for _, d in detail.iterrows():
         key = d.get("business_key")
         cls = str(d.get("classification"))
-        s_row = shadow_by_key.get(key)
-        t_row = target_by_key.get(key)
         diffs = d["field_diffs"] if has_field_diffs else []
         if not isinstance(diffs, list):
             diffs = []
         pair_ids = d["pair_ids"] if has_pair_ids else {}
         if not isinstance(pair_ids, dict):
             pair_ids = {}
+        persisted_values = d["field_values"] if has_field_values else None
+        if not isinstance(persisted_values, dict) or not persisted_values:
+            persisted_values = None
 
         record: dict[str, Any] = {
             "business_key": key,
@@ -1485,22 +1607,50 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             "remark": _CLASS_REMARKS.get(cls, ""),
             "detail": d.get("detail") or "",
             "field_diffs": diffs,
-            "source_values": _vals(s_row, [*bk_src, *cf_src]),
-            "target_values": _vals(t_row, [*bk_tgt, *cf_tgt]),
         }
-        for sf, tf, vm in key_specs:
-            if vm is not None:
-                record[f"{sf} (Original)"] = _original_raw_value(s_row, sf)
-                record[f"{tf} (Paired)"] = _unified(s_row, t_row, sf, tf)
-            else:
-                record[sf] = _unified(s_row, t_row, sf, tf)
-        record["Status"] = _STATUS_BY_CLASS.get(cls, cls.upper())
-        for sf, tf in compare_specs:
-            source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
-            target_val = t_row[tf] if t_row is not None and tf in t_row.index else None
-            record[sf] = _jsonable(source_val)
-            record[tf] = _jsonable(target_val)
-            record[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
+
+        if persisted_values is not None:
+            # Captured eagerly at reconciliation time (current pipeline,
+            # every mode) — authoritative, and the only source available for
+            # Auto-mode rows, which have no whole-dataset shadow/snapshot to
+            # re-join (see auto_pipeline.nodes._do_finalize).
+            record["source_values"] = persisted_values.get("source_values", "")
+            record["target_values"] = persisted_values.get("target_values", "")
+            for sf, tf, vm in key_specs:
+                if vm is not None:
+                    record[f"{sf} (Original)"] = persisted_values.get(f"{sf} (Original)")
+                    record[f"{tf} (Paired)"] = persisted_values.get(f"{tf} (Paired)")
+                else:
+                    record[sf] = persisted_values.get(sf)
+            record["Status"] = _STATUS_BY_CLASS.get(cls, cls.upper())
+            for sf, tf in compare_specs:
+                record[sf] = persisted_values.get(sf)
+                record[tf] = persisted_values.get(tf)
+                record[_delta_column_name(sf, tf, compare_specs)] = persisted_values.get(
+                    _delta_column_name(sf, tf, compare_specs)
+                )
+        else:
+            # Legacy fallback for a run completed before field values were
+            # captured eagerly — reconstruct via the shadow_id/snapshot_id
+            # re-join, which may itself come back empty (expired shadow),
+            # in which case these columns are simply blank.
+            s_row = shadow_by_key.get(key)
+            t_row = target_by_key.get(key)
+            record["source_values"] = _legacy_vals(s_row, [*bk_src, *cf_src])
+            record["target_values"] = _legacy_vals(t_row, [*bk_tgt, *cf_tgt])
+            for sf, tf, vm in key_specs:
+                if vm is not None:
+                    record[f"{sf} (Original)"] = _original_raw_value(s_row, sf, raw_source_df)
+                    record[f"{tf} (Paired)"] = _unified(s_row, t_row, sf, tf)
+                else:
+                    record[sf] = _unified(s_row, t_row, sf, tf)
+            record["Status"] = _STATUS_BY_CLASS.get(cls, cls.upper())
+            for sf, tf in compare_specs:
+                source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
+                target_val = t_row[tf] if t_row is not None and tf in t_row.index else None
+                record[sf] = _jsonable(source_val)
+                record[tf] = _jsonable(target_val)
+                record[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
         # Traceability (see recon_engine.ids): Run ID is always known (this
         # function's own run_id) even for Manual-mode rows, which carry no
         # per-row run_id of their own; Batch ID/Record ID/Pair ID are blank
@@ -1622,6 +1772,7 @@ def build_comparison_workbook(run_id: str) -> bytes:
         raise KeyError(f"No reconciliation result found for run '{run_id}'.")
 
     contract = contract_store.get_contract(run.contract_id, run.contract_version)
+    contract = _effective_contract(contract, run_id)
     enriched = build_enriched_detail(run_id)
     summary = result.summary.model_dump()
 
