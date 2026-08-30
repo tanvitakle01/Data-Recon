@@ -652,6 +652,34 @@ def _pair_field_for_batch(
     )
 
 
+def _report_batch_stage(
+    graph_run_id: str,
+    batch: DateBatch,
+    batch_count: int,
+    source_roles: dict[str, str],
+    target_roles: dict[str, str],
+    stage: str,
+    batches_completed: int,
+) -> None:
+    """One write per sub-stage of a single date-batch (fetching each side,
+    pairing values, reconciling, completed) — see ``pipeline_run_store.
+    update_batch_progress``'s docstring on why this is a separate write from
+    the once-per-node ``update_progress``. ``stage`` values are consumed
+    verbatim by the frontend's per-batch checklist (AssistantBot.jsx's
+    ``BATCH_STAGE_ORDER``) — keep the two in sync if either changes.
+    """
+    pipeline_run_store.update_batch_progress(
+        graph_run_id,
+        field_pair=f"{source_roles['product']}/{source_roles['location']} -> "
+                   f"{target_roles['product']}/{target_roles['location']}",
+        batch_index=batch.batch_index,
+        batch_count=batch_count,
+        batch_label=batch.label,
+        stage=stage,
+        batches_completed=batches_completed,
+    )
+
+
 def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
     graph_run_id = state["graph_run_id"]
     plan = pipeline_run_store.get_run_batch_plan(graph_run_id)
@@ -726,20 +754,19 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
         heartbeat.beat(graph_run_id, node="run_batches", batch_id=batch_id)
 
         try:
-            pipeline_run_store.update_batch_progress(
-                graph_run_id,
-                field_pair=f"{source_roles['product']}/{source_roles['location']} -> "
-                           f"{target_roles['product']}/{target_roles['location']}",
-                batch_index=batch.batch_index,
-                batch_count=batch.batch_count,
-                batch_label=batch.label,
+            _report_batch_stage(
+                graph_run_id, batch, batch_count, source_roles, target_roles,
+                stage="fetching_source", batches_completed=batch.batch_index,
             )
-
             source_df = _fetch_batch_dataset(
                 source_kind,
                 source_spec,
                 (source_roles["date"], batch.start_date, batch.end_date),
                 upload_frame=source_upload_frame,
+            )
+            _report_batch_stage(
+                graph_run_id, batch, batch_count, source_roles, target_roles,
+                stage="fetching_target", batches_completed=batch.batch_index,
             )
             target_df = _fetch_batch_dataset(
                 target_kind,
@@ -763,11 +790,19 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
                     supersedes_batch_id=supersedes_batch_id,
                     status="completed",
                 )
+                _report_batch_stage(
+                    graph_run_id, batch, batch_count, source_roles, target_roles,
+                    stage="completed", batches_completed=batch.batch_index + 1,
+                )
                 continue
 
             source_dates = source_df[source_roles["date"]] if not source_df.empty else pd.Series([], dtype=object)
             target_dates = target_df[target_roles["date"]] if not target_df.empty else pd.Series([], dtype=object)
 
+            _report_batch_stage(
+                graph_run_id, batch, batch_count, source_roles, target_roles,
+                stage="pairing_values", batches_completed=batch.batch_index,
+            )
             set_llm_call_context(run_id=graph_run_id, batch_id=batch_id, node="run_batches")
             product_mapping = _pair_field_for_batch(
                 graph_run_id=graph_run_id,
@@ -807,6 +842,10 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
             run_value_mapping_store.record_batch_mapping(graph_run_id, product_mapping)
             run_value_mapping_store.record_batch_mapping(graph_run_id, location_mapping)
 
+            _report_batch_stage(
+                graph_run_id, batch, batch_count, source_roles, target_roles,
+                stage="reconciling", batches_completed=batch.batch_index,
+            )
             batch_contract = contract.model_copy(update={"value_mappings": [product_mapping, location_mapping]})
             built = build_shadow_source(batch_contract, source_df)
             recon = reconcile(batch_contract, built.shadow_df, target_df)
@@ -840,6 +879,10 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
                 next_batch_index=batch.batch_index + 1,
                 batch_count=batch_count,
                 summary=updated_result.summary.model_dump(),
+            )
+            _report_batch_stage(
+                graph_run_id, batch, batch_count, source_roles, target_roles,
+                stage="completed", batches_completed=batch.batch_index + 1,
             )
         except GraphBubbleUp:
             raise

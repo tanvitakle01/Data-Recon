@@ -1,9 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import api from "../services/api";
-import CommandCenter from "../components/cockpit/CommandCenter";
-import InsightsTabs from "../components/cockpit/InsightsTabs";
-import ExecutiveSummaryView from "../components/executive/ExecutiveSummaryView";
+import SimpleInsightsView from "../components/insights/SimpleInsightsView";
 import SkeletonCards from "../components/insights/SkeletonCards";
 
 function useQuery() {
@@ -53,7 +51,6 @@ function InsightsPageInner() {
   const [error, setError] = useState(null);
 
   const [payload, setPayload] = useState(null);
-  const [activeTab, setActiveTab] = useState("executive");
 
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadSheetName, setUploadSheetName] = useState("");
@@ -227,14 +224,7 @@ function InsightsPageInner() {
 
       {payload && (
         <div ref={cockpitSectionRef} style={{ marginTop: 14 }}>
-          <InsightsTabs active={activeTab} onChange={setActiveTab} />
-          <div key={activeTab} className="animate-[fadeIn_200ms_ease-out]">
-            {activeTab === "executive" ? (
-              <ExecutiveSummaryView payload={payload} fileId={fileId} runId={runId} />
-            ) : (
-              <CommandCenter payload={payload} fileId={fileId} runId={runId} />
-            )}
-          </div>
+          <SimpleInsightsView payload={payload} />
         </div>
       )}
     </div>

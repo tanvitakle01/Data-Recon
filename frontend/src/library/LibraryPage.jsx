@@ -2,15 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Alert } from "@bristlecone/canopy";
 import { FiTrash2, FiRefreshCw, FiAlertTriangle } from "react-icons/fi";
 import api from "../services/api";
+import { resolveUploadConnector } from "./connectorGuess";
 import styles from "./library.module.css";
 
 function isKeyRole(role) {
   return /key/i.test(String(role));
 }
 
+// Renders a connector value as-is, except a literal "upload" gets relabeled
+// when the row's own field names carry a strong naming-convention signal (see
+// connectorGuess.js) — flagged via title rather than presented as confirmed.
+function ConnectorCell({ value, fieldNames }) {
+  const { label, inferred } = resolveUploadConnector(value, fieldNames);
+  if (!inferred) return label;
+  return <span title={`Inferred from field names — stored as "upload"`}>{label}</span>;
+}
+
 // Reconciled field (column→column) mappings — reused automatically when the
 // same source + target column set reappears.
-function AttributeMappingSection({ onCount }) {
+function AttributeMappingSection() {
   const [all, setAll] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -36,10 +46,6 @@ function AttributeMappingSection({ onCount }) {
     didInit.current = true;
     load();
   }, [load]);
-
-  useEffect(() => {
-    onCount?.(all.length);
-  }, [all, onCount]);
 
   // Filter options come from the full snapshot so narrowing one filter never
   // hides the others' choices.
@@ -157,10 +163,16 @@ function AttributeMappingSection({ onCount }) {
             <tbody>
               {rows.flatMap((m) => {
                 const pairings = m.mappings?.length ? m.mappings : [null];
+                const sourceFieldNames = pairings.map((p) => p?.source_col);
+                const targetFieldNames = pairings.map((p) => p?.target_col);
                 return pairings.map((p, i) => (
                   <tr key={`${m.id}-${i}`}>
-                    <td>{m.source_connector}</td>
-                    <td>{m.target_connector}</td>
+                    <td>
+                      <ConnectorCell value={m.source_connector} fieldNames={sourceFieldNames} />
+                    </td>
+                    <td>
+                      <ConnectorCell value={m.target_connector} fieldNames={targetFieldNames} />
+                    </td>
                     <td>{m.comparison_type}</td>
                     <td>{p ? <code>{p.source_col}</code> : "—"}</td>
                     <td>
@@ -199,7 +211,7 @@ function AttributeMappingSection({ onCount }) {
 // value_pair_library rows are proposed by a run's LLM pairing step, already
 // deterministically verified, and persisted automatically — reused (no LLM
 // call) by future runs' library-first lookup (recon_engine.value_pairing.pipeline).
-function ValuePairsSection({ onCount }) {
+function ValuePairsSection() {
   const [all, setAll] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -225,10 +237,6 @@ function ValuePairsSection({ onCount }) {
     didInit.current = true;
     load();
   }, [load]);
-
-  useEffect(() => {
-    onCount?.(all.length);
-  }, [all, onCount]);
 
   const options = useMemo(() => {
     const uniq = (key) => Array.from(new Set(all.map((p) => p[key]).filter(Boolean))).sort();
@@ -342,8 +350,12 @@ function ValuePairsSection({ onCount }) {
             <tbody>
               {rows.map((p) => (
                 <tr key={p.id}>
-                  <td>{p.source_connector}</td>
-                  <td>{p.target_connector}</td>
+                  <td>
+                    <ConnectorCell value={p.source_connector} fieldNames={[p.source_field]} />
+                  </td>
+                  <td>
+                    <ConnectorCell value={p.target_connector} fieldNames={[p.target_field]} />
+                  </td>
                   <td>
                     <code>{p.source_field}</code>
                   </td>
@@ -383,8 +395,6 @@ function ValuePairsSection({ onCount }) {
 
 export default function LibraryPage() {
   const [tab, setTab] = useState("fields");
-  const [fieldCount, setFieldCount] = useState(0);
-  const [valueCount, setValueCount] = useState(0);
 
   return (
     <div className={styles.page}>
@@ -400,20 +410,14 @@ export default function LibraryPage() {
 
       <div className="ct-tabs">
         <button type="button" className={tab === "fields" ? "is-active" : ""} onClick={() => setTab("fields")}>
-          Field mappings<span className="ct-tabs button__count">{fieldCount}</span>
+          Field mappings
         </button>
         <button type="button" className={tab === "values" ? "is-active" : ""} onClick={() => setTab("values")}>
-          Value pairs<span className="ct-tabs button__count">{valueCount}</span>
+          Value pairs
         </button>
       </div>
 
-      <div style={{ marginTop: 16 }}>
-        {tab === "fields" ? (
-          <AttributeMappingSection onCount={setFieldCount} />
-        ) : (
-          <ValuePairsSection onCount={setValueCount} />
-        )}
-      </div>
+      <div style={{ marginTop: 16 }}>{tab === "fields" ? <AttributeMappingSection /> : <ValuePairsSection />}</div>
     </div>
   );
 }

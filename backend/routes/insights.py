@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from io import BytesIO
 from typing import Any
 
@@ -9,6 +10,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Body, Response
 
 from backend.ai.insight_engine import InsightEngine
 from backend.excel_comparator.core.loader import load_excel
+from backend.recon_engine import service as recon_service
 from backend.recon_engine.reporting.insights_pdf import build_insights_pdf
 
 logger = logging.getLogger(__name__)
@@ -21,92 +23,84 @@ try:
 except Exception:  # pragma: no cover
     _FILE_STORE: dict[str, dict[str, Any]] = {}
 
-
-# V2 classification -> the V1 Remarks vocabulary the InsightEngine matches on.
-# "missing_in_source" (present in target only) == V1 "EXTRA IN TARGET".
-def build_insights_dataframe(run_id: str) -> pd.DataFrame:
-    """Bridge a V2 reconciliation run into the DataFrame shape InsightEngine
-    consumes. Reuses the run's enriched detail (named source/target field
-    columns + structured field_diffs) and synthesises a ``Remarks`` column using
-    the ALL-CAPS phrases the engine keys off, so the existing insights + cockpit
-    work unchanged for contract runs."""
-    from backend.recon_engine import service as recon_service
-
-    enriched = recon_service.build_enriched_detail(run_id)
-    if enriched.empty:
-        return enriched
-
-    remarks: list[str] = []
-    for _, r in enriched.iterrows():
-        cls = str(r.get("classification"))
-        detail = str(r.get("detail") or "")
-        if cls == "mismatch":
-            diffs = r.get("field_diffs") if isinstance(r.get("field_diffs"), list) else []
-            if diffs:
-                d = diffs[0]
-                remarks.append(
-                    f"⚠️ QTY MISMATCH | Field: {d.get('field')} | "
-                    f"Expected: {d.get('source_value')} | Actual: {d.get('target_value')} | "
-                    f"Delta: {d.get('delta')}"
-                )
-            else:
-                remarks.append("⚠️ QTY MISMATCH")
-        elif cls == "missing_in_target":
-            remarks.append(f"❌ MISSING IN TARGET | {detail}")
-        elif cls == "missing_in_source":
-            remarks.append(f"🔶 EXTRA IN TARGET | {detail}")
-        else:
-            remarks.append("✅ MATCH")
-
-    df = enriched.copy()
-    df["Remarks"] = remarks
-    return df
+# Same three user-facing statuses/labels as
+# backend.recon_engine.service._SUMMARY_BUCKETS, keyed off the legacy
+# excel_comparator "Remarks" phrases instead of a V2 run's `classification`
+# column — lets a raw compared-output upload render through the exact same
+# SimpleInsightsView as a persisted contract run.
+_RESULT_BUCKETS = [("match", "Match", "MATCH"), ("quantity_mismatch", "Quantity Mismatch", "QUANTITY MISMATCH"), ("mismatch", "Mismatch", "MISMATCH")]
+_DELTA_RE = re.compile(r"Delta:\s*(-?\d+(?:\.\d+)?)")
 
 
-def _quantity_variance_stats(df: pd.DataFrame) -> dict[str, Any] | None:
-    """Absolute quantity variance rolled up from structured field diffs."""
-    if "field_diffs" not in df.columns:
-        return None
-    total = 0.0
-    largest = 0.0
-    count = 0
-    for diffs in df["field_diffs"]:
-        if not isinstance(diffs, list):
-            continue
-        for d in diffs:
-            delta = d.get("delta")
-            if delta is None:
-                continue
-            magnitude = abs(float(delta))
-            total += magnitude
-            count += 1
-            largest = max(largest, magnitude)
-    if count == 0:
-        return None
+def _status_for_remark(remark: str) -> str:
+    if re.search(r"QTY MISMATCH", remark, re.IGNORECASE):
+        return "QUANTITY MISMATCH"
+    if re.search(r"MISSING IN TARGET|EXTRA IN TARGET", remark, re.IGNORECASE):
+        return "MISMATCH"
+    return "MATCH"
+
+
+def _empty_simple_insights() -> dict[str, Any]:
     return {
-        "totalUnits": round(total, 2),
-        "largestUnit": round(largest, 2),
-        "fieldsAffected": count,
+        "runId": None,
+        "total": 0,
+        "results": [{"key": k, "label": label, "status": status, "count": 0, "pct": 0.0} for k, label, status in _RESULT_BUCKETS],
+        "quantityVariance": None,
+        "mappings": [],
+        "exceptions": {"columns": [], "rows": []},
     }
 
 
-def _generate_run_insights(run_id: str) -> dict[str, Any]:
-    """Build the insight payload for a V2 run, enriched with quantity variance."""
-    df = build_insights_dataframe(run_id)
-    if df is None or df.empty:
-        return InsightEngine().generate(pd.DataFrame())
+def _simple_insights_from_remarks_df(df: pd.DataFrame) -> dict[str, Any]:
+    """Builds the same payload shape as
+    :func:`backend.recon_engine.service.build_simple_insights` (results
+    breakdown, quantity variance, exceptions) from a legacy excel_comparator
+    "Remarks" column, so ``/insights/from-file-id`` and ``/insights`` (raw
+    upload) render through the same SimpleInsightsView as a persisted V2 run.
+    No per-mapping match rates here — a raw upload carries no business-key
+    value-mapping library to report on."""
+    if df is None or df.empty or "Remarks" not in df.columns:
+        return _empty_simple_insights()
 
-    stats = _quantity_variance_stats(df)
-    # field_diffs is a list column (unhashable) — the engine's duplicate
-    # detection can't factorize it, so drop it before generating.
-    engine_df = df.drop(columns=["field_diffs"], errors="ignore")
-    payload = InsightEngine().generate(engine_df)
-    if stats:
-        payload["quantityVariance"] = stats
-        cockpit = payload.get("cockpit")
-        if isinstance(cockpit, dict) and isinstance(cockpit.get("exceptionLandscape"), dict):
-            cockpit["exceptionLandscape"]["quantityVariance"] = stats
-    return payload
+    remarks = df["Remarks"].fillna("").astype(str)
+    status_series = remarks.map(_status_for_remark)
+    total = int(len(df))
+
+    results = []
+    for key, label, status in _RESULT_BUCKETS:
+        count = int((status_series == status).sum())
+        pct = round((count / total * 100.0), 1) if total else 0.0
+        results.append({"key": key, "label": label, "status": status, "count": count, "pct": pct})
+
+    total_units = 0.0
+    largest = 0.0
+    fields_affected = 0
+    for raw in remarks.str.extract(_DELTA_RE, expand=False).dropna():
+        try:
+            magnitude = abs(float(raw))
+        except ValueError:
+            continue
+        total_units += magnitude
+        largest = max(largest, magnitude)
+        fields_affected += 1
+    quantity_variance = (
+        {"totalUnits": round(total_units, 2), "largestUnit": round(largest, 2), "fieldsAffected": fields_affected}
+        if fields_affected
+        else None
+    )
+
+    exceptions_df = df.loc[status_series != "MATCH"].copy()
+    exceptions_df.insert(0, "Status", status_series[status_series != "MATCH"])
+    safe = exceptions_df.astype(object).where(pd.notna(exceptions_df), None)
+
+    return {
+        "runId": None,
+        "total": total,
+        "results": results,
+        "quantityVariance": quantity_variance,
+        "mappings": [],
+        "exceptions": {"columns": list(safe.columns), "rows": safe.to_dict(orient="records")},
+    }
 
 
 def _load_df_from_upload(upload: UploadFile, sheet_name: str | None = None) -> dict[str, Any]:
@@ -149,16 +143,14 @@ async def generate_insights_from_file_id(body: dict[str, Any] = Body(...)) -> di
         raise HTTPException(status_code=404, detail="Stored dataset bytes not found for this file_id")
 
     try:
-        # Insights engine relies on the dataframe shape (incl. "Remarks" column).
+        # Relies on the dataframe shape (incl. "Remarks" column) the legacy
+        # excel_comparator writes.
         loaded = load_excel(BytesIO(file_bytes))
         df: pd.DataFrame = loaded["df"]
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to load stored reconciliation output: {exc}")
 
-    if df is None or df.empty:
-        return InsightEngine().generate(pd.DataFrame())
-
-    payload = InsightEngine().generate(df)
+    payload = _simple_insights_from_remarks_df(df)
     return {"success": True, "payload": payload}
 
 
@@ -171,7 +163,7 @@ async def generate_insights_from_run_id(body: dict[str, Any] = Body(...)) -> dic
         raise HTTPException(status_code=400, detail="Missing run_id")
 
     try:
-        payload = _generate_run_insights(str(run_id))
+        payload = recon_service.build_simple_insights(str(run_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Reconciliation run not found")
     except Exception as exc:  # noqa: BLE001
@@ -186,7 +178,7 @@ def download_insights_pdf(run_id: str) -> Response:
     ``/insights/from-run-id`` returns, rendered as a printable report
     (see ``insights_pdf.py``)."""
     try:
-        payload = _generate_run_insights(run_id)
+        payload = recon_service.build_simple_insights(run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Reconciliation run not found")
     except Exception as exc:  # noqa: BLE001
@@ -212,6 +204,16 @@ _DRILLDOWN_EXCEPTION_PATTERNS = {
     "Quantity Mismatch": "QTY MISMATCH",
 }
 
+# Same exception types, keyed to the raw `classification` values
+# build_enriched_detail carries (V2 runs have no "Remarks" column to
+# pattern-match — "missing_in_source" (present in target only) is the V1
+# "EXTRA IN TARGET" equivalent, see backend.recon_engine.service._CLASS_LABELS).
+_DRILLDOWN_EXCEPTION_CLASSES = {
+    "Missing in Target": "missing_in_target",
+    "Extra in Target": "missing_in_source",
+    "Quantity Mismatch": "mismatch",
+}
+
 
 @router.post("/insights/drilldown")
 async def insights_drilldown(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -230,7 +232,7 @@ async def insights_drilldown(body: dict[str, Any] = Body(...)) -> dict[str, Any]
 
     if run_id:
         try:
-            df: pd.DataFrame = build_insights_dataframe(str(run_id))
+            df: pd.DataFrame = recon_service.build_enriched_detail(str(run_id))
         except KeyError:
             raise HTTPException(status_code=404, detail="Reconciliation run not found")
         except Exception as exc:  # noqa: BLE001
@@ -264,10 +266,15 @@ async def insights_drilldown(body: dict[str, Any] = Body(...)) -> dict[str, Any]
     engine = InsightEngine()
 
     exception_type = filters.get("exceptionType")
-    pattern = _DRILLDOWN_EXCEPTION_PATTERNS.get(exception_type) if exception_type else None
-    if pattern and "Remarks" in working.columns:
-        remarks = working["Remarks"].fillna("").astype(str)
-        working = working[remarks.str.contains(pattern, case=False, na=False, regex=True)]
+    if exception_type and "Remarks" in working.columns:
+        pattern = _DRILLDOWN_EXCEPTION_PATTERNS.get(exception_type)
+        if pattern:
+            remarks = working["Remarks"].fillna("").astype(str)
+            working = working[remarks.str.contains(pattern, case=False, na=False, regex=True)]
+    elif exception_type and "classification" in working.columns:
+        raw_class = _DRILLDOWN_EXCEPTION_CLASSES.get(exception_type)
+        if raw_class:
+            working = working[working["classification"] == raw_class]
 
     dimension = str(filters.get("dimension") or "").lower()
     value = filters.get("value")
@@ -306,10 +313,7 @@ async def generate_insights(
     loaded = _load_df_from_upload(file, sheet)
     df: pd.DataFrame = loaded["df"]
 
-    if df is None or df.empty:
-        return InsightEngine().generate(pd.DataFrame())
-
-    payload = InsightEngine().generate(df)
+    payload = _simple_insights_from_remarks_df(df)
     return {
         "success": True,
         "payload": payload,

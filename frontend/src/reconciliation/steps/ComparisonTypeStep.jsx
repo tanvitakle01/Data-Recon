@@ -37,15 +37,26 @@ function formatElapsed(ms) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+// Mirrors backend/recon_engine/auto_pipeline/state.py's STEP_NAMES exactly —
+// keep the two in sync if either changes.
 const AUTO_STEP_LABELS = {
   select_source: "Selecting source system…",
-  import_source: "Importing source data…",
   select_target: "Selecting target system…",
-  import_target: "Importing target data…",
-  identify_candidate_keys: "Identifying candidate business keys (AI)…",
-  extract_unique_keys: "Identifying unique key values…",
-  pair_values: "Running AI value-pairing…",
-  compile_and_run: "Running reconciliation…",
+  resolve_schema: "Resolving schema & candidate business keys (AI)…",
+  compile_contract: "Compiling reconciliation contract…",
+  plan_date_batches: "Planning batches…",
+  run_batches: "Running batches…",
+  finalize: "Finalizing results…",
+};
+
+// Mirrors backend/recon_engine/auto_pipeline/nodes.py's `_report_batch_stage`
+// stage names exactly — keep the two in sync if either changes.
+const AUTO_BATCH_STAGE_LABELS = {
+  fetching_source: "fetching source data",
+  fetching_target: "fetching target data",
+  pairing_values: "pairing values",
+  reconciling: "reconciling",
+  completed: "batch reconciled",
 };
 
 // Only Sales Order History is offered for now. Additional comparison types
@@ -479,9 +490,9 @@ function ComparisonTypeStep() {
   const [autoRunning, setAutoRunning] = useState(false);
   const [autoElapsedMs, setAutoElapsedMs] = useState(0);
   const [autoCurrentStep, setAutoCurrentStep] = useState(null);
-  // Live "batch N of M (2023-2024)" progress within the pair_values step —
-  // year-range batches of the AI value-pairing call (see
-  // value_pairing.pipeline.pair_values' on_batch hook). null outside that step.
+  // Live "N/M batches done" + current-batch sub-stage while the run is inside
+  // the run_batches step — one date-batch at a time (see auto_pipeline.nodes'
+  // _do_run_batches/_report_batch_stage). null outside that step.
   const [autoBatchProgress, setAutoBatchProgress] = useState(null);
   const [autoError, setAutoError] = useState(null);
   const [autoSuspendable, setAutoSuspendable] = useState(false);
@@ -927,9 +938,17 @@ function ComparisonTypeStep() {
                       {autoInterrupt
                         ? `Needs your input — ${AUTO_STEP_LABELS[autoCurrentStep] ?? "resolving"}`
                         : AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
-                      {autoCurrentStep === "pair_values" && autoBatchProgress && (
-                        <> — batch {autoBatchProgress.batch_index + 1} of{" "}
-                        {autoBatchProgress.batch_count} ({autoBatchProgress.batch_label})</>
+                      {autoCurrentStep === "run_batches" && autoBatchProgress && (
+                        <>
+                          {" "}— {autoBatchProgress.batches_completed ?? autoBatchProgress.batch_index}/
+                          {autoBatchProgress.batch_count} batches done (batch{" "}
+                          {autoBatchProgress.batch_index + 1} of {autoBatchProgress.batch_count},{" "}
+                          {autoBatchProgress.batch_label}
+                          {autoBatchProgress.stage
+                            ? `: ${AUTO_BATCH_STAGE_LABELS[autoBatchProgress.stage] ?? autoBatchProgress.stage}`
+                            : ""}
+                          )
+                        </>
                       )}
                     </span>
                     <span className="wizard-auto-progress__timer">{formatElapsed(autoElapsedMs)}</span>

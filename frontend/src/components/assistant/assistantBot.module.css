@@ -146,8 +146,33 @@
   background: var(--surface-2);
 }
 
+.messageRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  align-self: flex-start;
+  max-width: 88%;
+}
+.messageRowUser {
+  align-self: flex-end;
+  max-width: 82%;
+  justify-content: flex-end;
+}
+.messageAvatar {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .message {
-  max-width: 78%;
+  min-width: 0;
   padding: 10px 14px;
   border-radius: var(--radius-lg);
   font-size: 13.5px;
@@ -155,17 +180,22 @@
   white-space: pre-wrap;
 }
 .messageBot {
-  align-self: flex-start;
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--ink);
-  border-bottom-left-radius: var(--radius-sm);
+  border-top-left-radius: var(--radius-sm);
 }
 .messageUser {
-  align-self: flex-end;
   background: var(--accent);
   color: var(--accent-contrast);
   border-bottom-right-radius: var(--radius-sm);
+}
+/* A message whose run is paused for input reads as a distinct, flagged card
+   (white/surface + accent left border) rather than the plain bot bubble. */
+.messageInterrupt {
+  background: var(--surface);
+  border-color: var(--accent-tint-2);
+  border-left: 2.5px solid var(--accent);
 }
 
 /* ---- Run progress: status line, result badges, resolver question, quick
@@ -200,10 +230,19 @@
 .resolver {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+.resolverEyebrowRow {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
+}
+.resolverEyebrow {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-active);
 }
 .resolverMessage {
   margin: 0;
@@ -233,20 +272,141 @@
 }
 .resolverInputRow {
   display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--ground);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.resolverInputRow:focus-within {
+  border-color: var(--border-strong);
 }
 .resolverInput {
   flex: 1 1 auto;
-  padding: 7px 10px;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
   font-size: 12.5px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface);
+  border: none;
+  background: transparent;
   color: var(--ink);
 }
 .resolverInput:focus-visible {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.resolverInputIcon {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+}
+
+/* ---- Cumulative step checklist inside a run's bot message ---- */
+.stepChecklist {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 11px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.stepRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.stepDot {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.stepDotDone {
+  background: var(--info-bg);
+  border-color: var(--info-bd);
+  color: var(--info);
+}
+.stepLabel {
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stepLabelDone {
+  color: var(--ink-2);
+  font-weight: 550;
+}
+/* ---- Batch progress: "N/M batches done" counter + current batch label,
+   shown above that batch's own checklist rows while run_batches is active ---- */
+.batchProgressHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.batchProgressCounter {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-active);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-tint-2);
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.batchProgressLabel {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stepActive {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-top: 2px;
+}
+.stepPulse {
+  flex: 0 0 auto;
+  width: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5px;
+}
+.stepPulseDot {
+  width: 3.5px;
+  height: 3.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: assistantDotPulse 1.25s ease-in-out infinite;
+}
+.stepPulseDot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.stepActiveLabel {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--accent-active);
+}
+@keyframes assistantDotPulse {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
 }
 
 /* ---- Floating suggestions: quick next-step pills shown above the input
@@ -260,6 +420,9 @@
   background: var(--surface-2);
 }
 .suggestionPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 7px 14px;
   font: inherit;
   font-size: 12.5px;
@@ -327,6 +490,24 @@
   color: var(--muted);
   flex: 0 0 auto;
 }
+/* Tone by direction: still-removable (about to be sent) reads as an
+   "upload"; already downloadable (the bot's own attachment) reads as a
+   "download" — see AttachmentChip. */
+.attachmentIconUpload {
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-tint-2);
+  color: var(--accent-active);
+}
+.attachmentIconDownload {
+  background: var(--info-bg);
+  border: 1px solid var(--info-bd);
+  color: var(--info);
+}
+.messageUser .attachmentIconUpload {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: inherit;
+}
 .attachmentMeta {
   display: flex;
   flex-direction: column;
@@ -391,14 +572,28 @@
   font-weight: 600;
 }
 
-.inputRow {
+.composer {
   flex: 0 0 auto;
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 14px 16px;
+  padding: 12px 16px 14px;
   border-top: 1px solid var(--border);
   background: var(--surface);
+}
+/* One unified bordered bar (attach + textarea + send inside it) rather than
+   three separately-bordered controls — the border/focus ring lives on this
+   container; the buttons inside are borderless icon controls. */
+.inputRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  padding: 7px 7px 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.inputRow:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .hiddenFileInput {
   display: none;
@@ -407,29 +602,27 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .attach:hover {
   background: var(--surface-2);
-  border-color: var(--accent);
-  color: var(--accent-active);
+  color: var(--ink);
 }
 .input {
   flex: 1 1 auto;
   resize: none;
   max-height: 120px;
-  padding: 10px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+  padding: 7px 0;
+  border: none;
+  background: transparent;
   color: var(--ink);
   font: inherit;
   font-size: 13.5px;
@@ -437,21 +630,20 @@
 }
 .input:focus-visible {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .send {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: var(--accent);
   color: var(--accent-contrast);
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(194, 90, 22, 0.22);
   transition: background var(--dur) var(--ease);
 }
 .send:hover:not(:disabled) {
@@ -460,4 +652,29 @@
 .send:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  box-shadow: none;
+}
+
+.composerHint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 9px;
+}
+.composerHintLeft {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.composerHintRight {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+@media (max-width: 520px) {
+  .composerHintLeft { display: none; }
 }

@@ -16,7 +16,7 @@
 // suggestion pills ("View Insights" / "Run next reconciliation") above the
 // input row.
 import { useEffect, useRef, useState } from "react";
-import { Bot, FileText, Paperclip, Plus, Send, X } from "lucide-react";
+import { ArrowRight, BarChart2, Bot, Check, FileText, Layers, Paperclip, Plus, Send, X } from "lucide-react";
 import api from "../../services/api";
 import ShortId from "../ShortId";
 import styles from "./assistantBot.module.css";
@@ -54,12 +54,17 @@ function makeAttachment(file) {
 }
 
 function AttachmentChip({ attachment, onRemove, onDownload }) {
+  // Purely presentational: an attachment the user is about to send (still
+  // removable) reads as an "upload" (accent tint); one the bot handed back
+  // (downloadable) reads as a "download" (info tint) — same distinction the
+  // Data Sources / Insights pages already use for outbound vs. inbound files.
+  const tone = onDownload ? styles.attachmentIconDownload : styles.attachmentIconUpload;
   return (
     <div className={styles.attachmentChip}>
       {attachment.isImage ? (
         <img src={attachment.previewUrl} alt={attachment.name} className={styles.attachmentThumb} />
       ) : (
-        <span className={styles.attachmentIcon}>
+        <span className={`${styles.attachmentIcon} ${tone}`}>
           <FileText size={16} />
         </span>
       )}
@@ -106,16 +111,147 @@ const STATUS_LABELS = {
   stalled: "No progress reported recently — still watching…",
 };
 
+// Mirrors backend/recon_engine/auto_pipeline/state.py's STEP_NAMES exactly —
+// keep the two in sync if either changes, since milestoneDone below relies on
+// this order to tell "already passed" from "not reached yet".
 const STEP_LABELS = {
   select_source: "Selecting source system…",
-  import_source: "Importing source data…",
   select_target: "Selecting target system…",
-  import_target: "Importing target data…",
-  identify_candidate_keys: "Identifying candidate keys…",
-  extract_unique_keys: "Extracting unique values…",
-  pair_values: "Pairing values across systems…",
-  compile_and_run: "Compiling & running reconciliation…",
+  resolve_schema: "Resolving schema & candidate keys…",
+  compile_contract: "Compiling reconciliation contract…",
+  plan_date_batches: "Planning batches…",
+  run_batches: "Running batches…",
+  finalize: "Finalizing results…",
 };
+const STEP_ORDER = Object.keys(STEP_LABELS);
+
+// The 7 backend steps read as 3 user-facing milestones (each "done" once the
+// run has moved past the named step) plus whichever step is currently
+// active. Everything from "run_batches" on is shown by BatchProgress instead
+// (see StepChecklist) since that step processes many batches sequentially
+// rather than completing once.
+const MILESTONES = [
+  { throughStep: "select_target", label: "Source & target selected" },
+  { throughStep: "compile_contract", label: "Schema resolved & contract compiled" },
+  { throughStep: "plan_date_batches", label: "Batches planned" },
+];
+
+function milestoneDone(currentStep, throughStep, status) {
+  if (status === "completed") return true;
+  const curIdx = STEP_ORDER.indexOf(currentStep);
+  const throughIdx = STEP_ORDER.indexOf(throughStep);
+  if (curIdx === -1 || throughIdx === -1) return false;
+  return curIdx > throughIdx;
+}
+
+// Mirrors backend/recon_engine/auto_pipeline/nodes.py's `_report_batch_stage`
+// stage names exactly — keep the two in sync if either changes.
+const BATCH_STAGE_ORDER = ["fetching_source", "fetching_target", "pairing_values", "reconciling", "completed"];
+const BATCH_STAGE_LABELS = {
+  fetching_source: "Fetching source data…",
+  fetching_target: "Fetching target data…",
+  pairing_values: "Pairing values across systems…",
+  reconciling: "Reconciling batch…",
+  completed: "Batch reconciled",
+};
+
+// The same 4-stage story as the old single-pass MILESTONES (source, target,
+// keys, reconcile) but scoped to ONE batch — replayed fresh for every batch
+// in the plan, since each batch reconciles its own date-windowed slice of
+// source/target independently (see nodes.py's `_do_run_batches`).
+const BATCH_MILESTONES = [
+  { throughStage: "fetching_source", label: "Source data fetched" },
+  { throughStage: "fetching_target", label: "Target data fetched" },
+  { throughStage: "pairing_values", label: "Values paired" },
+  { throughStage: "reconciling", label: "Batch reconciled" },
+];
+
+function batchMilestoneDone(stage, throughStage) {
+  const curIdx = BATCH_STAGE_ORDER.indexOf(stage);
+  const throughIdx = BATCH_STAGE_ORDER.indexOf(throughStage);
+  if (curIdx === -1 || throughIdx === -1) return false;
+  return curIdx > throughIdx;
+}
+
+// Live "N/M batches done" + the current batch's own source/target/pairing/
+// reconcile checklist — rendered in place of the generic step-in-progress
+// line while `current_step === "run_batches"`. Derived entirely from
+// `run.batch_progress`, already polled from GET /api/recon/auto-run/{id}/status.
+function BatchProgress({ bp }) {
+  const stage = bp.stage || "fetching_source";
+  const batchesDone = bp.batches_completed ?? bp.batch_index;
+  return (
+    <>
+      <div className={styles.batchProgressHeader}>
+        <span className={styles.batchProgressCounter}>
+          {batchesDone}/{bp.batch_count} batches done
+        </span>
+        <span className={styles.batchProgressLabel} title={bp.batch_label}>
+          Batch {bp.batch_index + 1} of {bp.batch_count} — {bp.batch_label}
+        </span>
+      </div>
+      {BATCH_MILESTONES.map((m) => {
+        const done = batchMilestoneDone(stage, m.throughStage);
+        return (
+          <div key={m.label} className={styles.stepRow}>
+            <span className={`${styles.stepDot}${done ? ` ${styles.stepDotDone}` : ""}`}>
+              {done && <Check size={9} strokeWidth={3.5} />}
+            </span>
+            <span className={`${styles.stepLabel}${done ? ` ${styles.stepLabelDone}` : ""}`}>{m.label}</span>
+          </div>
+        );
+      })}
+      {stage !== "completed" && (
+        <div className={styles.stepActive}>
+          <span className={styles.stepPulse}>
+            <span className={styles.stepPulseDot} />
+            <span className={styles.stepPulseDot} />
+          </span>
+          <span className={styles.stepActiveLabel}>{BATCH_STAGE_LABELS[stage] || "Working…"}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Cumulative progress checklist for a run's bot message: milestones already
+// passed show a checkmark, and — while actively running — the specific
+// granular step in progress shows as an animated line below them. Once the
+// run reaches "run_batches", that line is replaced by BatchProgress's own
+// per-batch checklist and batch counter. Derived entirely from
+// `current_step`/`status`/`batch_progress`, already polled from
+// GET /api/recon/auto-run/{id}/status — no new data needed.
+function StepChecklist({ run }) {
+  const currentStep = run.current_step;
+  const status = run.status;
+  const bp = run.batch_progress;
+  const inBatchLoop = status === "running" && currentStep === "run_batches" && !!bp;
+  return (
+    <div className={styles.stepChecklist}>
+      {MILESTONES.map((m) => {
+        const done = milestoneDone(currentStep, m.throughStep, status);
+        return (
+          <div key={m.label} className={styles.stepRow}>
+            <span className={`${styles.stepDot}${done ? ` ${styles.stepDotDone}` : ""}`}>
+              {done && <Check size={9} strokeWidth={3.5} />}
+            </span>
+            <span className={`${styles.stepLabel}${done ? ` ${styles.stepLabelDone}` : ""}`}>{m.label}</span>
+          </div>
+        );
+      })}
+      {inBatchLoop && <BatchProgress bp={bp} />}
+      {status === "running" && currentStep && !inBatchLoop && (
+        <div className={styles.stepActive}>
+          <span className={styles.stepPulse}>
+            <span className={styles.stepPulseDot} />
+            <span className={styles.stepPulseDot} />
+          </span>
+          <span className={styles.stepActiveLabel}>{STEP_LABELS[currentStep] || "Working…"}</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ResultBadges({ summary }) {
   if (!summary) return null;
@@ -155,7 +291,11 @@ function RunProgress({ run, onResolve }) {
   if (run.status === "waiting_for_input" && run.interrupt) {
     return (
       <div className={styles.resolver}>
-        {idBadge}
+        <StepChecklist run={run} />
+        <div className={styles.resolverEyebrowRow}>
+          <span className={styles.resolverEyebrow}>Needs your input</span>
+          {idBadge}
+        </div>
         <p className={styles.resolverMessage}>{run.interrupt.message}</p>
         {run.interrupt.options?.length > 0 && (
           <div className={styles.resolverChips}>
@@ -184,6 +324,7 @@ function RunProgress({ run, onResolve }) {
               }
             }}
           />
+          <ArrowRight size={15} className={styles.resolverInputIcon} />
         </div>
       </div>
     );
@@ -206,8 +347,8 @@ function RunProgress({ run, onResolve }) {
           {idBadge}
           <p className={styles.runInterrupted}>
             {bp
-              ? `Reconciliation was interrupted after completing batch ${bp.batch_index + 1} of ` +
-                `${bp.batch_count} (${bp.batch_label}). It can continue from where it left off.`
+              ? `Reconciliation was interrupted after completing ${bp.batches_completed ?? bp.batch_index} of ` +
+                `${bp.batch_count} batches. It can continue from where it left off.`
               : "Reconciliation was interrupted. It can continue from where it left off."}
           </p>
         </>
@@ -224,26 +365,39 @@ function RunProgress({ run, onResolve }) {
   return (
     <>
       {idBadge}
-      <p className={styles.runStatusLine}>
-        {STEP_LABELS[run.current_step] || STATUS_LABELS[run.status] || "Working…"}
-      </p>
+      <StepChecklist run={run} />
+      {run.status !== "running" && (
+        <p className={styles.runStatusLine}>{STATUS_LABELS[run.status] || "Working…"}</p>
+      )}
     </>
   );
 }
 
 function Message({ message, onResolve, onDownloadAttachment }) {
   const { from, text, attachments, run } = message;
+  const isBot = from !== "user";
+  const isInterrupt = run?.status === "waiting_for_input";
+  const bubbleClasses = [styles.message, isBot ? styles.messageBot : styles.messageUser, isInterrupt ? styles.messageInterrupt : ""]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <div className={`${styles.message} ${from === "user" ? styles.messageUser : styles.messageBot}`}>
-      {text && <div>{text}</div>}
-      {attachments?.length > 0 && (
-        <div className={styles.messageAttachments}>
-          {attachments.map((a) => (
-            <AttachmentChip key={a.id} attachment={a} onDownload={a.downloadUrl ? onDownloadAttachment : undefined} />
-          ))}
-        </div>
+    <div className={`${styles.messageRow}${isBot ? "" : ` ${styles.messageRowUser}`}`}>
+      {isBot && (
+        <span className={styles.messageAvatar}>
+          <Bot size={13} strokeWidth={1.75} />
+        </span>
       )}
-      {run && <RunProgress run={run} onResolve={(value) => onResolve(message.id, value)} />}
+      <div className={bubbleClasses}>
+        {text && <div>{text}</div>}
+        {attachments?.length > 0 && (
+          <div className={styles.messageAttachments}>
+            {attachments.map((a) => (
+              <AttachmentChip key={a.id} attachment={a} onDownload={a.downloadUrl ? onDownloadAttachment : undefined} />
+            ))}
+          </div>
+        )}
+        {run && <RunProgress run={run} onResolve={(value) => onResolve(message.id, value)} />}
+      </div>
     </div>
   );
 }
@@ -265,9 +419,11 @@ function FloatingSuggestions({ run, onViewInsights, onRunNext, onRetry }) {
   return (
     <div className={styles.floatingSuggestions}>
       <button type="button" className={styles.suggestionPill} onClick={onViewInsights}>
+        <BarChart2 size={14} />
         View Insights
       </button>
       <button type="button" className={styles.suggestionPill} onClick={onRunNext}>
+        <Layers size={14} />
         Run next reconciliation
       </button>
     </div>
@@ -685,44 +841,53 @@ function AssistantBot() {
           </div>
         )}
 
-        <div className={styles.inputRow}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className={styles.hiddenFileInput}
-            onChange={(e) => {
-              addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <button
-            type="button"
-            className={styles.attach}
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach files"
-            title="Attach files"
-          >
-            <Plus size={18} />
-          </button>
-          <textarea
-            className={styles.input}
-            placeholder="Type a message, or drop / paste files…"
-            rows={1}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-          />
-          <button
-            type="button"
-            className={styles.send}
-            onClick={sendMessage}
-            disabled={sending || (!draft.trim() && attachments.length === 0)}
-            aria-label="Send message"
-          >
-            <Send size={16} />
-          </button>
+        <div className={styles.composer}>
+          <div className={styles.inputRow}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className={styles.hiddenFileInput}
+              onChange={(e) => {
+                addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              className={styles.attach}
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Attach files"
+              title="Attach files"
+            >
+              <Plus size={18} />
+            </button>
+            <textarea
+              className={styles.input}
+              placeholder="Type a message, or drop / paste files…"
+              rows={1}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+            />
+            <button
+              type="button"
+              className={styles.send}
+              onClick={sendMessage}
+              disabled={sending || (!draft.trim() && attachments.length === 0)}
+              aria-label="Send message"
+            >
+              <Send size={16} />
+            </button>
+          </div>
+          <div className={styles.composerHint}>
+            <span className={styles.composerHintLeft}>
+              <Paperclip size={13} />
+              Attach with +, drag, or paste
+            </span>
+            <span className={styles.composerHintRight}>Enter to send · Esc to close</span>
+          </div>
         </div>
 
         {dragActive && (

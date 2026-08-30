@@ -1,14 +1,27 @@
 import { useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { FiPlay } from "react-icons/fi";
+import {
+  FiPlay,
+  FiArrowRight,
+  FiArrowUpRight,
+  FiLayers,
+  FiBookOpen,
+  FiBarChart2,
+  FiArchive,
+  FiDatabase,
+} from "react-icons/fi";
 import Counter from "../components/Counter";
+import { useAuth } from "../auth/useAuth";
 import "./homeContent.css";
 
 const CAPABILITIES = [
   {
     key: "reconciliation",
     to: "/reconciliation",
+    icon: FiLayers,
     accent: "var(--accent)",
+    bg: "var(--accent-tint)",
+    bd: "var(--accent-tint-2)",
     title: "Reconciliation Engine",
     description:
       "Guided wizard from connector selection through comparison type, transformation spec and run — with a shadow preview before anything commits.",
@@ -16,7 +29,10 @@ const CAPABILITIES = [
   {
     key: "library",
     to: "/library",
+    icon: FiBookOpen,
     accent: "var(--info)",
+    bg: "var(--info-bg)",
+    bd: "var(--info-bd)",
     title: "Mapping Library",
     description:
       "Reusable field mappings with confidence tiers, review drawers and side-by-side before/after on every proposed change.",
@@ -24,7 +40,10 @@ const CAPABILITIES = [
   {
     key: "insights",
     to: "/insights",
+    icon: FiBarChart2,
     accent: "var(--match)",
+    bg: "var(--match-bg)",
+    bd: "var(--match-bd)",
     title: "Insights",
     description:
       "Executive summary, hotspot heatmaps, root-cause boards and a readiness radar built from the run's own diagnostics.",
@@ -32,7 +51,10 @@ const CAPABILITIES = [
   {
     key: "stored-runs",
     to: "/stored-runs",
+    icon: FiArchive,
     accent: "var(--extra)",
+    bg: "var(--extra-bg)",
+    bd: "var(--extra-bd)",
     title: "Stored Runs",
     description:
       "Every reconciliation persisted with its inputs, contract and results — reopen, compare or export any historical run.",
@@ -40,7 +62,10 @@ const CAPABILITIES = [
   {
     key: "data-sources",
     to: "/data-sources",
+    icon: FiDatabase,
     accent: "var(--scope)",
+    bg: "var(--scope-bg)",
+    bd: "var(--scope-bd)",
     title: "Data Sources",
     description: "SAP S/4HANA, IBP, SQL and Excel connections in one place, with credentials encrypted at rest.",
   },
@@ -49,6 +74,7 @@ const CAPABILITIES = [
 const STEPS = [
   {
     step: "STEP 01",
+    highlight: true,
     title: "Connect sources",
     description: "Pick the two datasets — S/4HANA against IBP, SQL or an uploaded workbook.",
   },
@@ -101,7 +127,7 @@ const SUPPORT_CARDS = [
   },
   {
     key: "contact",
-    tone: "home-support-card--plain",
+    tone: "home-support-card--dark",
     title: "Talk to the team",
     description: "Reach out or book a walkthrough with the reconciliation platform team.",
     label: "Contact support →",
@@ -116,16 +142,27 @@ const SUPPORT_CARDS = [
  */
 function HomeContent({ authed = false }) {
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const metrics = useMemo(
     () => [
-      { key: "total", label: "Total Reconciliations", value: 245, accent: "var(--info)" },
-      { key: "accuracy", label: "Reconciliation Accuracy", display: "98.4%", accent: "var(--match)" },
-      { key: "reports", label: "Total Reports Generated", value: 128, accent: "var(--accent)" },
+      { key: "total", label: "Total Reconciliations", value: 245 },
+      { key: "accuracy", label: "Reconciliation Accuracy", display: "98.4%", accent: "var(--info)" },
+      { key: "reports", label: "Total Reports Generated", value: 128 },
       { key: "issues", label: "Open Issues", value: 43, accent: "var(--qty)" },
     ],
     [],
   );
+
+  const greeting = useMemo(() => {
+    const h = new Date().getHours();
+    return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  }, []);
+  const today = useMemo(
+    () => new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }),
+    [],
+  );
+  const firstName = user?.full_name?.trim().split(/\s+/)[0];
 
   const heroPrimary = authed
     ? { label: "Start a reconciliation", onClick: () => navigate("/reconciliation") }
@@ -136,51 +173,78 @@ function HomeContent({ authed = false }) {
     return "mailto:support@bristlecone.com";
   };
 
+  // Only one h1 per page: the greeting owns it when present (authed), so the
+  // hero headline steps down to h2; on the unauthenticated landing page (no
+  // greeting) the hero headline is the page's h1.
+  const HeroHeading = authed ? "h2" : "h1";
+
   return (
     <div className={`home-content${authed ? " home-content--authed" : ""}`}>
+      {authed && (
+        <section className="home-greeting">
+          <div>
+            <p className="home-greeting-date">{today}</p>
+            <h1 className="home-greeting-title">
+              {greeting}
+              {firstName ? `, ${firstName}` : ""}
+            </h1>
+          </div>
+          <div className="home-greeting-chip">
+            <span className="home-greeting-dot" />
+            <span>/reconciliation/run</span>
+          </div>
+        </section>
+      )}
+
       <section className="home-hero">
-        <div>
-          <p className="home-eyebrow">SAP S/4HANA &nbsp;↔&nbsp; IBP &nbsp;↔&nbsp; SQL &nbsp;↔&nbsp; Excel</p>
-          <h1 className="home-h1">Reconcile SAP data with evidence, not spreadsheets.</h1>
-          <p className="home-lede">
-            One connected workspace for mapping, transformation, reconciliation and exception handling across your
-            SAP landscape — with every match, gap and root cause traceable back to the source record.
-          </p>
-          <div className="flex items-center gap-3 mt-7">
-            <button type="button" className="btn-primary" onClick={heroPrimary.onClick}>
-              {heroPrimary.label}
-            </button>
-            <a href="#demos" className="btn-secondary">
-              Watch the 3-min demo
-            </a>
+        <div className="home-hero-card">
+          <div className="home-hero-glow" aria-hidden="true" />
+          <div className="home-hero-inner">
+            <div className="home-chip-row">
+              <span className="home-chip">SAP S/4HANA</span>
+              <span className="home-chip-sep">↔</span>
+              <span className="home-chip">IBP</span>
+              <span className="home-chip-sep">↔</span>
+              <span className="home-chip">BW</span>
+              <span className="home-chip-sep">↔</span>
+              <span className="home-chip">Datasphere</span>
+              <span className="home-chip-sep">↔</span>
+              <span className="home-chip home-chip--more">SQL · Excel · +more</span>
+            </div>
+            <HeroHeading className="home-h1">Reconcile SAP data with evidence, not spreadsheets.</HeroHeading>
+            <p className="home-lede">
+              One connected workspace for mapping, transformation, reconciliation and exception handling across your
+              SAP landscape — with every match, gap and root cause traceable back to the source record.
+            </p>
+            <div className="home-hero-actions">
+              <button type="button" className="btn-primary home-hero-primary" onClick={heroPrimary.onClick}>
+                {heroPrimary.label}
+                <FiArrowRight />
+              </button>
+              <a href="#demos" className="btn-secondary home-hero-secondary">
+                <FiPlay />
+                Watch the 3-min demo
+              </a>
+            </div>
+            <p className="home-hero-footnote">
+              Single sign-on · Encrypted connection credentials · Audit-ready run history
+            </p>
           </div>
-          <p className="home-hero-footnote">Single sign-on · Encrypted connection credentials · Audit-ready run history</p>
-        </div>
-        <div className="home-hero-frame">
-          <div className="home-hero-chrome">
-            <span className="home-hero-dot" />
-            <span className="home-hero-dot" />
-            <span className="home-hero-dot" />
-            <span className="home-hero-path">/reconciliation/run</span>
-          </div>
-          <div className="home-hero-shot" aria-hidden="true" />
         </div>
       </section>
 
       <section className="home-metrics">
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
           {metrics.map((m) => (
-            <div
-              key={m.key}
-              className="surface-elevated accent-bar p-4"
-              style={{ borderLeftColor: m.accent }}
-            >
+            <div key={m.key} className="surface-elevated p-4">
               <div className="home-metric-label">{m.label}</div>
               <div className="mt-2.5">
                 {m.value !== undefined ? (
-                  <Counter value={m.value} fontSize={28} fontWeight={800} textColor="var(--ink)" gap={0} />
+                  <Counter value={m.value} fontSize={28} fontWeight={800} textColor={m.accent || "var(--ink)"} gap={0} />
                 ) : (
-                  <span className="home-metric-display">{m.display}</span>
+                  <span className="home-metric-display" style={{ color: m.accent || "var(--ink)" }}>
+                    {m.display}
+                  </span>
                 )}
               </div>
             </div>
@@ -189,42 +253,56 @@ function HomeContent({ authed = false }) {
       </section>
 
       <section id="capabilities" className="home-section">
-        <h2 className="home-h2">One workspace, five connected surfaces</h2>
-        <p className="home-section-sub">
-          Every module in the platform reads the same contracts, the same mappings and the same run history.
-        </p>
+        <div className="home-section-head">
+          <div>
+            <h2 className="home-h2">One workspace, five connected surfaces</h2>
+            <p className="home-section-sub">
+              Every module in the platform reads the same contracts, the same mappings and the same run history.
+            </p>
+          </div>
+        </div>
         <div className="home-capability-grid">
-          {CAPABILITIES.map((c) =>
-            authed ? (
-              <Link
-                key={c.key}
-                to={c.to}
-                className="surface-elevated accent-bar home-capability-card home-capability-card--link"
-                style={{ borderLeftColor: c.accent }}
-              >
+          {CAPABILITIES.map((c) => {
+            const Icon = c.icon;
+            const body = (
+              <>
+                <div className="home-capability-top">
+                  <span
+                    className="home-capability-icon"
+                    style={{ background: c.bg, borderColor: c.bd, color: c.accent }}
+                  >
+                    <Icon />
+                  </span>
+                  {authed && <FiArrowUpRight className="home-capability-arrow" />}
+                </div>
                 <div className="home-capability-title">{c.title}</div>
                 <p className="home-capability-desc">{c.description}</p>
+              </>
+            );
+            return authed ? (
+              <Link key={c.key} to={c.to} className="surface-elevated home-capability-card home-capability-card--link">
+                {body}
               </Link>
             ) : (
-              <div
-                key={c.key}
-                className="surface-elevated accent-bar home-capability-card"
-                style={{ borderLeftColor: c.accent }}
-              >
-                <div className="home-capability-title">{c.title}</div>
-                <p className="home-capability-desc">{c.description}</p>
+              <div key={c.key} className="surface-elevated home-capability-card">
+                {body}
               </div>
-            ),
-          )}
+            );
+          })}
         </div>
       </section>
 
       <section id="how" className="home-section">
-        <h2 className="home-h2 mb-7">How a reconciliation runs</h2>
+        <div className="home-section-head">
+          <h2 className="home-h2">How a reconciliation runs</h2>
+        </div>
         <div className="home-step-grid">
           {STEPS.map((s) => (
-            <div key={s.step} className="surface-elevated home-step-card">
-              <div className="home-step-eyebrow">{s.step}</div>
+            <div key={s.step} className="home-step-card">
+              <div className={`home-step-track${s.highlight ? " home-step-track--active" : ""}`}>
+                {s.highlight && <span className="home-step-track-fill" />}
+              </div>
+              <div className={`home-step-eyebrow${s.highlight ? " home-step-eyebrow--active" : ""}`}>{s.step}</div>
               <div className="home-step-title">{s.title}</div>
               <p className="home-step-desc">{s.description}</p>
             </div>
@@ -232,13 +310,11 @@ function HomeContent({ authed = false }) {
         </div>
       </section>
 
-      <section id="demos" className="home-demos">
-        <div className="home-demos-head">
+      <section id="demos" className="home-section">
+        <div className="home-section-head">
           <div>
-            <h2 className="home-h2 home-h2--light">Demo library</h2>
-            <p className="home-section-sub home-section-sub--light">
-              Short walkthroughs recorded from the live product.
-            </p>
+            <h2 className="home-h2">Demo library</h2>
+            <p className="home-section-sub">Short walkthroughs recorded from the live product.</p>
           </div>
           <a href="#support" className="home-demos-cta">
             Request a guided session →
@@ -246,7 +322,7 @@ function HomeContent({ authed = false }) {
         </div>
         <div className="home-demo-grid">
           {DEMOS.map((d) => (
-            <div key={d.key} className="home-demo-card">
+            <div key={d.key} className="surface-elevated home-demo-card">
               <div className="home-demo-poster">
                 <span className="home-demo-play">
                   <FiPlay />
@@ -263,7 +339,9 @@ function HomeContent({ authed = false }) {
       </section>
 
       <section id="support" className="home-section">
-        <h2 className="home-h2 mb-7">Support & enablement</h2>
+        <div className="home-section-head">
+          <h2 className="home-h2">Support &amp; enablement</h2>
+        </div>
         <div className="home-support-grid">
           {SUPPORT_CARDS.map((s) => (
             <div key={s.key} className={`home-support-card ${s.tone}`}>

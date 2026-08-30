@@ -83,12 +83,20 @@ def update_batch_progress(
     batch_index: int,
     batch_count: int,
     batch_label: str,
+    stage: str,
+    batches_completed: int,
 ) -> None:
-    """Live per-batch progress for the currently-running ``pair_values`` call
-    (see ``value_pairing.pipeline.pair_values``'s ``on_batch`` hook) — a
-    separate write from :func:`update` (which only runs once per WHOLE graph
-    node completes) so the polling status endpoint can show "batch N of M"
-    while the ``pair_values`` node is still mid-flight.
+    """Live per-batch progress for the currently-running ``run_batches`` node
+    (see ``auto_pipeline.nodes._report_batch_stage``) — a separate write from
+    :func:`update_progress` (which only runs once per WHOLE graph node
+    completes) so the polling status endpoint can show "batch N of M" plus
+    which sub-stage of that batch (fetching source, fetching target, pairing
+    values, reconciling, completed) is in flight while ``run_batches`` is
+    still mid-flight. ``stage`` values are consumed verbatim by the
+    frontend's per-batch checklist — keep the two in sync if either changes.
+    ``batches_completed`` is the count of FULLY finished batches (not
+    ``batch_index``, which is the batch currently being worked on) — the
+    number the frontend shows as "N/M batches done".
     """
     with main_db() as conn:
         conn.execute(
@@ -100,6 +108,8 @@ def update_batch_progress(
                         "batch_index": batch_index,
                         "batch_count": batch_count,
                         "batch_label": batch_label,
+                        "stage": stage,
+                        "batches_completed": batches_completed,
                     }
                 ),
                 graph_run_id,
