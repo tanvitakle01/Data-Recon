@@ -138,8 +138,9 @@ def test_resume_succeeds_and_flips_status_to_running(client):
     res = client.post("/api/recon/auto-run/autorun_resumable_suspend/resume", json={})
     assert res.status_code == 200, res.text
     assert pipeline_run_store.get("autorun_resumable_suspend")["status"] in {"running", "completed"}
-    # The suspension record is cleared as part of resuming.
-    assert pipeline_run_store.get_suspension("autorun_resumable_suspend") is None
+    # The suspension record survives resuming — Stored Runs tracks a run
+    # through resume/completion until the user explicitly deletes it.
+    assert pipeline_run_store.get_suspension("autorun_resumable_suspend") is not None
 
 
 def test_resume_409s_on_stale_fingerprint(client, monkeypatch):
@@ -198,10 +199,35 @@ def test_delete_stored_run_cancels_and_cleans_up_artifacts(client):
     ) is None
 
 
-def test_delete_stored_run_409s_when_not_suspended(client):
+def test_delete_stored_run_404s_when_never_a_stored_run(client):
+    # Never suspended — no pipeline_run_suspensions row — so it isn't a Stored
+    # Runs entry at all, distinct from the 409 an ACTIVE run gets below.
     pipeline_run_store.create("autorun_not_suspended_delete")
     res = client.delete("/api/recon/auto-run/autorun_not_suspended_delete")
+    assert res.status_code == 404
+
+
+def test_delete_stored_run_409s_while_active(client):
+    # Transition directly rather than via the real /resume (which kicks off
+    # a background graph re-execution this synthetic run's incomplete state
+    # can't actually support) — this test only cares about the DELETE route's
+    # ACTIVE_STATES guard, not resume's own machinery (covered above).
+    _make_suspended_run("autorun_delete_while_running")
+    run_registry.transition("autorun_delete_while_running", RunState.RUNNING, reason="test setup")
+    res = client.delete("/api/recon/auto-run/autorun_delete_while_running")
     assert res.status_code == 409
+
+
+def test_delete_stored_run_dismisses_a_completed_tracked_run(client):
+    _make_suspended_run("autorun_delete_completed")
+    run_registry.transition("autorun_delete_completed", RunState.RUNNING, reason="test setup")
+    run_registry.transition("autorun_delete_completed", RunState.COMPLETED, reason="test setup")
+
+    res = client.delete("/api/recon/auto-run/autorun_delete_completed")
+    assert res.status_code == 200, res.text
+    assert pipeline_run_store.get_suspension("autorun_delete_completed") is None
+    # A completed run's status is terminal — never touched by delete.
+    assert run_registry.current_state("autorun_delete_completed") == RunState.COMPLETED
 
 
 # ── partial results without resuming ────────────────────────────────────────
@@ -215,19 +241,125 @@ def test_partial_results_available_without_resuming(client, monkeypatch):
     result = result_store.start_streaming_result(
         run_id="autorun_partial_results", contract_id="c1", contract_version=1
     )
+    # Real batches stamp run_id/batch_id/record_id onto every detail row (see
+    # auto_pipeline.nodes._do_run_batches) and record a matching
+    # run_batch_attempts row — both are what let the View panel group rows by
+    # batch number, so this test reproduces them rather than a bare frame.
     result_store.append_batch_result(
         result.result_id,
-        detail_df=pd.DataFrame({"source_value": ["A"], "target_value": ["A"]}),
+        detail_df=pd.DataFrame({
+            "source_value": ["A"], "target_value": ["A"],
+            "run_id": ["autorun_partial_results"], "batch_id": ["batch_1"], "record_id": ["rec_1"],
+        }),
         batch_summary=ReconciliationSummary(total=1, match=1),
+    )
+    pipeline_run_store.record_batch_attempt(
+        "autorun_partial_results", batch_id="batch_1", batch_index=0,
+        supersedes_batch_id=None, status="completed",
     )
 
     res = client.get("/api/recon/auto-run/autorun_partial_results/partial-results")
     assert res.status_code == 200
-    assert res.json()["preview_rows"] == [{"source_value": "A", "target_value": "A"}]
+    body = res.json()
+    assert body["batches_completed"] == 1
+    assert body["batches"][0]["batch_index"] == 0
+    assert body["batches"][0]["preview_rows"] == [
+        {
+            "source_value": "A", "target_value": "A",
+            "run_id": "autorun_partial_results", "batch_id": "batch_1", "record_id": "rec_1",
+        }
+    ]
+    # No value mappings were recorded for this batch — an empty list, not a
+    # missing key (the frontend renders nothing for an empty batch mapping).
+    assert body["batches"][0]["mappings"] == []
 
     res = client.get("/api/recon/auto-run/autorun_partial_results/partial-results/export")
     assert res.status_code == 200
     assert "source_value" in res.text
+    assert "1of" in res.headers["content-disposition"]
+
+
+def test_partial_results_includes_this_batchs_value_mappings(client):
+    from backend.recon_engine.storage import result_store, run_value_mapping_store
+    from backend.recon_engine.models.results import ReconciliationSummary
+    from backend.recon_engine.models.value_mapping import ValueMapping
+    import pandas as pd
+
+    _make_suspended_run("autorun_partial_mappings")
+    result = result_store.start_streaming_result(
+        run_id="autorun_partial_mappings", contract_id="c1", contract_version=1
+    )
+    result_store.append_batch_result(
+        result.result_id,
+        detail_df=pd.DataFrame({
+            "source_value": ["A"], "target_value": ["A"],
+            "run_id": ["autorun_partial_mappings"], "batch_id": ["batch_1"], "record_id": ["rec_1"],
+        }),
+        batch_summary=ReconciliationSummary(total=1, match=1),
+    )
+    pipeline_run_store.record_batch_attempt(
+        "autorun_partial_mappings", batch_id="batch_1", batch_index=0,
+        supersedes_batch_id=None, status="completed",
+    )
+    run_value_mapping_store.record_batch_mapping(
+        "autorun_partial_mappings",
+        ValueMapping.model_validate({
+            "source_field": "Material", "target_field": "PRDID",
+            "matches": [
+                {"source_value": "A", "target_value": "A1", "confidence": "high",
+                 "rule": "t", "evidence": "e", "row_count": 1},
+            ],
+        }),
+        batch_id="batch_1",
+    )
+
+    res = client.get("/api/recon/auto-run/autorun_partial_mappings/partial-results")
+    assert res.status_code == 200
+    mappings = res.json()["batches"][0]["mappings"]
+    assert len(mappings) == 1
+    assert mappings[0]["source_field"] == "Material"
+    assert mappings[0]["matches"][0]["source_value"] == "A"
+    assert mappings[0]["matches"][0]["target_value"] == "A1"
+
+
+def test_stored_runs_and_partial_results_fall_back_to_batch_progress_when_checkpoint_is_gone(client):
+    """Reproduces a run that hard-failed at ``finalize`` AFTER every batch
+    completed: its checkpoint/plan are already gone (``_do_finalize`` clears
+    them once ``run_batches`` itself is done, regardless of whether finalize
+    then succeeds), but ``batch_progress_json`` — a separate, never-cleared
+    field — still has the real count. Both ``list_stored_runs`` and
+    ``get_partial_results`` must report the true 6-of-6, not a misleading
+    0-of-unknown."""
+    graph_run_id = "autorun_finalize_failed_progress"
+    _make_suspended_run(graph_run_id)
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason="test setup")
+    pipeline_run_store.update_batch_progress(
+        graph_run_id, field_pair="Material -> PRDID", batch_index=5, batch_count=6,
+        batch_label="batch 6", stage="completed", batches_completed=6,
+    )
+    run_registry.transition(graph_run_id, RunState.FAILED, reason="test setup")
+    pipeline_run_store.update_progress(graph_run_id, failed_step="finalize", error="0 columns passed")
+    pipeline_run_store.clear_run_batch_state(graph_run_id)  # what _do_finalize does before it can fail
+
+    res = client.get("/api/recon/auto-run/stored")
+    assert res.status_code == 200
+    row = next(r for r in res.json() if r["graph_run_id"] == graph_run_id)
+    assert row["batches_completed"] == 6
+    assert row["batches_total"] == 6
+
+    res = client.get(f"/api/recon/auto-run/{graph_run_id}/partial-results")
+    assert res.status_code == 200
+    assert res.json()["batches_total"] == 6
+
+
+def test_partial_results_empty_state_when_no_batches_completed(client):
+    _make_suspended_run("autorun_partial_results_empty")
+    # No result_store entry at all yet — 0 of N batches completed.
+    res = client.get("/api/recon/auto-run/autorun_partial_results_empty/partial-results")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["batches"] == []
+    assert body["batches_completed"] == 0
 
 
 # ── run_registry state machine ──────────────────────────────────────────────

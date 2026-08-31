@@ -8,6 +8,7 @@ existing authenticated session (see ``chat_assistant.session_store`` /
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -15,6 +16,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from backend.auth.dependencies import get_current_session
 from backend.auth.sessions import SessionInfo
 from backend.recon_engine.chat_assistant.orchestrator import handle_message
+
+logger = logging.getLogger("recon.routes.chat")
 
 router = APIRouter(prefix="/api/chat", tags=["chat-assistant"])
 
@@ -37,7 +40,15 @@ async def post_chat_message(
         if content:
             new_attachments.append((upload.filename or "attachment", content))
 
-    result = handle_message(
-        message=message, new_attachments=new_attachments, state=parsed_state, session_id=session.session_id
-    )
+    try:
+        result = handle_message(
+            message=message, new_attachments=new_attachments, state=parsed_state, session_id=session.session_id
+        )
+    except Exception:  # noqa: BLE001 - a bug here must never surface as a bare 500 mid-conversation
+        logger.exception("handle_message failed for session %s", session.session_id)
+        return {
+            "reply": "Something went wrong handling that — please try again.",
+            "state": parsed_state,
+            "run": None,
+        }
     return result

@@ -34,6 +34,14 @@ class ReconcileResult:
     summary: ReconciliationSummary
 
 
+# Every key ``_record()`` ever puts in a row dict, in that same order — passed
+# explicitly to ``pd.DataFrame`` below so a batch with zero output records
+# still gets a properly-shaped (0-row, correctly-named) frame rather than
+# ``pd.DataFrame([])``'s bare 0-row/0-COLUMN frame (see ``storage.frames.
+# append_frame``'s docstring on why a 0-column frame is dangerous downstream).
+_DETAIL_COLUMNS = ["business_key", "classification", "detail", "source_row_ids", "field_diffs", "pair_ids"]
+
+
 def _normalise_scalar(value: Any, options: dict[str, Any]) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
@@ -130,7 +138,7 @@ def reconcile(
             )
         )
 
-    detail_df = pd.DataFrame(records)
+    detail_df = pd.DataFrame(records, columns=_DETAIL_COLUMNS)
     counts = (
         detail_df["classification"].value_counts().to_dict() if not detail_df.empty else {}
     )

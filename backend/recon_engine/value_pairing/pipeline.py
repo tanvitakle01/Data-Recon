@@ -177,6 +177,7 @@ def _finalize_single(
     corroboration: bool | None = None,
     sibling_candidates: list[str] | None = None,
     library_pairs: dict[str, Any] | None = None,
+    graph_run_id: str | None = None,
 ) -> ValueMatch:
     """The resolution for one (value, target) pair — sole candidate or one of
     several accepted candidates (see module docstring)."""
@@ -243,6 +244,7 @@ def _finalize_single(
         ops=chain,
         evidence={"origins": sorted(kinds)},
         added_by=actor,
+        graph_run_id=graph_run_id,
     )
     origin_label = "llm_verified" if "llm" in kinds else "pattern_reused"
     return ValueMatch(
@@ -281,6 +283,7 @@ def _resolve_candidates(
     target_field: str,
     actor: str,
     library_pairs: dict[str, Any] | None = None,
+    graph_run_id: str | None = None,
 ) -> list[ValueMatch]:
     """Resolve every distinct candidate target for ``value`` — a sole
     candidate resolves directly; multiple verified candidates are ALL
@@ -302,6 +305,7 @@ def _resolve_candidates(
                 target_field=target_field,
                 actor=actor,
                 library_pairs=library_pairs,
+                graph_run_id=graph_run_id,
             )
         ]
 
@@ -339,6 +343,7 @@ def _resolve_candidates(
             corroboration=overlaps[target],
             sibling_candidates=siblings,
             library_pairs=library_pairs,
+            graph_run_id=graph_run_id,
         )
         for target in distinct_targets
     ]
@@ -361,6 +366,7 @@ def _assemble_and_resolve(
     source_field: str,
     target_field: str,
     actor: str,
+    graph_run_id: str | None = None,
 ) -> list[ValueMatch]:
     """Assemble every distinct candidate target per still-unresolved value
     (from whichever origins are non-empty — library/identity always, LLM/
@@ -426,6 +432,7 @@ def _assemble_and_resolve(
                 target_field=target_field,
                 actor=actor,
                 library_pairs=library_pairs,
+                graph_run_id=graph_run_id,
             )
         )
 
@@ -500,6 +507,7 @@ def _pair_batch(
     target_dates: pd.Series | None,
     actor: str,
     batch_label: str,
+    graph_run_id: str | None = None,
 ) -> tuple[list[ValueMatch], bool]:
     """One batch's worth of steps 0-4 (library, identity, LLM proposal +
     verification, pattern reuse, resolve) — everything :func:`pair_values`
@@ -536,6 +544,7 @@ def _pair_batch(
         target_connector=target_connector,
         source_field=source_field,
         target_field=target_field,
+        graph_run_id=graph_run_id,
     )
 
     # Step 1: identity is a CANDIDATE, not an auto-accept (see module docstring).
@@ -657,6 +666,7 @@ def _pair_batch(
         source_field=source_field,
         target_field=target_field,
         actor=actor,
+        graph_run_id=graph_run_id,
     )
     return matches, all_failed
 

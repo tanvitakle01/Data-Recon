@@ -59,9 +59,11 @@ def _fake_trigger_resume(graph_run_id: str, *, force: bool = False) -> dict:
     schedules a background asyncio task, which needs a running event loop
     these synchronous orchestrator tests don't have. Its own DB/state-machine
     behavior is already covered by ``test_suspend_resume.py``; here we only
-    need the side effects the orchestrator's resume path depends on."""
+    need the side effects the orchestrator's resume path depends on. Does NOT
+    delete the suspension row — the real ``trigger_resume`` no longer does
+    either, since Stored Runs now tracks a run through resume/completion until
+    the user explicitly deletes it (see ``list_stored_runs``)."""
     run_registry.transition(graph_run_id, RunState.RUNNING, reason="test resume")
-    pipeline_run_store.delete_suspension(graph_run_id)
     return {"graph_run_id": graph_run_id, "status": "resuming"}
 
 

@@ -353,36 +353,64 @@ def delete_suspension(graph_run_id: str) -> None:
 
 
 def list_expired_suspensions(*, as_of: str | None = None) -> list[str]:
-    """graph_run_ids whose suspension has passed ``expires_at`` — the
-    watchdog's expiry sweep reads this, then transitions each to CANCELLED and
-    calls :func:`cleanup_run_artifacts`, same as an explicit delete."""
+    """graph_run_ids whose suspension has passed ``expires_at`` AND whose
+    owning run is still actually SUSPENDED — the watchdog's expiry sweep reads
+    this, then transitions each to CANCELLED and calls
+    :func:`cleanup_run_artifacts`, same as an explicit delete.
+
+    The suspension row now outlives a resume (see ``routes.auto_pipeline.
+    trigger_resume`` — Stored Runs tracks a run regardless of its current
+    status), so this must not surface a row whose run has since moved on
+    (resumed/completed/failed) — literal-string status join rather than a
+    ``run_registry``/``RunState`` import, this module is deliberately
+    decoupled from that module."""
     cutoff = as_of or datetime.now(timezone.utc).isoformat()
     with main_db() as conn:
         rows = conn.execute(
-            "SELECT graph_run_id FROM pipeline_run_suspensions WHERE expires_at < ?", (cutoff,)
+            """SELECT s.graph_run_id FROM pipeline_run_suspensions s
+               JOIN pipeline_runs r ON r.graph_run_id = s.graph_run_id
+               WHERE s.expires_at < ? AND r.status = 'suspended'""",
+            (cutoff,),
         ).fetchall()
     return [row["graph_run_id"] for row in rows]
+
+
+def list_batch_attempts(graph_run_id: str) -> list[dict[str, Any]]:
+    """Every successfully-completed batch attempt for this run, ordered by
+    sequential batch number — used to map a detail row's opaque per-attempt
+    ``batch_id`` back to its human-facing batch number for the Stored Runs
+    'View' panel (see ``routes.auto_pipeline.get_partial_results``)."""
+    with main_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM run_batch_attempts WHERE run_id = ? AND status = 'completed' ORDER BY batch_index ASC",
+            (graph_run_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def cleanup_run_artifacts(graph_run_id: str) -> None:
     """Drops every run-scoped artifact that has no reason to survive past a
     run's CANCELLED/expired-SUSPENDED endpoint: the batch plan/checkpoint
     (:func:`clear_run_batch_state`), corroboration evidence
-    (``corroboration_store.clear``), and any suspension record
+    (``corroboration_store.clear``), this run's still-'provisional' value
+    pairings (``value_pair_store.discard_run`` — never promoted, since the run
+    never reached a successful finalize), and any suspension record
     (:func:`delete_suspension`).
 
-    Shared by three callers: an explicit Stored-Runs delete, the expiry
-    watchdog, and the CANCELLING -> CANCELLED path — the last of which used to
-    leak all three of these (only a successful ``finalize()`` ever cleaned
-    them up before). Deliberately never touches `results`/`run_batch_checkpoint
-    .result_id`'s underlying result row — partial results must remain
-    inspectable after a run is gone, same as a completed run's results do.
+    Shared by callers wherever a run's lifecycle ends without completing: an
+    explicit Stored-Runs delete/dismiss (including FAILED/COMPLETED tracked
+    entries — a no-op past the suspension-row delete for those), the expiry
+    watchdog, and the CANCELLING -> CANCELLED path. Deliberately never touches
+    `results`/`run_batch_checkpoint.result_id`'s underlying result row —
+    partial results must remain inspectable after a run is gone, same as a
+    completed run's results do.
     """
     # Local import — avoids a module-level circular import (corroboration_store
     # does not import pipeline_run_store, but keeping this import next to its
     # single call site makes the dependency explicit here).
-    from backend.recon_engine.storage import corroboration_store
+    from backend.recon_engine.storage import corroboration_store, value_pair_store
 
     clear_run_batch_state(graph_run_id)
     corroboration_store.clear(graph_run_id)
+    value_pair_store.discard_run(graph_run_id)
     delete_suspension(graph_run_id)

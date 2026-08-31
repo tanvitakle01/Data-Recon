@@ -280,6 +280,26 @@ CREATE TABLE IF NOT EXISTS run_value_mapping_matches (
     PRIMARY KEY (graph_run_id, source_field, target_field, source_value)
 );
 
+-- Per-BATCH snapshot of the same value-pairing decisions as
+-- `run_value_mapping_matches` above, keyed additionally by `batch_id` so each
+-- batch's OWN resolved matches survive distinctly rather than being folded
+-- into one run-wide cumulative row per source_value. Exists purely for the
+-- Stored Runs "View" panel (see routes.auto_pipeline.get_partial_results) to
+-- show which values a specific completed batch's LLM/library pairing step
+-- resolved — `run_value_mapping_matches` remains the source of truth for the
+-- run-wide reconstruction (export sheets, etc.), untouched by this table.
+CREATE TABLE IF NOT EXISTS run_batch_value_mappings (
+    graph_run_id     TEXT NOT NULL,
+    batch_id         TEXT NOT NULL,
+    source_field     TEXT NOT NULL,
+    target_field     TEXT NOT NULL,
+    field_mapping_id TEXT,
+    source_value     TEXT NOT NULL,
+    target_value     TEXT,
+    match_json       TEXT NOT NULL,
+    PRIMARY KEY (graph_run_id, batch_id, source_field, target_field, source_value)
+);
+
 -- Audit trail for one Auto-mode run's `run_batches` node, one row per BATCH
 -- ATTEMPT (success or hard failure) — distinct from `run_batch_checkpoint`
 -- (which only ever tracks the single current resume position). A retried
@@ -640,6 +660,7 @@ def init_storage() -> None:
         _migrate_pipeline_runs_add_batch_progress(conn)
         _migrate_pipeline_runs_add_interrupt(conn)
         _migrate_chat_run_sessions_add_pending_name_prompt(conn)
+        _migrate_value_pair_library_add_run_scope(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

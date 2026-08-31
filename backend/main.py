@@ -109,18 +109,21 @@ async def _start_watchdog() -> None:
 
     def _sweep_expired_suspensions() -> list[str]:
         """Discards every SUSPENDED run past its ``expires_at`` — same
-        CANCELLED transition + artifact cleanup an explicit Stored-Runs
-        delete performs (see routes.auto_pipeline.delete_stored_run), never
-        promoting anything (nothing provisional to promote — see
-        pipeline_run_store.cleanup_run_artifacts's docstring)."""
+        CANCELLED transition + artifact cleanup (including discarding this
+        run's still-provisional value pairings, never promoting them) an
+        explicit Stored-Runs delete performs (see
+        routes.auto_pipeline.delete_stored_run /
+        pipeline_run_store.cleanup_run_artifacts)."""
         expired: list[str] = []
         for graph_run_id in pipeline_run_store.list_expired_suspensions():
             try:
                 run_registry.transition(graph_run_id, RunState.CANCELLED, reason="suspension expired")
             except run_registry.IllegalTransition:
-                # Already moved on (resumed/deleted) by a racing request —
-                # its suspension row is stale, just drop it below.
-                pass
+                # Already moved on (resumed, or deleted/discarded) by a racing
+                # request between the list read above and this transition —
+                # skip cleanup entirely rather than wiping a now-live run's
+                # checkpoint/provisional mappings out from under it.
+                continue
             pipeline_run_store.cleanup_run_artifacts(graph_run_id)
             expired.append(graph_run_id)
         return expired

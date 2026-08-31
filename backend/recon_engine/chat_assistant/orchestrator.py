@@ -119,7 +119,9 @@ def _active_run_id(session_id: str) -> str | None:
     return None
 
 
-def _status_reply(run_id: str) -> str:
+def _status_reply(run_id: str | None) -> str:
+    if run_id is None:
+        return "You don't have an active or stored run right now — name one, or check the Stored Runs tab."
     run = pipeline_run_store.get(run_id)
     if run is None:
         return f"I don't have any record of run {run_id} anymore."
@@ -215,6 +217,17 @@ def _resume_stored_run(graph_run_id: str, *, session_id: str, prefix: str = "") 
                 "suspended, so I didn't resume it automatically to avoid mixing two data vintages. "
                 "Discard it and start fresh, or check with whoever manages that connection."
             ),
+            "state": _empty_state(),
+            "run": None,
+        }
+    except run_registry.IllegalTransition:
+        # Defense-in-depth against a TOCTOU: the lookup that found this run
+        # (stored_run_lookup.find) reads a moment before this call — a race
+        # (another request resumed/deleted it in between) means it may no
+        # longer actually be SUSPENDED by the time we get here.
+        current = run_registry.current_state(graph_run_id)
+        return {
+            "reply": prefix + f"Run {graph_run_id} isn't suspended anymore — it's currently {current.value!r}.",
             "state": _empty_state(),
             "run": None,
         }
@@ -421,7 +434,16 @@ def handle_message(
         }
 
     if control_intent == "STATUS":
-        return {"reply": prefix + _status_reply(active_run_id), "state": state, "run": {"graph_run_id": active_run_id}}
+        status_run_id = active_run_id
+        if status_run_id is None:
+            # No run bound to this session (e.g. it was resumed from the
+            # Stored Runs tab, not from chat) — best-effort resolve one by
+            # name/id mentioned in the message, across ANY status (a resumed
+            # run may now be running/completed/failed, not just suspended).
+            matches = stored_run_lookup.find(message, any_status=True)
+            if len(matches) == 1:
+                status_run_id = matches[0]["graph_run_id"]
+        return {"reply": prefix + _status_reply(status_run_id), "state": state, "run": {"graph_run_id": status_run_id}}
 
     # ── 3. attachment-role / reconciliation-intent classification (LLM) ──
     # Only classify attachments this state hasn't already resolved a role

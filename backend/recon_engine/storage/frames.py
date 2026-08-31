@@ -70,7 +70,17 @@ def append_frame(df: pd.DataFrame, path: Path | str) -> None:
     append must carry the SAME columns (one contract's reconciliation detail
     shape never changes batch to batch); a mismatch is a caller bug, not
     handled here.
+
+    A no-op on a 0-ROW frame — never even creates the file. A 0-row frame
+    (e.g. a batch whose window matched nothing) can also come back with 0
+    COLUMNS (``pd.DataFrame([])`` has none), and letting that frame define
+    this file's header would permanently lock in an empty column list for
+    every later batch's real rows to be appended under, since the header is
+    only ever written once (``write_header`` below) — this is the exact bug
+    that produced "0 columns passed, passed data had N columns" at finalize.
     """
+    if df.empty:
+        return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = _to_payload(df)

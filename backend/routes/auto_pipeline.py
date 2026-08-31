@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
@@ -24,6 +25,7 @@ from pydantic import BaseModel, Field
 from backend.excel_comparator.core.loader import load_tabular
 from backend.recon_engine import run_registry, service
 from backend.recon_engine.auto_pipeline import data_fingerprint
+from backend.recon_engine.auto_pipeline.date_batching import DateBatch
 from backend.recon_engine.auto_pipeline.graph import (
     get_pending_interrupt,
     get_run_state_values,
@@ -35,7 +37,12 @@ from backend.recon_engine.auto_pipeline.graph import (
 from backend.recon_engine.auto_pipeline.state import AutoRunState
 from backend.recon_engine.models.snapshot import RawLayer
 from backend.recon_engine.run_registry import RunState
-from backend.recon_engine.storage import pipeline_run_store, result_store
+from backend.recon_engine.storage import (
+    pipeline_run_store,
+    result_store,
+    run_value_mapping_store,
+    value_pair_store,
+)
 
 logger = logging.getLogger("recon.routes.auto_pipeline")
 
@@ -156,6 +163,12 @@ def _finish(graph_run_id: str, final_state: AutoRunState) -> None:
         # corroboration state now rather than leak it until an unrelated
         # cleanup happens to run. See pipeline_run_store.cleanup_run_artifacts.
         pipeline_run_store.cleanup_run_artifacts(graph_run_id)
+    elif to_state == RunState.COMPLETED:
+        # Promotes every value pairing THIS run discovered mid-batch and
+        # tagged 'provisional' (see value_pair_store.propose) to 'promoted' —
+        # the one place a run's provisional pairings graduate to the global
+        # library, since a run reaching here has gone all the way through.
+        value_pair_store.promote_run(graph_run_id)
     pipeline_run_store.update_progress(
         graph_run_id,
         step_timestamps=final_state.get("step_timestamps") or {},
@@ -337,8 +350,22 @@ async def start_auto_run_from_data(
 def _has_resumable_checkpoint(graph_run_id: str, failed_step: str | None) -> bool:
     """Every run — regardless of source kind — batches the WHOLE
     extract+pair+reconcile sequence inside ``run_batches`` (one checkpoint per
-    run — see ``pipeline_run_store.has_run_batch_checkpoint``)."""
-    return failed_step == "run_batches" and pipeline_run_store.has_run_batch_checkpoint(graph_run_id)
+    run — see ``pipeline_run_store.has_run_batch_checkpoint``).
+
+    ``finalize`` is resumable too, alongside ``run_batches`` itself: a retry
+    re-enters the graph one node before ``run_batches`` regardless of which of
+    the two actually failed (see ``auto_pipeline.graph.retry_auto_pipeline``),
+    and the checkpoint's ``next_batch_index`` already equals ``batch_count``
+    for a run that made it all the way to (and failed at) ``finalize`` — so
+    ``_do_run_batches``' loop is a no-op and it falls straight through to a
+    fresh ``finalize`` attempt, never redoing a batch. Requires the checkpoint
+    to still exist — see ``auto_pipeline.nodes._do_finalize``, which only
+    clears it AFTER a successful finalize, precisely so this stays true for a
+    finalize failure."""
+    return (
+        failed_step in ("run_batches", "finalize")
+        and pipeline_run_store.has_run_batch_checkpoint(graph_run_id)
+    )
 
 
 def has_resumable_checkpoint(graph_run_id: str) -> bool:
@@ -460,6 +487,11 @@ def trigger_resume(graph_run_id: str, *, force: bool = False) -> dict[str, Any]:
     suspend and ``force`` wasn't set — it's the caller's responsibility to
     surface the staleness question and retry with ``force=True`` once the
     user decides.
+
+    Deliberately does NOT delete the suspension row: the Stored Runs tab
+    tracks "runs touched from here" regardless of current status, staying
+    visible through RUNNING and into COMPLETED/FAILED until the user
+    explicitly deletes it (see ``list_stored_runs``/``delete_stored_run``).
     """
     suspension = pipeline_run_store.get_suspension(graph_run_id)
     if suspension is not None and not force:
@@ -478,7 +510,6 @@ def trigger_resume(graph_run_id: str, *, force: bool = False) -> dict[str, Any]:
         result=(run or {}).get("result"),
         interrupt=None,
     )
-    pipeline_run_store.delete_suspension(graph_run_id)
     task = asyncio.create_task(_resume_suspended_in_background(graph_run_id))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -541,28 +572,47 @@ async def resume_auto_run(graph_run_id: str, req: AutoRunResumeRequest) -> dict[
 
 @router.get("/stored")
 def list_stored_runs() -> list[dict[str, Any]]:
-    """Every currently-SUSPENDED run, enriched with progress/expiry for the
-    Stored Runs tab. A suspension row whose owning ``pipeline_runs`` status has
-    since drifted away from SUSPENDED (resumed/deleted by a racing request) is
-    skipped rather than shown stale."""
+    """Every run tracked by the Stored Runs tab — every run ever suspended
+    from there, REGARDLESS of its current status (suspended/running/completed/
+    failed), enriched with progress/expiry. A run stays listed here until the
+    user explicitly deletes it (see ``delete_stored_run``) — resuming it does
+    NOT remove it (see ``trigger_resume``). A suspension row whose owning
+    ``pipeline_runs`` row has vanished entirely (should not normally happen)
+    is skipped rather than shown stale."""
     out: list[dict[str, Any]] = []
     for suspension in pipeline_run_store.list_suspensions():
         graph_run_id = suspension["graph_run_id"]
         run = pipeline_run_store.get(graph_run_id)
-        if run is None or run.get("status") != RunState.SUSPENDED.value:
+        if run is None:
             continue
         checkpoint = pipeline_run_store.get_run_batch_checkpoint(graph_run_id)
         plan = pipeline_run_store.get_run_batch_plan(graph_run_id)
+        # `batch_progress` (pipeline_runs.batch_progress_json) is a SEPARATE,
+        # never-cleared field last written by the batch loop's own progress
+        # callback (see auto_pipeline.nodes._report_batch_stage) — the
+        # fallback for a run whose checkpoint/plan are already gone (cleared
+        # once run_batches finished) but that then hard-failed at `finalize`:
+        # without this, such a run misreports "0 batches completed" here even
+        # though every batch actually finished (see auto_pipeline.nodes.
+        # _do_finalize on why the checkpoint/plan don't survive that case).
+        batch_progress = run.get("batch_progress") or {}
         out.append(
             {
                 "graph_run_id": graph_run_id,
                 "name": suspension["user_name"],
+                "status": run.get("status"),
                 "suspended_at": suspension["suspended_at"],
                 "suspend_reason": suspension["suspend_reason"],
                 "expires_at": suspension["expires_at"],
-                "batches_completed": checkpoint["next_batch_index"] if checkpoint else 0,
-                "batches_total": len(plan) if plan else (checkpoint["batch_count"] if checkpoint else None),
+                "batches_completed": (
+                    checkpoint["next_batch_index"] if checkpoint else batch_progress.get("batches_completed", 0)
+                ),
+                "batches_total": (
+                    len(plan) if plan
+                    else (checkpoint["batch_count"] if checkpoint else batch_progress.get("batch_count"))
+                ),
                 "result_id": checkpoint["result_id"] if checkpoint else None,
+                "batch_progress": run.get("batch_progress"),
             }
         )
     return out
@@ -570,58 +620,166 @@ def list_stored_runs() -> list[dict[str, Any]]:
 
 @router.delete("/{graph_run_id}")
 def delete_stored_run(graph_run_id: str) -> dict[str, Any]:
-    """Discards a SUSPENDED run: transitions it to CANCELLED and drops its
-    batch plan/checkpoint/corroboration/suspension rows — never promotes
-    anything (there is nothing provisional to promote; every batch's value
-    pairings are already in the global library the moment that batch
-    completed, see value_pairing/pipeline.py's module docstring)."""
+    """Removes a run from the Stored Runs tab. A SUSPENDED run is discarded
+    outright: transitioned to CANCELLED, its batch plan/checkpoint/
+    corroboration/provisional-mappings/suspension rows all dropped (see
+    ``pipeline_run_store.cleanup_run_artifacts``). A FAILED/COMPLETED/
+    CANCELLED tracked run has nothing left to transition (COMPLETED/CANCELLED
+    are terminal; FAILED's only legal edge is back to RUNNING) — deleting it
+    is a pure "dismiss from this tab", still routed through the same cleanup
+    (a safe no-op for whatever it doesn't apply to; never touches `results`).
+    Rejected while the run is actively executing — see ``run_registry.
+    ACTIVE_STATES`` — since wiping its checkpoint out from under an in-flight
+    batch loop would corrupt it; wait for it to finish first."""
     run = pipeline_run_store.get(graph_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
-    if run.get("status") != RunState.SUSPENDED.value:
+    if pipeline_run_store.get_suspension(graph_run_id) is None:
+        raise HTTPException(status_code=404, detail=f"'{graph_run_id}' is not a Stored Runs entry.")
+    status = RunState(run.get("status"))
+    if status in run_registry.ACTIVE_STATES:
         raise HTTPException(
-            status_code=409, detail=f"Auto-run '{graph_run_id}' is not suspended (status={run.get('status')!r})."
+            status_code=409,
+            detail=f"Auto-run '{graph_run_id}' is currently {status.value!r} — wait for it to finish first.",
         )
-    run_registry.transition(graph_run_id, RunState.CANCELLED, reason="discarded from Stored Runs")
+    if status == RunState.SUSPENDED:
+        run_registry.transition(graph_run_id, RunState.CANCELLED, reason="discarded from Stored Runs")
     pipeline_run_store.cleanup_run_artifacts(graph_run_id)
-    return {"graph_run_id": graph_run_id, "status": "cancelled"}
+    return {"graph_run_id": graph_run_id, "status": "deleted"}
+
+
+_BATCH_PREVIEW_ROWS_PER_BATCH = 50
+
+
+def _batches_total(graph_run_id: str) -> int | None:
+    plan = pipeline_run_store.get_run_batch_plan(graph_run_id)
+    if plan:
+        return len(plan)
+    checkpoint = pipeline_run_store.get_run_batch_checkpoint(graph_run_id)
+    if checkpoint:
+        return checkpoint["batch_count"]
+    # Last resort: the never-cleared `batch_progress` field (see
+    # list_stored_runs' matching comment) — a run that hard-failed at
+    # `finalize` after every batch completed has neither plan nor checkpoint
+    # left, but this field still has the real count.
+    run = pipeline_run_store.get(graph_run_id)
+    return ((run or {}).get("batch_progress") or {}).get("batch_count")
+
+
+def _load_detail_frame_or_500(result_id: str, graph_run_id: str) -> pd.DataFrame:
+    """``result_store.load_result_frame_jsonl`` wrapped with a clear, actionable
+    500 instead of a bare pandas ``ValueError`` bubbling up as an opaque
+    unhandled-exception 500 — this is the exact spot a corrupted ``.jsonl``
+    detail file (a 0-column header written by an old build's empty-batch bug,
+    see ``storage.frames.append_frame``'s docstring) used to surface as
+    "Couldn't load results for this run" in the Stored Runs UI with no way to
+    tell why."""
+    try:
+        return result_store.load_result_frame_jsonl(result_id)
+    except Exception as exc:  # noqa: BLE001 - reporting a corrupt on-disk file, not a coding error
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"This run's stored detail data ('{result_id}') is corrupted and can't be read "
+                f"({exc}). This affects both viewing and exporting its results."
+            ),
+        ) from exc
 
 
 @router.get("/{graph_run_id}/partial-results")
 def get_partial_results(graph_run_id: str) -> dict[str, Any]:
     """A suspended (or otherwise non-completed) run's completed-batches-so-far
-    results — read straight from ``result_store``, entirely independent of the
-    LangGraph checkpoint, so this works without resuming anything."""
+    results, grouped by batch number — read straight from ``result_store``
+    (the ``.jsonl`` detail frame), ``run_batch_attempts``, and
+    ``run_value_mapping_store`` (that batch's own resolved value-pairing
+    decisions), entirely independent of the LangGraph checkpoint, so this
+    works without resuming anything. Every completed attempt gets its own
+    entry, even one with zero detail rows (the "both sides empty for this
+    date window" case — see ``auto_pipeline.nodes._do_run_batches`` — is a
+    valid, expected outcome, not an error)."""
     run = pipeline_run_store.get(graph_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
+    plan = pipeline_run_store.get_run_batch_plan(graph_run_id) or []
+    plan_by_index = {entry["batch_index"]: entry for entry in plan}
+    # Falls back to the never-cleared `batch_progress` field (see
+    # list_stored_runs' matching comment) once the plan itself is gone — a run
+    # that hard-failed at `finalize` after every batch completed.
+    batches_total = len(plan) or (run.get("batch_progress") or {}).get("batch_count")
+
     result = result_store.get_result_for_run(graph_run_id)
     if result is None:
-        raise HTTPException(status_code=404, detail=f"No results recorded yet for '{graph_run_id}'.")
-    detail_df = result_store.load_result_frame_jsonl(result.result_id).head(200)
-    preview_rows = (
-        detail_df.astype(object).where(detail_df.notna(), None).to_dict(orient="records")
-        if not detail_df.empty else []
-    )
-    return {"result": result.model_dump(mode="json"), "preview_rows": preview_rows}
+        return {
+            "result": None,
+            "batches": [],
+            "batches_completed": 0,
+            "batches_total": batches_total,
+        }
+
+    detail_df = _load_detail_frame_or_500(result.result_id, graph_run_id)
+    attempts = pipeline_run_store.list_batch_attempts(graph_run_id)
+
+    batches: list[dict[str, Any]] = []
+    for attempt in attempts:
+        plan_entry = plan_by_index.get(attempt["batch_index"])
+        label = DateBatch.from_dict(plan_entry).label if plan_entry else f"Batch {attempt['batch_index'] + 1}"
+        batch_rows = (
+            detail_df[detail_df["batch_id"] == attempt["batch_id"]] if not detail_df.empty else detail_df
+        )
+        preview_rows = (
+            batch_rows.head(_BATCH_PREVIEW_ROWS_PER_BATCH)
+            .astype(object)
+            .where(batch_rows.notna(), None)
+            .to_dict(orient="records")
+            if not batch_rows.empty
+            else []
+        )
+        mappings = run_value_mapping_store.get_batch_mappings(graph_run_id, attempt["batch_id"])
+        batches.append(
+            {
+                "batch_index": attempt["batch_index"],
+                "batch_label": label,
+                "row_count": len(batch_rows),
+                "preview_rows": preview_rows,
+                "mappings": [m.model_dump(mode="json") for m in mappings],
+            }
+        )
+
+    return {
+        "result": result.model_dump(mode="json"),
+        "batches": batches,
+        "batches_completed": len(batches),
+        "batches_total": batches_total,
+    }
 
 
 @router.get("/{graph_run_id}/partial-results/export")
 def export_partial_results(graph_run_id: str) -> StreamingResponse:
+    """Raw CSV of every completed batch's detail rows so far — the completed-
+    batches-only data, same scope as ``get_partial_results``' View panel.
+    Filename is labeled with the batches-completed/-total count so a partial
+    export is never mistaken for a complete one. For a COMPLETED run, use the
+    normal ``/comparison.xlsx`` artifact instead (same one a normally-
+    completed run gets) — this route stays raw/unenriched because a
+    non-completed run has no ``run_store`` row for that route to key off."""
     run = pipeline_run_store.get(graph_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown auto-run '{graph_run_id}'.")
     result = result_store.get_result_for_run(graph_run_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"No results recorded yet for '{graph_run_id}'.")
-    detail_df = result_store.load_result_frame_jsonl(result.result_id)
+    detail_df = _load_detail_frame_or_500(result.result_id, graph_run_id)
     buffer = io.StringIO()
     detail_df.to_csv(buffer, index=False)
     buffer.seek(0)
+
+    batches_completed = len(pipeline_run_store.list_batch_attempts(graph_run_id))
+    batches_total = _batches_total(graph_run_id)
+    label = f"{batches_completed}of{batches_total if batches_total is not None else '?'}batches"
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{graph_run_id}_partial_results.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="{graph_run_id}_partial_{label}.csv"'},
     )
 
 

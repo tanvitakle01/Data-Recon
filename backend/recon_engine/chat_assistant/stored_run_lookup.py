@@ -43,28 +43,39 @@ def _parse_time_reference(query: str) -> timedelta | None:
     return None
 
 
-def _stored_candidates() -> list[dict[str, Any]]:
-    """Every suspension row whose owning run is still actually SUSPENDED —
-    mirrors the filter ``GET /stored`` applies (a suspension row can outlive
-    the run drifting to some other status via a racing request)."""
+def _stored_candidates(*, any_status: bool = False) -> list[dict[str, Any]]:
+    """Every suspension row this run is tracked by — restricted to owning runs
+    still actually SUSPENDED by default (mirrors the resume path's
+    requirement that there's something to resume), or every tracked run
+    regardless of current status when ``any_status`` is set (used by chat's
+    STATUS fallback — a run resumed from the Stored Runs tab stays tracked
+    there through RUNNING/COMPLETED/FAILED, see ``routes.auto_pipeline.
+    list_stored_runs``)."""
     out = []
     for suspension in pipeline_run_store.list_suspensions():
         run = pipeline_run_store.get(suspension["graph_run_id"])
-        if run is not None and run.get("status") == RunState.SUSPENDED.value:
+        if run is None:
+            continue
+        if any_status or run.get("status") == RunState.SUSPENDED.value:
             out.append(suspension)
     return out
 
 
-def find(query: str) -> list[dict[str, Any]]:
+def find(query: str, *, any_status: bool = False) -> list[dict[str, Any]]:
     """Returns every stored run matching ``query``, trying exact name/run_id
     first, then substring, then a time reference against ``suspended_at`` —
     the first tier to produce any match wins (never mixes tiers). An empty
     list means no match at all; a list of length > 1 at any tier means the
-    caller must disambiguate rather than pick one."""
+    caller must disambiguate rather than pick one.
+
+    ``any_status=False`` (default) — the resume path's behavior, unchanged —
+    only matches runs still actually SUSPENDED. Pass ``any_status=True`` to
+    also match a tracked run that has since resumed/completed/failed (chat's
+    STATUS-by-name fallback only)."""
     text = query.strip()
     if not text:
         return []
-    candidates = _stored_candidates()
+    candidates = _stored_candidates(any_status=any_status)
     lowered = text.lower()
 
     exact = [

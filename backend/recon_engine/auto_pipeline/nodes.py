@@ -608,6 +608,7 @@ def _pair_field_for_batch(
         target_dates=target_dates,
         actor=actor,
         batch_label=batch_label,
+        graph_run_id=graph_run_id,
     )
     if all_failed:
         raise Exception(  # noqa: TRY002 - mirrors ValuePairingUnavailable's hard-stop contract
@@ -839,8 +840,11 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
             # batch's resolved mapping never makes it back to contract_store
             # — without this, a run's Mapping Details / Original-Paired
             # export columns would have nothing to read after the fact.
-            run_value_mapping_store.record_batch_mapping(graph_run_id, product_mapping)
-            run_value_mapping_store.record_batch_mapping(graph_run_id, location_mapping)
+            # Also persisted per-BATCH (batch_id) so the Stored Runs "View"
+            # panel can show exactly which values THIS batch's LLM pairing
+            # step resolved, rather than only the run-wide cumulative picture.
+            run_value_mapping_store.record_batch_mapping(graph_run_id, product_mapping, batch_id=batch_id)
+            run_value_mapping_store.record_batch_mapping(graph_run_id, location_mapping, batch_id=batch_id)
 
             _report_batch_stage(
                 graph_run_id, batch, batch_count, source_roles, target_roles,
@@ -941,9 +945,6 @@ def _do_finalize(state: AutoRunState) -> dict[str, Any]:
     )
     run_store.save_run(run)
 
-    pipeline_run_store.clear_run_batch_state(graph_run_id)
-    corroboration_store.clear(graph_run_id)
-
     contract = contract_store.get_contract(contract_id, contract_version)
     out: dict[str, Any] = {
         "run_id": run.run_id,
@@ -968,6 +969,17 @@ def _do_finalize(state: AutoRunState) -> dict[str, Any]:
         if not detail_df.empty else []
     )
     out["detail"] = {"result": result.model_dump(mode="json"), "preview_rows": preview_rows}
+
+    # Deliberately AFTER the detail-frame read above succeeds, not before: this
+    # run's batch plan/checkpoint (and corroboration evidence) are exactly what
+    # a subsequent /retry needs to skip straight back to finalize without
+    # redoing any batch — wiping them out ahead of a step that can still throw
+    # would leave a hard-failed run with no resumable state and a Stored Runs
+    # progress badge that falsely reads "0 batches completed" (see
+    # routes.auto_pipeline.list_stored_runs/get_partial_results, both of which
+    # read this same batch-plan/checkpoint bookkeeping).
+    pipeline_run_store.clear_run_batch_state(graph_run_id)
+    corroboration_store.clear(graph_run_id)
 
     return {
         "contract_id": contract_id,

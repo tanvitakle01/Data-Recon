@@ -34,15 +34,21 @@ export async function getPartialResults(graphRunId) {
 
 // Triggers a browser download rather than returning the CSV text — the
 // export route streams `Content-Disposition: attachment`, so the response is
-// fetched as a blob and handed to the browser via a throwaway object URL.
+// fetched as a blob and handed to the browser via a throwaway object URL. The
+// filename (labeled with the batches-completed/-total count — see
+// routes/auto_pipeline.py's export_partial_results) comes from the response
+// header rather than being rebuilt here, so the two never drift apart.
 export async function exportPartialResults(graphRunId) {
   const res = await api.get(`/api/recon/auto-run/${graphRunId}/partial-results/export`, {
     responseType: "blob",
   });
+  const disposition = res.headers?.["content-disposition"] || "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const filename = match ? match[1] : `${graphRunId}_partial_results.csv`;
   const url = window.URL.createObjectURL(res.data);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${graphRunId}_partial_results.csv`;
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();

@@ -21,7 +21,9 @@ from backend.recon_engine.models.value_mapping import ValueMapping, ValueMatch
 from backend.recon_engine.storage.db import main_db
 
 
-def record_batch_mapping(graph_run_id: str, value_mapping: ValueMapping) -> None:
+def record_batch_mapping(
+    graph_run_id: str, value_mapping: ValueMapping, *, batch_id: str | None = None
+) -> None:
     """Merges one batch's resolved matches into the running per-run state.
 
     A given source_value's pairing decision is deterministic for a
@@ -31,6 +33,12 @@ def record_batch_mapping(graph_run_id: str, value_mapping: ValueMapping) -> None
     simply overwrites the stored one (same decision, refreshed field data);
     ``row_count`` is summed across batches instead, since each batch only
     counts its own slice of rows.
+
+    ``batch_id``, when given, ALSO snapshots this batch's own matches
+    (unmerged, at THIS batch's own row_count — see :func:`get_batch_mappings`)
+    into ``run_batch_value_mappings``, distinct from the cumulative row above.
+    Omitted by callers with no batch identity (there are none today, but this
+    keeps the function usable standalone/in tests without a synthetic id).
     """
     if not value_mapping.matches:
         return
@@ -64,6 +72,23 @@ def record_batch_mapping(graph_run_id: str, value_mapping: ValueMapping) -> None
                 ),
             )
 
+            if batch_id is not None:
+                conn.execute(
+                    """INSERT INTO run_batch_value_mappings
+                       (graph_run_id, batch_id, source_field, target_field, field_mapping_id,
+                        source_value, target_value, match_json)
+                       VALUES (?,?,?,?,?,?,?,?)
+                       ON CONFLICT (graph_run_id, batch_id, source_field, target_field, source_value)
+                       DO UPDATE SET target_value = excluded.target_value,
+                                     field_mapping_id = excluded.field_mapping_id,
+                                     match_json = excluded.match_json""",
+                    (
+                        graph_run_id, batch_id, value_mapping.source_field, value_mapping.target_field,
+                        value_mapping.field_mapping_id, m.source_value, m.target_value,
+                        m.model_dump_json(),
+                    ),
+                )
+
 
 def get_run_mappings(graph_run_id: str) -> list[ValueMapping]:
     """Every accumulated ``ValueMapping`` for this run, one per (source_field,
@@ -76,6 +101,30 @@ def get_run_mappings(graph_run_id: str) -> list[ValueMapping]:
                FROM run_value_mapping_matches WHERE graph_run_id = ?
                ORDER BY source_field, target_field, source_value""",
             (graph_run_id,),
+        ).fetchall()
+    grouped: dict[tuple[str, str], list[ValueMatch]] = {}
+    field_mapping_ids: dict[tuple[str, str], str | None] = {}
+    for row in rows:
+        key = (row["source_field"], row["target_field"])
+        grouped.setdefault(key, []).append(ValueMatch.model_validate_json(row["match_json"]))
+        field_mapping_ids[key] = row["field_mapping_id"]
+    return [
+        ValueMapping(source_field=sf, target_field=tf, matches=matches, field_mapping_id=field_mapping_ids[(sf, tf)])
+        for (sf, tf), matches in grouped.items()
+    ]
+
+
+def get_batch_mappings(graph_run_id: str, batch_id: str) -> list[ValueMapping]:
+    """Every ``ValueMapping`` THIS SPECIFIC batch resolved — the batch-scoped
+    counterpart to :func:`get_run_mappings`'s run-wide cumulative picture.
+    Empty for a batch that matched no rows (nothing to pair) or one recorded
+    before batch-scoped mapping tracking existed."""
+    with main_db() as conn:
+        rows = conn.execute(
+            """SELECT source_field, target_field, field_mapping_id, match_json
+               FROM run_batch_value_mappings WHERE graph_run_id = ? AND batch_id = ?
+               ORDER BY source_field, target_field, source_value""",
+            (graph_run_id, batch_id),
         ).fetchall()
     grouped: dict[tuple[str, str], list[ValueMatch]] = {}
     field_mapping_ids: dict[tuple[str, str], str | None] = {}

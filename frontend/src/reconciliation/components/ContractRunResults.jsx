@@ -9,6 +9,8 @@ import { getComparisonUrl } from "../lib/reconRun";
 import api from "../../services/api";
 import ShortId from "../../components/ShortId";
 import { Button, Badge } from "@bristlecone/canopy";
+import { FieldDiffs } from "./reconRowDisplay";
+import { ROW_CLASS } from "./reconRowClassification";
 
 // Outcome -> Canopy semantic color (matches the Badge outcome language:
 // match=success/green, quantity_mismatch=error/red). "mismatch" is the
@@ -19,30 +21,6 @@ const CLASS_LABELS = [
   { key: "quantity_mismatch", label: "Qty Mismatches", color: "var(--bcone-red)" },
   { key: "mismatch", label: "Mismatches", color: "var(--bcone-orange)" },
 ];
-
-// Row-level `classification` (from the detail frame) uses its own 4 values —
-// distinct from the summary buckets above, which fold missing_in_source/
-// missing_in_target into one "mismatch" count.
-const ROW_CLASS = {
-  match: { label: "Match", variant: "success" },
-  mismatch: { label: "Quantity mismatch", variant: "error" },
-  missing_in_target: { label: "Missing in target", variant: "warning" },
-  missing_in_source: { label: "Missing in source", variant: "warning" },
-};
-
-function FieldDiffs({ diffs }) {
-  if (!diffs?.length) return null;
-  return (
-    <div className="field-diffs">
-      {diffs.map((d) => (
-        <span key={d.field} className="field-diff-chip">
-          <strong>{d.field}</strong>: {String(d.source_value)} → {String(d.target_value)}
-          {d.delta != null && ` (Δ ${d.delta}${d.variance_pct != null ? `, ${d.variance_pct}%` : ""})`}
-        </span>
-      ))}
-    </div>
-  );
-}
 
 // Real, client-side aggregation over the previewed exceptions only (never the
 // full result set, which isn't shipped to the browser) — counts how often

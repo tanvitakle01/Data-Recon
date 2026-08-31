@@ -133,3 +133,36 @@ def test_status_reports_resumable_false_for_a_non_run_batches_failure(client):
     res = client.get("/api/recon/auto-run/autorun_status_other_step/status")
     assert res.status_code == 200
     assert res.json()["resumable"] is False
+
+
+def _make_failed_finalize_run(graph_run_id: str) -> None:
+    """Like ``_make_failed_run_batches_run``, but failed at ``finalize`` with
+    every batch already done (``next_batch_index == batch_count``) — the
+    "0 columns passed" bug's failure mode. A retry must skip the now-empty
+    ``run_batches`` loop and go straight back to a fresh ``finalize`` attempt,
+    never redoing a batch (see ``_has_resumable_checkpoint``). Requires the
+    checkpoint to still exist — true only since ``_do_finalize`` was fixed to
+    clear it AFTER a successful finalize, not before."""
+    pipeline_run_store.create(graph_run_id)
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason="test setup")
+    run_registry.transition(graph_run_id, RunState.FAILED, reason="test setup")
+    pipeline_run_store.update_progress(
+        graph_run_id, failed_step="finalize", error="0 columns passed, passed data had 10 columns",
+    )
+    pipeline_run_store.save_run_batch_checkpoint(
+        graph_run_id, result_id="result_test", next_batch_index=4, batch_count=4,
+        summary={"total": 0, "match": 0, "quantity_mismatch": 0, "mismatch": 0, "excluded_unmapped": {}},
+    )
+
+
+def test_retry_succeeds_for_a_finalize_failure_with_a_checkpoint(client):
+    _make_failed_finalize_run("autorun_finalize_resumable")
+    res = client.post("/api/recon/auto-run/autorun_finalize_resumable/retry")
+    assert res.status_code == 200, res.text
+
+
+def test_status_reports_resumable_true_for_a_finalize_failure_with_a_checkpoint(client):
+    _make_failed_finalize_run("autorun_finalize_status_check")
+    res = client.get("/api/recon/auto-run/autorun_finalize_status_check/status")
+    assert res.status_code == 200
+    assert res.json()["resumable"] is True
