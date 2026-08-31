@@ -2,20 +2,23 @@ import { useEffect, useState } from "react";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import jsonLang from "shiki/langs/json.mjs";
+import pythonLang from "shiki/langs/python.mjs";
 import catppuccinMocha from "shiki/themes/catppuccin-mocha.mjs";
 import { Copy, Check } from "lucide-react";
 import { cn } from "@bristlecone/canopy";
 
-// Fine-grained shiki: bundle ONLY the JSON grammar + one theme + the JS regex
-// engine (no oniguruma wasm). shiki's default `codeToHtml` entry pulls in every
-// grammar/theme (~10MB of chunks) — this keeps it to what we actually render.
-// Singleton so the highlighter is created once and reused across instances.
+// Fine-grained shiki: bundle ONLY the grammars we actually render (JSON,
+// Python) + one theme + the JS regex engine (no oniguruma wasm). shiki's
+// default `codeToHtml` entry pulls in every grammar/theme (~10MB of chunks)
+// — this keeps it to what we actually use. Singleton so the highlighter is
+// created once and reused across instances.
+const SUPPORTED_LANGS = new Set(["json", "python"]);
 let highlighterPromise;
 function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighterCore({
       themes: [catppuccinMocha],
-      langs: [jsonLang],
+      langs: [jsonLang, pythonLang],
       engine: createJavaScriptRegexEngine(),
     });
   }
@@ -46,14 +49,15 @@ export default function JsonViewer({
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    // Only the json grammar is bundled; other languages render as plain text.
-    if (language !== "json") {
+    // Only the bundled grammars are highlighted; other languages render as
+    // plain text rather than pulling in more of shiki's ~10MB of chunks.
+    if (!SUPPORTED_LANGS.has(language)) {
       setHtml(null);
       return;
     }
     let alive = true;
     getHighlighter()
-      .then((hl) => hl.codeToHtml(code, { lang: "json", theme: "catppuccin-mocha" }))
+      .then((hl) => hl.codeToHtml(code, { lang: language, theme: "catppuccin-mocha" }))
       .then((out) => {
         if (alive) setHtml(out);
       })

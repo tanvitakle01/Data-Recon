@@ -20,6 +20,7 @@ import SettingsPage from "./pages/SettingsPage";
 import InsightsHistoryPage from "./pages/InsightsHistoryPage";
 import LibraryPage from "./library/LibraryPage";
 import StoredRunsPage from "./pages/StoredRunsPage";
+import DocsArchitecturePage from "./pages/DocsArchitecturePage";
 
 // The authenticated app shell — unchanged from before auth was added, just
 // gated behind AppRoutes below instead of being the only thing App() renders.
@@ -38,6 +39,7 @@ function AuthenticatedApp() {
           <Route path="/stored-runs" element={<StoredRunsPage />} />
           <Route path="/data-sources" element={<DataSourcesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/docs/architecture" element={<DocsArchitecturePage />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </AppLayout>
@@ -69,6 +71,10 @@ function AppRoutes() {
           <Route path="/password-reset" element={<PasswordResetRequestPage />} />
           <Route path="/password-reset/confirm" element={<PasswordResetConfirmPage />} />
         </Route>
+        {/* Reachable signed-out too — an evaluator shouldn't need an account
+            to read how the pipeline works. Renders standalone (no AppLayout,
+            no PublicLayout chrome) since the page owns its own header/nav. */}
+        <Route path="/docs/architecture" element={<DocsArchitecturePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     );

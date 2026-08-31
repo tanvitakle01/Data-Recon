@@ -1,4 +1,5 @@
 import PropTypes from "prop-types";
+import styles from "./callout.module.css";
 
 const TONE_LABEL = {
   info: "Note",
@@ -12,12 +13,12 @@ const TONE_LABEL = {
 // the amber confidence tier) for planned-but-not-built behavior.
 function Callout({ tone = "info", title, children }) {
   return (
-    <div className={`docs-callout docs-callout--${tone}`}>
+    <div className={styles.callout}>
       <span className={`status-badge status-badge--${tone}`}>
         <span className="status-badge__dot" />
         {title || TONE_LABEL[tone]}
       </span>
-      <div className="docs-callout__body">{children}</div>
+      <div className={styles.body}>{children}</div>
     </div>
   );
 }

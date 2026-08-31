@@ -169,8 +169,9 @@ function HomeContent({ authed = false }) {
     : { label: "Sign in to workspace", onClick: () => navigate("/login") };
 
   const supportHref = (key) => {
-    if (key !== "contact") return "#support";
-    return "mailto:support@bristlecone.com";
+    if (key === "contact") return "mailto:support@bristlecone.com";
+    if (key === "architecture") return "/docs/architecture";
+    return "#support";
   };
 
   // Only one h1 per page: the greeting owns it when present (authed), so the
@@ -343,15 +344,25 @@ function HomeContent({ authed = false }) {
           <h2 className="home-h2">Support &amp; enablement</h2>
         </div>
         <div className="home-support-grid">
-          {SUPPORT_CARDS.map((s) => (
-            <div key={s.key} className={`home-support-card ${s.tone}`}>
-              <div className="home-support-title">{s.title}</div>
-              <p className="home-support-desc">{s.description}</p>
-              <a href={supportHref(s.key)} className="home-support-link">
-                {s.label}
-              </a>
-            </div>
-          ))}
+          {SUPPORT_CARDS.map((s) => {
+            const href = supportHref(s.key);
+            const isInternalRoute = href.startsWith("/");
+            return (
+              <div key={s.key} className={`home-support-card ${s.tone}`}>
+                <div className="home-support-title">{s.title}</div>
+                <p className="home-support-desc">{s.description}</p>
+                {isInternalRoute ? (
+                  <Link to={href} className="home-support-link">
+                    {s.label}
+                  </Link>
+                ) : (
+                  <a href={href} className="home-support-link">
+                    {s.label}
+                  </a>
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
     </div>
