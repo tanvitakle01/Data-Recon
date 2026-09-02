@@ -542,7 +542,7 @@
 /* ============================================================
    SECTION SHADE ZONES
    Differentiate sibling sections by neutral DEPTH within one family
-   (Preview deepest → MDT mid → Mapping tables lightest) so each reads
+   (Preview deepest → Mapping tables lightest) so each reads
    as a separate entity at a glance. Each zone is a card with an ambient
    border glow. IMPORTANT: this is a neutral-depth + glow system only —
    the semantic tier/outcome colors (match/high/medium/missing/scope/…)
@@ -2412,36 +2412,6 @@
 }
 .wizard-mapcard__fields--empty {
   opacity: 0.7;
-}
-.wizard-mapcard__mdt {
-  opacity: 0.7;
-}
-
-/* ── Recommended-for-Deterministic-Mapping auxiliary fields (Mapping Review) ── */
-.aux-group {
-  margin-top: 14px;
-}
-.aux-group__title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink-2);
-  margin: 0 0 6px;
-}
-.aux--absent td,
-.aux--empty td {
-  opacity: 0.6;
-}
-/* Compact variant — rendered inside a connector's data-preview card. */
-.aux-panel--compact {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border-1, rgba(148, 163, 184, 0.25));
-}
-.aux-panel__title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--ink-1, inherit);
-  margin: 0 0 4px;
 }
 
 /* ── Stored Runs tab: live "Running" indicator + batch-grouped View cards ── */

@@ -1,6 +1,6 @@
 """Transformation Preview + Approval API (USE_SCRIPT_TRANSFORMATIONS flow).
 
-    generate  → script (Groq → deterministic fallback) + static validation
+    generate  → script (Azure AI Foundry → deterministic fallback) + static validation
     preview   → sandbox execution snapshot: summary, diffs, transformed rows
     approve / reject → user decision on the transformed DATA
     run       → production execution of the hash-pinned approved script,
@@ -94,8 +94,8 @@ def get_mode() -> dict[str, Any]:
 def generate(req: GenerateRequest) -> dict[str, Any]:
     """Generate a transformation script from the parsed mapping sheet + rules.
 
-    Groq failures degrade to the deterministic fallback generator — this
-    endpoint never fails because the LLM is unavailable.
+    Azure AI Foundry failures degrade to the deterministic fallback
+    generator — this endpoint never fails because the LLM is unavailable.
     """
     if not req.source_schema or not req.target_schema:
         raise HTTPException(status_code=400, detail="source_schema and target_schema are required.")
@@ -125,7 +125,7 @@ def generate(req: GenerateRequest) -> dict[str, Any]:
         "degraded_reason": degraded_reason,
         # LLM provider failover surface (spec points 4, 5, 6).
         "provider": (outcome.provider_used if outcome and outcome.provider_used else script.generated_by.value),
-        "preferred_provider": outcome.preferred if outcome else "groq",
+        "preferred_provider": outcome.preferred if outcome else "azure_foundry",
         "fallback": bool(outcome and outcome.fallback_occurred),
         "provider_notice": outcome.notice if outcome else None,
     }

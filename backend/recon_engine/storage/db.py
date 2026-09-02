@@ -351,7 +351,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
 -- `transition`, the SOLE function permitted to change pipeline_runs.status).
 -- Never updated or deleted — the full lifecycle history of a run, including
 -- transitions a naive glance at pipeline_runs.status (current state only)
--- would lose (e.g. a run that stalled and recovered).
+-- would lose (e.g. a run that was suspended and later resumed).
 CREATE TABLE IF NOT EXISTS run_transitions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id      TEXT NOT NULL,
@@ -394,18 +394,6 @@ CREATE TABLE IF NOT EXISTS chat_confirmations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chat_confirmations_session ON chat_confirmations (session_id);
-
--- Liveness signal for a running Auto-mode node/batch — one row per run,
--- upserted by heartbeat.beat() from nodes.py's `_run_step` (every top-level
--- node) and from the run_batches/pair_values inner batch loops (finer
--- granularity, with batch_id set). The watchdog (see main.py's startup task)
--- flips a run whose heartbeat has gone stale to STALLED.
-CREATE TABLE IF NOT EXISTS run_heartbeats (
-    run_id     TEXT PRIMARY KEY,
-    batch_id   TEXT,
-    node       TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 
 -- One row per currently-SUSPENDED run (upserted by graph_run_id, not an event
 -- log — the full suspend/resume history already lives in `run_transitions`,

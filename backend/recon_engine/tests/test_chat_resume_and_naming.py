@@ -232,6 +232,44 @@ def test_resume_with_no_match_says_so_and_starts_nothing(monkeypatch):
     assert "nonexistent-run-xyz" in result["reply"]
 
 
+# ── acknowledging a resume that happened OUTSIDE chat ───────────────────────
+
+
+def test_status_mentions_a_run_resumed_from_the_stored_runs_tab(monkeypatch):
+    """A run resumed via the Stored Runs tab's Resume button (never through
+    chat at all — this session's active_run_id was never set for it) must
+    still be acknowledged, with a timestamp, the next time chat is asked
+    about it — see routes.auto_pipeline.trigger_resume's ``source`` param."""
+    _make_stored_run("autorun_resumed_from_ui", name="Nightly Check")
+    # What POST /{id}/resume does at the state-machine level, with
+    # source="stored_runs_tab" — never touching chat's session/active-run
+    # state, exactly like the real HTTP route.
+    run_registry.transition("autorun_resumed_from_ui", RunState.RUNNING, reason="resume:stored_runs_tab")
+
+    result = orchestrator.handle_message(
+        message="status on Nightly Check", new_attachments=[], state=None, session_id=SESSION
+    )
+
+    assert "Stored Runs tab" in result["reply"]
+    assert "autorun_resumed_from_ui" in result["reply"]
+
+
+def test_status_says_nothing_about_a_run_resumed_from_chat_itself(monkeypatch):
+    """A resume triggered BY chat already told the user in that same turn —
+    repeating it on the next status check would be redundant."""
+    monkeypatch.setattr(orchestrator.auto_pipeline, "trigger_resume", _fake_trigger_resume)
+    _make_stored_run("autorun_resumed_from_chat", name=None)
+
+    orchestrator.handle_message(
+        message="resume autorun_resumed_from_chat", new_attachments=[], state=None, session_id=SESSION
+    )
+    result = orchestrator.handle_message(
+        message="status", new_attachments=[], state=None, session_id=SESSION
+    )
+
+    assert "Stored Runs tab" not in result["reply"]
+
+
 def test_resume_by_ambiguous_time_reference_lists_matches_instead_of_guessing(monkeypatch):
     called = {"trigger_resume": False}
     monkeypatch.setattr(

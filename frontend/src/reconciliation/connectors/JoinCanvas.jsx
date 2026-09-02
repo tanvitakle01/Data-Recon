@@ -12,8 +12,8 @@ import "./joinCanvas.css";
 // Layout (Recon-Studio style):
 //   • Toolbar   — two collapsible inputs: Entity (add/browse) and Field
 //                 (manual override; secondary, collapsed by default).
-//   • Canvas    — entity node cards (fields with checkboxes, key/recommended
-//                 tags) connected by a line + join-type/key-count badge; the
+//   • Canvas    — entity node cards (fields with checkboxes, key tags)
+//                 connected by a line + join-type/key-count badge; the
 //                 badge opens a join-config popover (type, keys, cardinality).
 //   • Preview   — result grid (row count + sample rows) with a slim action bar
 //                 (readiness, Import dataset, Open Detailed Preview).
@@ -40,7 +40,7 @@ function looksNumeric(v) {
 // field can be explicitly marked/unmarked as a key, independent of whether
 // it's selected into the dataset.
 function FieldRow({ field, onToggle, onToggleKey }) {
-  const { name, type, isKey, checked, recommended, measure } = field;
+  const { name, type, isKey, checked, measure } = field;
   const typeLabel = type && <span className="jc-field__type">{String(type).replace(/^Edm\./, "")}</span>;
 
   return (
@@ -67,11 +67,6 @@ function FieldRow({ field, onToggle, onToggleKey }) {
           </button>
         )}
         {measure && <span className="jc-tag jc-tag--kf">KF</span>}
-        {recommended && (
-          <span className="jc-tag jc-tag--rec" title="Recommended for Transformation Discovery">
-            Recommended
-          </span>
-        )}
         {typeLabel}
       </span>
     </label>

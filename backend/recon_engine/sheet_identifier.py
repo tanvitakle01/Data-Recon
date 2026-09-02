@@ -22,12 +22,11 @@ Two hard rules make this safe:
    Anything else the model thinks it sees is returned as evidence-bearing
    ``unidentified`` — never coerced to the nearest configured connector. A wrong
    system fetches entirely wrong data with no downstream check to catch it.
-2. **Same provider chain as everything else.** The call goes through
-   ``build_llm_client()`` (Groq primary → Gemini → Cerebras → OpenRouter
-   fallback), not a bespoke Groq client. Any provider failure degrades to an
-   empty/unidentified result rather than raising, so the wizard never dies
-   because the LLM is unavailable — the human just falls back to manual
-   connector selection.
+2. **Same provider as everything else.** The call goes through the
+   Azure-AI-Foundry-only ``build_llm_client()`` (no fallback), not a bespoke client. A
+   provider failure degrades to an empty/unidentified result rather than
+   raising, so the wizard never dies because the LLM is unavailable — the
+   human just falls back to manual connector selection.
 
 Field *validation* against the live schema is intentionally NOT done here: the
 LLM only proposes field names from the sheet; the deterministic intersection
@@ -476,7 +475,7 @@ def identify_systems(
     """
     if not get_settings().any_llm_configured:
         return _degraded_result(
-            "No AI provider is configured (GROQ_API_KEY / OPENAI_API_KEY) — "
+            "No AI provider is configured (AZURE_FOUNDRY_MODEL) — "
             "identify the connectors manually."
         )
 

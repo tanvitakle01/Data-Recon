@@ -13,8 +13,7 @@ from backend.recon_engine.llm import reset_llm_outcome
 
 # Reuse the manual-form helpers + loaders from the reconcile route so this
 # endpoint resolves source/target sides identically to /automap (files or JSON
-# rows). The wizard already strips MDT auxiliary fields from the rows before
-# sending, so they never reach the field-mapping inference.
+# rows).
 from backend.routes.reconcile import (
     _MAX_PART_SIZE,
     _form_optional_str,
@@ -72,8 +71,8 @@ async def infer_mapping_route(request: Request) -> dict[str, Any]:
     labeled "Generated via Vector Library" without any LLM call.
 
     Tier 2 — the LLM. On a library miss (or `regenerate=true`), infer via the
-    Groq→OpenAI failover client; each row is tagged with the provider that
-    answered so the card shows "Generated via Groq/OpenAI".
+    Azure-AI-Foundry-only client (no fallback); each row is tagged with the
+    provider that answered so the card shows "Generated via Azure AI Foundry".
 
     Accepts the same multipart form as /automap — uploaded Excel files
     (`source_file`/`target_file`) or already-fetched JSON rows
@@ -115,7 +114,7 @@ async def infer_mapping_route(request: Request) -> dict[str, Any]:
         if hit is not None:
             return hit
 
-    # ── Tier 2: LLM (Groq → OpenAI) ──────────────────────────────────────────
+    # ── Tier 2: LLM (Azure AI Foundry, no fallback) ──────────────────────────
     try:
         source_df = _resolve_df(source_rows, source_file, src_sheet, "source")
         target_df = _resolve_df(target_rows, target_file, tgt_sheet, "target")
@@ -127,10 +126,10 @@ async def infer_mapping_route(request: Request) -> dict[str, Any]:
     reset_llm_outcome()  # clear any prior provider outcome for this request
     result = infer_field_mapping(source_df, target_df)
 
-    # Stamp each row with the provider that actually answered (groq/openai) so
-    # the card labels the source precisely; leave "generated" when degraded.
+    # Stamp each row with the provider that actually answered (azure_foundry)
+    # so the card labels the source precisely; leave "generated" when degraded.
     provider = result.get("provider")
-    if provider in ("groq", "openai"):
+    if provider == "azure_foundry":
         for row in result.get("display", []):
             row["provenance"] = provider
     result["source"] = "llm"

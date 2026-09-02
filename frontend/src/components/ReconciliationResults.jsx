@@ -1,9 +1,7 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 
 function ReconciliationResults({ reconResult }) {
-  const navigate = useNavigate();
-  const { preview_rows: previewRows, file, file_id: fileId } = reconResult || {};
+  const { preview_rows: previewRows, file } = reconResult || {};
 
   const [scenario, setScenario] = useState("All");
 
@@ -49,8 +47,6 @@ function ReconciliationResults({ reconResult }) {
 
   const downloadUrl = file?.download_url;
   const hasFilename = !!file?.filename;
-
-  const canViewInsights = !!fileId;
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -171,16 +167,6 @@ function ReconciliationResults({ reconResult }) {
               >
                 Download Results
               </button>
-
-              {canViewInsights && (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/insights?file_id=${encodeURIComponent(fileId)}`)}
-                  className="btn-secondary"
-                >
-                  View Insights
-                </button>
-              )}
             </div>
           ) : (
             <div style={{ color: "#64748b", fontSize: 13, marginTop: 8 }}>

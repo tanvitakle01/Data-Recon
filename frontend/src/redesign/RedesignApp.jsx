@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LayoutDashboard, GitCompareArrows, Blocks, Library, Table2, Wand2, Eye, Home } from "lucide-react";
+import { LayoutDashboard, GitCompareArrows, Blocks, Table2, Wand2, Eye, Home } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { ComponentGallery } from "./screens/ComponentGallery";
 import { MappingScreen } from "./screens/MappingScreen";
@@ -7,7 +7,6 @@ import { TypeScreen } from "./screens/TypeScreen";
 import { ConnectorScreen } from "./screens/ConnectorScreen";
 import { ResultsScreen } from "./screens/ResultsScreen";
 import { MappingReviewScreen } from "./screens/MappingReviewScreen";
-import { MDTLibraryScreen } from "./screens/MDTLibraryScreen";
 import { TransformationPreviewScreen } from "./screens/TransformationPreviewScreen";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { LandingScreen } from "./screens/LandingScreen";
@@ -16,7 +15,6 @@ const NAV = [
   { key: "landing", label: "Landing page", icon: <Home className="h-[18px] w-[18px]" /> },
   { key: "dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-[18px] w-[18px]" /> },
   { key: "reconciliation", label: "Reconciliation Engine", icon: <GitCompareArrows className="h-[18px] w-[18px]" /> },
-  { key: "mdt", label: "MDT Library", icon: <Library className="h-[18px] w-[18px]" /> },
   { key: "components", label: "Component Library", icon: <Blocks className="h-[18px] w-[18px]" /> },
 ];
 
@@ -80,7 +78,6 @@ export default function RedesignApp() {
 
       <main className="flex min-w-0 flex-1 flex-col bg-bg">
         {active === "dashboard" && <DashboardScreen onNewRun={() => goStep("type")} />}
-        {active === "mdt" && <MDTLibraryScreen />}
         {active === "components" && <ComponentGallery />}
         {active === "reconciliation" && (
           <>

@@ -71,7 +71,12 @@ def find(query: str, *, any_status: bool = False) -> list[dict[str, Any]]:
     ``any_status=False`` (default) — the resume path's behavior, unchanged —
     only matches runs still actually SUSPENDED. Pass ``any_status=True`` to
     also match a tracked run that has since resumed/completed/failed (chat's
-    STATUS-by-name fallback only)."""
+    STATUS/INSIGHTS-by-name fallbacks).
+
+    The substring tier checks both directions — ``query`` inside the run's
+    name/id, or the run's name/id inside ``query`` — so a full sentence like
+    "insights for tuesday-run" still finds a run named "tuesday-run", not
+    just a bare "tuesday-run" reply to a prior turn's question."""
     text = query.strip()
     if not text:
         return []
@@ -85,9 +90,13 @@ def find(query: str, *, any_status: bool = False) -> list[dict[str, Any]]:
     if exact:
         return exact
 
+    def _substring_match(candidate_text: str) -> bool:
+        candidate_text = candidate_text.lower()
+        return bool(candidate_text) and (lowered in candidate_text or candidate_text in lowered)
+
     substring = [
         c for c in candidates
-        if lowered in c["graph_run_id"].lower() or lowered in (c["user_name"] or "").strip().lower()
+        if _substring_match(c["graph_run_id"]) or _substring_match((c["user_name"] or "").strip())
     ]
     if substring:
         return substring

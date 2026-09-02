@@ -69,55 +69,6 @@ export const RESULT_ROWS = [
   { key: "4711 · LOC-3030 · 2026-05", src: 512, tgt: 512, delta: 0, outcome: "match" },
 ];
 
-/* ---- Auxiliary / MDT knowledge (browse by connector) -------------------- */
-export const MDT_GROUPS = [
-  {
-    key: "ibp_product", label: "Target · Product", system: "SAP IBP", root: "PRDID",
-    rows: [
-      { attr: "PRODDESC", tier: "very_high", status: "confirmed", fill: 98, rule: "used" },
-      { attr: "PRODGROUP", tier: "high", status: "confirmed", fill: 92, rule: "used" },
-      { attr: "PRDIDDEM", tier: "high", status: "confirmed", fill: 74, rule: "used" },
-      { attr: "PRODTYPE", tier: "medium", status: "empty", fill: 0, rule: "exists" },
-      { attr: "SPRODDESC", tier: "medium", status: "absent", fill: null, rule: "recommended" },
-    ],
-  },
-  {
-    key: "ibp_location", label: "Target · Location", system: "SAP IBP", root: "LOCID",
-    rows: [
-      { attr: "LOCNAME", tier: "very_high", status: "confirmed", fill: 100, rule: "used" },
-      { attr: "LOCATIONTYPE", tier: "high", status: "confirmed", fill: 88, rule: "used" },
-      { attr: "LOCCOUNTRY", tier: "medium", status: "confirmed", fill: 63, rule: "exists" },
-      { attr: "LOCIDDEM", tier: "medium", status: "empty", fill: 0, rule: "recommended" },
-    ],
-  },
-  {
-    key: "s4_product", label: "Source · Product", system: "SAP S/4HANA", root: "Material",
-    rows: [
-      { attr: "SalesOrderItemText", tier: "high", status: "confirmed", fill: 81, rule: "used" },
-      { attr: "MaterialGroup", tier: "high", status: "confirmed", fill: 95, rule: "used" },
-      { attr: "MaterialPricingGroup", tier: "medium", status: "empty", fill: 0, rule: "exists" },
-      { attr: "AdditionalMaterialGroup1", tier: "medium", status: "absent", fill: null, rule: "recommended" },
-    ],
-  },
-  {
-    key: "s4_plant", label: "Source · Plant", system: "SAP S/4HANA", root: "ProductionPlant",
-    rows: [
-      { attr: "OriginalPlant", tier: "high", status: "confirmed", fill: 70, rule: "used" },
-    ],
-  },
-];
-
-export const AUX_STATUS = {
-  confirmed: { status: "match", label: "Confirmed" },
-  empty: { status: "medium", label: "Empty (0% filled)" },
-  absent: { status: "missing", label: "Absent" },
-};
-export const AUX_RULE = {
-  used: { status: "match", label: "Yes — evidence input" },
-  exists: { status: "medium", label: "Rule exists, not populated" },
-  recommended: { status: "scope", label: "Recommended (no rule yet)" },
-};
-
 /* ---- Dashboard ----------------------------------------------------------- */
 export const RECENT_RUNS = [
   { id: "contract_a1b2c3d4e5f6", type: "Sales Order History", pair: "S/4HANA → IBP", match: 95.0, exceptions: 458, when: "2h ago", status: "match" },

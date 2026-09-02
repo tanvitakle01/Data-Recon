@@ -1,47 +1,30 @@
 """Environment-driven configuration for the reconciliation engine.
 
-Nothing here has a hard dependency on Groq or any network service — the Groq
-settings are only *read*; whether they are required is decided by the compiler
-scaffolding at call time (see ``compiler/groq_compiler.py``). This keeps the
-whole subsystem importable and testable offline.
+Nothing here has a hard dependency on Azure AI Foundry or any network service —
+the settings below are only *read*; whether they are required is decided by
+the compiler scaffolding at call time (see ``compiler/groq_compiler.py``).
+This keeps the whole subsystem importable and testable offline.
 
 Environment variables
 ---------------------
-GROQ_API_KEY        API key for the Groq LLM (the PRIMARY provider, tier 1).
-                    Required ONLY when a real ``GroqContractCompiler`` is used to
-                    draft a contract. Not needed for validation, approval, or
-                    reconciliation.
-GROQ_MODEL          Groq model id used for contract drafting.
-                    Default: ``openai/gpt-oss-120b``.
-GROQ_BASE_URL       Optional override for the Groq API base URL.
-GEMINI_API_KEY      API key for Gemini (fallback tier 2), called via Gemini's
-                    OpenAI-compatible endpoint. Optional.
-GEMINI_MODEL        Gemini model id used for tier 2. No default — must be set
-                    for this tier to be usable.
-GEMINI_BASE_URL     Optional override for the Gemini OpenAI-compatible base URL
-                    (default: ``https://generativelanguage.googleapis.com/v1beta/openai/``).
-CEREBRAS_API_KEY    API key for Cerebras (fallback tier 3), called via
-                    Cerebras's OpenAI-compatible endpoint. Optional.
-CEREBRAS_MODEL      Cerebras model id used for tier 3. No default — must be set
-                    for this tier to be usable.
-CEREBRAS_BASE_URL   Optional override for the Cerebras OpenAI-compatible base
-                    URL (default: ``https://api.cerebras.ai/v1``).
-OPENROUTER_API_KEY  API key for OpenRouter (fallback tier 4 — the last resort,
-                    free models). Optional.
-OPENROUTER_MODEL    OpenRouter model id used for tier 4.
-                    Default: ``meta-llama/llama-3.1-8b-instruct:free``.
-OPENROUTER_BASE_URL Optional override for the OpenRouter base URL
-                    (default: ``https://openrouter.ai/api/v1``).
+AZURE_FOUNDRY_MODEL    Deployment/model id on the Azure AI Foundry endpoint —
+                    the ONLY LLM provider in this codebase (``build_llm_client()``
+                    wires up nothing else). No default — must be set for the
+                    LLM compile phase (and every other LLM call site — field
+                    mapping, sheet identification, chat assistant, value
+                    pairing, script generation) to be usable (see
+                    ``llm/azure_foundry_client.py``, which fails loudly rather
+                    than guessing a model name). Authentication is via Azure
+                    AD (``DefaultAzureCredential`` — az login / managed
+                    identity / env-based service principal), not an API key.
+AZURE_FOUNDRY_BASE_URL Optional override for the Azure AI Foundry OpenAI-compatible
+                    base URL (default: the AI-Adoption-COE endpoint,
+                    ``https://AI-Adoption-COE.services.ai.azure.com/openai/v1``).
 LLM_FALLBACK_COOLDOWN_SECONDS
-                    After a Groq retryable failure, how long (seconds) to route
-                    straight to the next tier before retrying Groq again.
-                    Default: 60.
-OPENAI_API_KEY      API key for OpenAI. No longer part of the default
-                    Groq→Gemini→Cerebras→OpenRouter failover chain built by
-                    ``build_llm_client()`` — kept only for standalone/manual use
-                    of ``OpenAIJSONClient``. Optional.
-OPENAI_MODEL        OpenAI model id for standalone use. Default: ``gpt-4o-mini``.
-OPENAI_BASE_URL     Optional override for the OpenAI API base URL.
+                    Unused by the current Azure-AI-Foundry-only ``build_llm_client()``
+                    (there is nothing to fail over to); kept for
+                    ``FailoverLLMClient`` callers/tests that construct their own
+                    multi-provider list. Default: 60.
 RECON_STORE_DIR     Directory root for all persisted state (SQLite DBs + raw
                     snapshot / shadow data files). Default: ``<repo>/data/recon_store``.
 SHADOW_TTL_DAYS     Retention window (days) for Shadow_Source data before
@@ -62,19 +45,15 @@ USE_SCRIPT_TRANSFORMATIONS
                     transformed DATA -> production execution). When false
                     (default) the contract-based compile/validate/approve flow
                     remains the active path. Accepts true/1/yes/on.
-RECON_GROQ_STRICT   When true, a configured-but-failing Groq compile raises
+RECON_GROQ_STRICT   When true, a configured-but-failing Azure AI Foundry compile raises
                     instead of silently degrading to the deterministic stub
-                    compiler. Default: false (degrade, matching the
-                    script-transformation generator's fallback behaviour).
-                    Turn this on in any environment where a stub-compiled
-                    contract reaching Gate 1 should be treated as a bug, not a
-                    normal degraded path. Accepts true/1/yes/on.
-VALUE_PAIRING_WINDOW_YEARS
-                    Size (in years) of each year-range batch the value-pairing
-                    pipeline partitions the SOURCE side into (see
-                    ``value_pairing.batching``) — e.g. 2 -> "2021-2022",
-                    "2023-2024", ... Default: 2. A caller can still override
-                    this per-call via ``pair_values(date_window_years=...)``.
+                    compiler (name kept for backward compatibility — it gates
+                    the LLM compiler in general, not specifically Groq).
+                    Default: false (degrade, matching the script-transformation
+                    generator's fallback behaviour). Turn this on in any
+                    environment where a stub-compiled contract reaching Gate 1
+                    should be treated as a bug, not a normal degraded path.
+                    Accepts true/1/yes/on.
 """
 
 from __future__ import annotations
@@ -91,77 +70,19 @@ def _repo_root() -> Path:
 
 
 @dataclass(frozen=True)
-class GroqSettings:
-    """Groq LLM configuration. Read-only scaffolding for the compile phase.
+class AzureFoundrySettings:
+    """Azure AI Foundry LLM configuration — the ONLY LLM provider in this
+    codebase, via its OpenAI-compatible endpoint. Authenticated with Azure AD
+    (``DefaultAzureCredential``), not a static API key, so there is no
+    ``api_key`` field here — only the deployment/model id and base URL are
+    configured through the environment."""
 
-    ``api_key`` is intentionally allowed to be ``None`` so the app runs without
-    Groq configured. The contract compiler decides whether a key is required.
-    """
-
-    api_key: str | None
     model: str
     base_url: str | None
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_key)
-
-
-@dataclass(frozen=True)
-class OpenAISettings:
-    """OpenAI LLM configuration — kept for standalone use only.
-
-    No longer part of the default ``build_llm_client()`` failover chain (see
-    :mod:`backend.recon_engine.llm.failover`); ``OpenAIJSONClient`` still reads
-    this if constructed directly.
-    """
-
-    api_key: str | None
-    model: str
-    base_url: str | None
-
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.api_key)
-
-
-@dataclass(frozen=True)
-class GeminiSettings:
-    """Gemini LLM configuration — fallback tier 2, via Gemini's OpenAI-compatible endpoint."""
-
-    api_key: str | None
-    model: str
-    base_url: str | None
-
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.api_key)
-
-
-@dataclass(frozen=True)
-class CerebrasSettings:
-    """Cerebras LLM configuration — fallback tier 3, via Cerebras's OpenAI-compatible endpoint."""
-
-    api_key: str | None
-    model: str
-    base_url: str | None
-
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.api_key)
-
-
-@dataclass(frozen=True)
-class OpenRouterSettings:
-    """OpenRouter LLM configuration — fallback tier 4, the last resort (free models)."""
-
-    api_key: str | None
-    model: str
-    base_url: str | None
-
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.model)
 
 
 @dataclass(frozen=True)
@@ -175,24 +96,13 @@ class Settings:
     use_script_transformations: bool
     groq_strict: bool
     llm_fallback_cooldown_s: int
-    value_pairing_window_years: int
-    groq: GroqSettings = field(repr=False)
-    gemini: GeminiSettings = field(repr=False)
-    cerebras: CerebrasSettings = field(repr=False)
-    openrouter: OpenRouterSettings = field(repr=False)
-    openai: OpenAISettings = field(repr=False)
+    azure_foundry: AzureFoundrySettings = field(repr=False)
 
     @property
     def any_llm_configured(self) -> bool:
-        """True when at least one provider in the active failover chain
-        (Groq → Gemini → Cerebras → OpenRouter) has a key. ``openai`` is
-        deliberately excluded — it is no longer part of that chain."""
-        return (
-            self.groq.is_configured
-            or self.gemini.is_configured
-            or self.cerebras.is_configured
-            or self.openrouter.is_configured
-        )
+        """True when Azure AI Foundry — the only LLM provider in this
+        codebase — has a model id configured."""
+        return self.azure_foundry.is_configured
 
     # ── Derived paths ────────────────────────────────────────────────────────
     @property
@@ -263,34 +173,14 @@ def get_settings() -> Settings:
     store_dir_env = os.environ.get("RECON_STORE_DIR", "").strip()
     store_dir = Path(store_dir_env) if store_dir_env else (_repo_root() / "data" / "recon_store")
 
-    groq = GroqSettings(
-        api_key=os.environ.get("GROQ_API_KEY") or None,
-        model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
-        base_url=os.environ.get("GROQ_BASE_URL") or None,
-    )
-    gemini = GeminiSettings(
-        api_key=os.environ.get("GEMINI_API_KEY") or None,
-        # No invented default — this tier is only usable once GEMINI_MODEL is
-        # actually set (see llm/gemini_client.py, which fails loudly rather
-        # than guessing a model name).
-        model=os.environ.get("GEMINI_MODEL", ""),
-        base_url=os.environ.get("GEMINI_BASE_URL")
-        or "https://generativelanguage.googleapis.com/v1beta/openai/",
-    )
-    cerebras = CerebrasSettings(
-        api_key=os.environ.get("CEREBRAS_API_KEY") or None,
-        model=os.environ.get("CEREBRAS_MODEL", ""),
-        base_url=os.environ.get("CEREBRAS_BASE_URL") or "https://api.cerebras.ai/v1",
-    )
-    openrouter = OpenRouterSettings(
-        api_key=os.environ.get("OPENROUTER_API_KEY") or None,
-        model=os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
-        base_url=os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1",
-    )
-    openai = OpenAISettings(
-        api_key=os.environ.get("OPENAI_API_KEY") or None,
-        model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-        base_url=os.environ.get("OPENAI_BASE_URL") or None,
+    azure_foundry = AzureFoundrySettings(
+        # No invented default — this tier is only usable once
+        # AZURE_FOUNDRY_MODEL is actually set (see
+        # llm/azure_foundry_client.py, which fails loudly rather than
+        # guessing a model name).
+        model=os.environ.get("AZURE_FOUNDRY_MODEL", ""),
+        base_url=os.environ.get("AZURE_FOUNDRY_BASE_URL")
+        or "https://AI-Adoption-COE.services.ai.azure.com/openai/v1",
     )
 
     return Settings(
@@ -303,12 +193,7 @@ def get_settings() -> Settings:
         use_script_transformations=_bool_env("USE_SCRIPT_TRANSFORMATIONS", False),
         groq_strict=_bool_env("RECON_GROQ_STRICT", False),
         llm_fallback_cooldown_s=max(0, _int_env("LLM_FALLBACK_COOLDOWN_SECONDS", 60)),
-        value_pairing_window_years=max(1, _int_env("VALUE_PAIRING_WINDOW_YEARS", 1)),
-        groq=groq,
-        gemini=gemini,
-        cerebras=cerebras,
-        openrouter=openrouter,
-        openai=openai,
+        azure_foundry=azure_foundry,
     )
 
 

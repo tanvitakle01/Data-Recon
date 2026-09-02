@@ -1,19 +1,24 @@
-"""Groq contract compiler — the LLM compile phase.
+"""LLM contract compiler — the LLM compile phase (class name kept as
+``GroqContractCompiler`` for backward compatibility; it now runs on Azure AI
+Foundry, with no fallback).
 
-    Mapping Sheet + Rules -> Groq LLM -> Draft Transformation Contract JSON
+    Mapping Sheet + Rules -> Azure AI Foundry LLM -> Draft Transformation Contract JSON
 
 The model is only ever asked for JSON matching the ``DraftContract`` schema; the
 response is parsed and validated with ``DraftContract.model_validate``. Calling
-:meth:`compile` requires ``GROQ_API_KEY`` (and the optional ``groq`` package);
-without it, :meth:`compile` raises ``ContractCompilerError`` and callers should
-fall back to ``StubContractCompiler`` for a deterministic draft.
+:meth:`compile` requires ``AZURE_FOUNDRY_MODEL`` (and Azure AD credentials via
+``DefaultAzureCredential``); without them, :meth:`compile` raises
+``ContractCompilerError`` and callers should fall back to
+``StubContractCompiler`` for a deterministic draft.
 
-Where the Groq API key is required
------------------------------------
-Only here, and only at ``compile`` time. Set ``GROQ_API_KEY`` (and optionally
-``GROQ_MODEL`` / ``GROQ_BASE_URL``) in the environment. No other part of the
-system — validation, approval, the deterministic engine, reconciliation —
-needs Groq or any network access.
+Where Azure AI Foundry access is required
+------------------------------------------
+Only here, and only at ``compile`` time. Set ``AZURE_FOUNDRY_MODEL`` (and
+optionally ``AZURE_FOUNDRY_BASE_URL``) in the environment, and sign in to
+Azure AD (e.g. ``az login``, or run under a managed identity) so
+``DefaultAzureCredential`` can obtain a token. No other part of the system —
+validation, approval, the deterministic engine, reconciliation — needs Azure
+AI Foundry or any network access.
 
 Safety invariant
 ----------------
@@ -229,10 +234,9 @@ def _normalise_notes(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class GroqContractCompiler(ContractCompiler):
-    """The LLM compile phase. Groq is the primary provider; if it hits a
-    retryable error (rate limit / quota / token limit / timeout / unavailable /
-    connection), the request automatically fails over to OpenAI. The draft's
-    ``compiler`` provenance records whichever provider actually produced it.
+    """The LLM compile phase. Azure AI Foundry is the sole provider — no
+    fallback. The draft's ``compiler`` provenance records the provider that
+    produced it (``"azure_foundry"``).
     """
 
     name = "groq"
@@ -243,7 +247,7 @@ class GroqContractCompiler(ContractCompiler):
         # module-level import here would be a circular import.
         from backend.recon_engine.llm import build_llm_client
 
-        self._llm = build_llm_client(groq_api_key=api_key, groq_model=model)
+        self._llm = build_llm_client(api_key=api_key, model=model)
 
     @property
     def is_configured(self) -> bool:
@@ -322,11 +326,10 @@ class GroqContractCompiler(ContractCompiler):
             target_type=target_type,
         )
 
-        logger.info("Calling GroqContractCompiler (Groq→OpenAI failover)")
-        # Tries Groq, then OpenAI on a retryable Groq failure. Raises
-        # ContractCompilerError if no provider is configured / a non-retryable
-        # error occurs / the response is not valid JSON, and
-        # AllProvidersUnavailableError if every provider is rate-limited/down.
+        logger.info("Calling GroqContractCompiler (Azure AI Foundry, no fallback)")
+        # Raises ContractCompilerError if Azure AI Foundry is not configured /
+        # a non-retryable error occurs / the response is not valid JSON, and
+        # AllProvidersUnavailableError if Azure AI Foundry is rate-limited/down.
         payload = self._llm.complete_json(messages)
         payload = _normalise_notes(payload)
 
@@ -343,7 +346,8 @@ class GroqContractCompiler(ContractCompiler):
             ) from exc
 
         # Stamp provenance with the provider that actually served the request
-        # ("groq" normally, "openai" when failover kicked in).
+        # ("azure_foundry" normally; falls back to self.name ("groq", kept for
+        # backward compatibility) only if outcome tracking is unavailable).
         from backend.recon_engine.llm import get_last_llm_outcome
 
         outcome = get_last_llm_outcome()

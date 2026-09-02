@@ -1,7 +1,7 @@
 import api from "./api";
 
 // Thin async wrappers around the shared `api` instance — mirrors
-// settings/connections/connectionsApi.js's convention. All of these back the
+// datasources/connections/connectionsApi.js's convention. All of these back the
 // Suspend & Resume / Stored Runs feature (see backend/routes/auto_pipeline.py).
 
 export async function listStoredRuns() {

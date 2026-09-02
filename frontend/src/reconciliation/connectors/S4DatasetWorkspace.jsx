@@ -6,11 +6,6 @@ import {
   SapConnectedBar,
 } from "./SapConnectionGate";
 import JoinCanvas from "./JoinCanvas";
-import {
-  S4_TRANSFORMATION_DISCOVERY_FIELDS,
-  recommendedFieldsFor,
-  withAuxiliaryFields,
-} from "../lib/transformationDiscoveryFields";
 import { matchProposedToSchema } from "../lib/fieldMatching";
 import "./ibpWorkspace.css";
 import "./s4Workspace.css";
@@ -107,11 +102,6 @@ function S4DatasetWorkspace({
   const [entityMeta, setEntityMeta] = useState({}); // entity -> {properties:[{name,type,is_key}], keys:[]}
   const [joins, setJoins] = useState([]); // [{entity, type, keys:[{left,right}]}]
   const [selectedByEntity, setSelectedByEntity] = useState({}); // entity -> [propName]
-  // entity -> Set(propName) auto-checked by a Transformation Discovery rule
-  // (e.g. selecting Material also checks MaterialGroup, ...), tracked
-  // separately so the "Recommended" badge only marks the supporting fields,
-  // not the trigger field itself, and clears once a field is deselected.
-  const [autoSelectedByEntity, setAutoSelectedByEntity] = useState({});
   // entity -> Set(propName) currently designated a KEY (shown with a KEY tag
   // and excluded from the dataset by default). Seeded from the entity's own
   // OData keys + this join's predicate keys when the entity/join is added,
@@ -241,7 +231,6 @@ function S4DatasetWorkspace({
     setPrimaryEntity(entity);
     setJoins([]);
     setSelectedByEntity({});
-    setAutoSelectedByEntity({});
     setKeyFieldsByEntity({});
     setRelationships([]);
     setPreviewRows([]);
@@ -288,18 +277,7 @@ function S4DatasetWorkspace({
       primarySelection = primarySelection.filter((n) => !keyNames.has(n));
       setKeyFieldsByEntity({ [entity]: keyNames });
 
-      // Widen with MDT auxiliary evidence fields: for each trigger field present
-      // (Material / ProductionPlant), auto-add its supporting attributes that
-      // exist here, tracked in autoSelectedByEntity so they flow through the
-      // mdtFields boundary — fetched + previewed + fed to the deterministic
-      // matcher, but excluded from the field mapping / reconciliation output.
-      const { selection, autoAdded } = withAuxiliaryFields(
-        S4_TRANSFORMATION_DISCOVERY_FIELDS,
-        primarySelection,
-        propNames
-      );
-      setSelectedByEntity({ [entity]: selection });
-      setAutoSelectedByEntity({ [entity]: autoAdded });
+      setSelectedByEntity({ [entity]: primarySelection });
       const rp = relRes.data ?? {};
       const rels = rp.success ? rp.relationships ?? [] : [];
       setRelationships(rels);
@@ -446,11 +424,6 @@ function S4DatasetWorkspace({
       delete next[entity];
       return next;
     });
-    setAutoSelectedByEntity((prev) => {
-      const next = { ...prev };
-      delete next[entity];
-      return next;
-    });
     setKeyFieldsByEntity((prev) => {
       const next = { ...prev };
       delete next[entity];
@@ -554,37 +527,14 @@ function S4DatasetWorkspace({
   }, [prepopKey, connState, entities.length, dataset]);
 
   // ---- column selection ----
-  // Checking a Transformation Discovery trigger field (e.g. Material,
-  // ProductionPlant) also checks its supporting attributes within the same
-  // entity, filtered to whatever actually exists there — missing ones are
-  // skipped silently. The user can still deselect any of them individually.
   const toggleProp = (entity, name) => {
     invalidate();
     setSelectedByEntity((prev) => {
       const cur = prev[entity] || [];
-      if (cur.includes(name)) {
-        setAutoSelectedByEntity((autoPrev) => {
-          const curAuto = autoPrev[entity];
-          if (!curAuto?.has(name)) return autoPrev;
-          const nextAuto = new Set(curAuto);
-          nextAuto.delete(name);
-          return { ...autoPrev, [entity]: nextAuto };
-        });
-        return { ...prev, [entity]: cur.filter((n) => n !== name) };
-      }
-
-      const availableNames = (entityMeta[entity]?.properties || []).map((p) => p.name);
-      const recommended = recommendedFieldsFor(S4_TRANSFORMATION_DISCOVERY_FIELDS, name, availableNames);
-      if (recommended.length === 0) return { ...prev, [entity]: [...cur, name] };
-
-      const newlyAdded = recommended.filter((f) => f !== name && !cur.includes(f));
-      if (newlyAdded.length > 0) {
-        setAutoSelectedByEntity((autoPrev) => {
-          const curAuto = autoPrev[entity] || new Set();
-          return { ...autoPrev, [entity]: new Set([...curAuto, ...newlyAdded]) };
-        });
-      }
-      return { ...prev, [entity]: Array.from(new Set([...cur, ...recommended])) };
+      return {
+        ...prev,
+        [entity]: cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name],
+      };
     });
   };
   const selectGroup = (entity, all) => {
@@ -594,7 +544,6 @@ function S4DatasetWorkspace({
       ...prev,
       [entity]: all ? dataFieldNames(entity) : [],
     }));
-    setAutoSelectedByEntity((prev) => ({ ...prev, [entity]: new Set() }));
   };
 
   const entitiesInPlay = useMemo(
@@ -720,22 +669,14 @@ function S4DatasetWorkspace({
       setImported(true);
       setImportedCount(rows.length);
       // Stay on the Build card after import; the full data grid now lives on a
-      // dedicated preview page opened via "Open Detailed Preview".
-      // Fields auto-checked by a Transformation Discovery rule (MDT/recommended
-      // fields), flattened across every entity in play — carried along so
-      // downstream mapping generation can exclude them while they remain
-      // selectable here for tracking/validation. The dataset (rows, preview,
-      // columns) is persisted to wizard state, which is what the
-      // detailed-preview page reads.
-      const mdtFields = Array.from(
-        new Set(entitiesInPlay.flatMap((e) => Array.from(autoSelectedByEntity[e] || [])))
-      );
+      // dedicated preview page opened via "Open Detailed Preview". The dataset
+      // (rows, preview, columns) is persisted to wizard state, which is what
+      // the detailed-preview page reads.
       onLoaded?.({
         columns,
         preview: rows.slice(0, 10),
         rows,
         rowCount: rows.length,
-        mdtFields,
       });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
@@ -769,13 +710,11 @@ function S4DatasetWorkspace({
       const meta = entityMeta[entity];
       const keySet = keyFieldsByEntity[entity] ?? new Set();
       const sel = selectedByEntity[entity] || [];
-      const auto = autoSelectedByEntity[entity];
       const fields = (meta?.properties || []).map((p) => ({
         name: p.name,
         type: p.type,
         isKey: keySet.has(p.name),
         checked: sel.includes(p.name),
-        recommended: auto?.has(p.name) || false,
       }));
       return {
         entity,

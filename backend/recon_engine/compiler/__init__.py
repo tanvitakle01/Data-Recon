@@ -2,7 +2,8 @@
 
 A compiler produces contract JSON only — never code, never execution.
 
-* ``GroqContractCompiler`` — LLM compile phase (scaffolding; needs GROQ_API_KEY).
+* ``GroqContractCompiler`` — LLM compile phase (name kept for backward
+  compatibility; runs on Azure AI Foundry — needs AZURE_FOUNDRY_MODEL).
 * ``StubContractCompiler``  — deterministic placeholder; makes the lifecycle
   runnable/testable today.
 """

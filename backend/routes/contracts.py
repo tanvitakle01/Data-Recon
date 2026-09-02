@@ -1,8 +1,8 @@
 """Contract lifecycle API: compile -> validate -> approve, plus discovery.
 
-The LLM (future Groq compile phase) only ever produces the draft returned by
-``/compile``. Everything else is deterministic. Approval is an explicit human
-step — there is no automatic promotion.
+The LLM (Azure AI Foundry compile phase) only ever produces the draft
+returned by ``/compile``. Everything else is deterministic. Approval is an
+explicit human step — there is no automatic promotion.
 """
 
 from __future__ import annotations
@@ -205,11 +205,12 @@ def compile_contract(req: CompileRequest) -> dict[str, Any]:
             draft.compiler, degraded_reason is not None, degraded_reason,
         )
     except ContractCompilerError as exc:
-        # A Groq failure no longer reaches here — service.compile_draft()
-        # degrades to the deterministic stub compiler automatically. This
-        # branch now means the CONTENT was rejected by whichever compiler
-        # actually ran (e.g. no resolvable business-key fields in
-        # mapping_sheet) — a genuine 422, not a Groq availability issue.
+        # An Azure AI Foundry failure no longer reaches here —
+        # service.compile_draft() degrades to the deterministic stub compiler
+        # automatically. This branch now means the CONTENT was rejected by
+        # whichever compiler actually ran (e.g. no resolvable business-key
+        # fields in mapping_sheet) — a genuine 422, not a provider
+        # availability issue.
         # TEMP DIAGNOSTIC — remove alongside the handler in main.py.
         _diag_log.info(
             "compile_contract: ContractCompilerError -> 422. detail=%r mapping_sheet=%s",
@@ -222,10 +223,10 @@ def compile_contract(req: CompileRequest) -> dict[str, Any]:
         "degraded": degraded_reason is not None,
         "degraded_reason": degraded_reason,
         # LLM provider failover surface (spec points 4, 5, 6). ``provider`` is
-        # who actually produced the draft ("groq"/"openai", or the deterministic
-        # "stub" when every provider was unavailable).
+        # who actually produced the draft ("azure_foundry", or the
+        # deterministic "stub" when the provider was unavailable).
         "provider": (outcome.provider_used if outcome and outcome.provider_used else draft.compiler),
-        "preferred_provider": outcome.preferred if outcome else "groq",
+        "preferred_provider": outcome.preferred if outcome else "azure_foundry",
         "fallback": bool(outcome and outcome.fallback_occurred),
         "provider_notice": outcome.notice if outcome else None,
     }

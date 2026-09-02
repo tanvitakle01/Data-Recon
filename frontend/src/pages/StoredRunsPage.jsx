@@ -16,7 +16,7 @@ import ShortId from "../components/ShortId";
 // Statuses a run can be in while it's still actively executing — mirrors
 // backend/recon_engine/run_registry.py's ACTIVE_STATES. A run in one of these
 // keeps polling for live progress; Resume is hidden and Delete is disabled.
-const ACTIVE_STATUSES = new Set(["running", "waiting_for_input", "cancelling", "suspending", "stalled"]);
+const ACTIVE_STATUSES = new Set(["running", "waiting_for_input", "cancelling", "suspending"]);
 
 const STATUS_LABELS = {
   suspended: "Suspended",
@@ -24,7 +24,6 @@ const STATUS_LABELS = {
   failed: "Failed",
   cancelled: "Cancelled",
   waiting_for_input: "Waiting for input",
-  stalled: "Stalled",
   cancelling: "Cancelling",
   suspending: "Suspending",
 };

@@ -8,8 +8,8 @@ else (a malformed response, a schema violation, a bad request) is a genuine
 error that another provider is no more likely to get right, so it propagates.
 
 Classification is deliberately duck-typed by exception *class name*, HTTP status
-and message text rather than by importing ``groq``/``openai`` exception classes.
-Both SDKs are optional dependencies and use parallel hierarchies
+and message text rather than by importing ``openai`` exception classes. The
+``openai`` SDK is an optional dependency with a well-known hierarchy
 (``RateLimitError``, ``APITimeoutError``, ``APIConnectionError``,
 ``InternalServerError``, ...); matching on shape keeps this module import-light
 and provider-agnostic.

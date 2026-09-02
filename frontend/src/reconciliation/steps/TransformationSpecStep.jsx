@@ -162,13 +162,8 @@ function TransformationSpecStep() {
     if (!source.dataset || !target.dataset) return;
 
     const formData = new FormData();
-    // Auto-selected MDT/recommended fields (tracked per dataset by the
-    // connector workspaces) are excluded here — before the inference ever sees
-    // them — so they are never proposed as field-mapping candidates. They feed
-    // the deterministic matcher as evidence and stay in the dataset itself for
-    // tracking/validation/approval; only the inference request omits them.
-    const okSource = appendDatasetSide(formData, "source", source, source.dataset?.mdtFields);
-    const okTarget = appendDatasetSide(formData, "target", target, target.dataset?.mdtFields);
+    const okSource = appendDatasetSide(formData, "source", source);
+    const okTarget = appendDatasetSide(formData, "target", target);
     if (!okSource || !okTarget) {
       setMapError("Source or target data is no longer available. Go back and re-fetch or re-upload it.");
       return;
@@ -210,7 +205,7 @@ function TransformationSpecStep() {
           display: nextDisplay,
           mapping: rebuildMapping(nextDisplay, data.mapping?.options),
           // Provenance of the whole card so MappingEditor can label the source
-          // ("Generated via Vector Library" vs "Generated via Groq/OpenAI").
+          // ("Generated via Vector Library" vs "Generated via Azure AI Foundry").
           origin: {
             source: data.source ?? null,
             provider: data.provider ?? null,
@@ -219,8 +214,8 @@ function TransformationSpecStep() {
           },
         },
       });
-      // Surface a degraded reason (nothing generated) or a provider-failover
-      // notice (served by OpenAI) without blocking — the table is still usable.
+      // Surface a degraded reason (nothing generated) or a provider notice
+      // without blocking — the table is still usable.
       if (data.degraded && data.degraded_reason) setMapNotice(data.degraded_reason);
       else if (data.provider_notice) setMapNotice(data.provider_notice);
     } catch (err) {

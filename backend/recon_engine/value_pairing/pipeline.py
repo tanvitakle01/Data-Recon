@@ -40,9 +40,9 @@ from backend.recon_engine.llm import build_llm_client, get_last_llm_outcome, res
 from backend.recon_engine.models.value_mapping import Confidence, ValueMapping, ValueMatch
 from backend.recon_engine.storage import value_pair_store
 from backend.recon_engine.value_pairing.batching import (
+    DEFAULT_MAX_DATES_PER_BATCH,
     BatchProgress,
-    build_source_batches,
-    build_target_batches,
+    build_batches,
 )
 from backend.recon_engine.value_pairing.corroborate import corroboration_overlap
 from backend.recon_engine.value_pairing.extraction import distinct_values
@@ -736,7 +736,7 @@ def pair_values(
     source_dates: pd.Series | None = None,
     target_dates: pd.Series | None = None,
     actor: str = "system",
-    date_window_years: int | None = None,
+    max_dates_per_batch: int | None = None,
     raise_on_batch_failure: bool = False,
     on_batch: Any = None,
     start_batch_index: int = 0,
@@ -744,16 +744,19 @@ def pair_values(
 ) -> ValueMapping:
     """Resolve every distinct ``source_field`` value to a ``target_field`` value.
 
-    Partitions the SOURCE side into year-range batches (see
-    ``value_pairing.batching``; ``date_window_years`` overrides the
-    ``VALUE_PAIRING_WINDOW_YEARS`` setting when given) and runs library lookup
-    -> identity -> LLM proposal (mandatorily verified) -> pattern reuse ->
-    resolve (see :func:`_pair_batch`) once per batch, oldest first, merging
-    every batch's matches at the end (see :func:`_merge_batch_matches`). The
-    library is re-queried fresh every batch, so a pairing an earlier batch
-    just persisted is reused (no LLM call) by a later batch that re-encounters
-    the same value — this is what makes batching never cost a redundant LLM
-    call for a value whose records span more than one year window.
+    Partitions BOTH sides into ONE shared, date-aligned batch plan (see
+    ``value_pairing.batching.build_batches`` — the same distinct-date-union
+    algorithm the Auto pipeline's row-level extraction uses; a source/target
+    record dated the same calendar day always lands in the same batch;
+    ``max_dates_per_batch`` overrides ``batching.DEFAULT_MAX_DATES_PER_BATCH``
+    when given) and runs library lookup -> identity -> LLM proposal
+    (mandatorily verified) -> pattern reuse -> resolve (see
+    :func:`_pair_batch`) once per batch, oldest first, merging every batch's
+    matches at the end (see :func:`_merge_batch_matches`). The library is
+    re-queried fresh every batch, so a pairing an earlier batch just persisted
+    is reused (no LLM call) by a later batch that re-encounters the same
+    value — this is what makes batching never cost a redundant LLM call for a
+    value whose records span more than one batch.
 
     A stored library pairing is trusted immediately but is still only ONE
     candidate among however many a value turns out to have this run — it
@@ -761,11 +764,10 @@ def pair_values(
     identity match) the way an eager pop-and-return would.
 
     ``source_dates``/``target_dates`` are optional aligned date columns (same
-    index as ``source_series``/``target_series``). ``source_dates`` ALSO
-    drives batch partitioning (never ``target_dates`` — see
-    ``value_pairing.batching``'s module docstring); both are used, unsliced,
-    for the per-candidate corroboration signal. When ``source_dates`` is
-    omitted, batching degrades to a single pass over everything (today's
+    index as ``source_series``/``target_series``). Both ALSO drive batch
+    partitioning (see ``value_pairing.batching``'s module docstring); both are
+    used, unsliced, for the per-candidate corroboration signal. When neither
+    is given, batching degrades to a single pass over everything (today's
     unbatched behavior) — a missing date column never blocks pairing.
 
     ``raise_on_batch_failure`` (default False, Manual mode's contract): when
@@ -792,24 +794,24 @@ def pair_values(
     re-run this call.
     """
     target_values = set(distinct_values(target_series))
-    window_years = date_window_years or get_settings().value_pairing_window_years
-    batches = build_source_batches(
-        source_series=source_series, source_dates=source_dates, window_years=window_years
+    batches = build_batches(
+        source_series=source_series,
+        target_series=target_series,
+        source_dates=source_dates,
+        target_dates=target_dates,
+        max_dates_per_batch=max_dates_per_batch or DEFAULT_MAX_DATES_PER_BATCH,
     )
-    # Display-only: which distinct target values share each batch's calendar
+    # Display-only: which distinct target values share each batch's date
     # window. Never used for matching — see batching.py's module docstring.
-    target_batches = build_target_batches(
-        target_series=target_series, target_dates=target_dates, window_years=window_years
-    )
     target_candidates_by_label = {
-        label: len(distinct_values(target_series[mask])) for label, mask in target_batches
+        label: len(distinct_values(target_series[tmask])) for label, _smask, tmask in batches
     }
 
     all_batch_matches: list[list[ValueMatch]] = [list(resume_matches)] if resume_matches else []
-    for index, (label, mask) in enumerate(batches):
+    for index, (label, smask, _tmask) in enumerate(batches):
         if index < start_batch_index:
             continue  # already resolved by a prior (failed) call — see resume_matches above
-        batch_source_series = source_series[mask]
+        batch_source_series = source_series[smask]
         source_counts = distinct_values(batch_source_series)
         batch_matches: list[ValueMatch] = []
         if source_counts:

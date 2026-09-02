@@ -1,5 +1,5 @@
-"""Coverage for year-range batching (recon_engine.value_pairing.batching) and
-its integration into pipeline.pair_values: per-batch source extraction,
+"""Coverage for distinct-date-union batching (recon_engine.value_pairing.batching)
+and its integration into pipeline.pair_values: per-batch source extraction,
 cross-batch library reuse (no duplicate LLM call for a recurring value),
 final merge/dedup, and the bounded in-process retry on an all-providers-failed
 LLM outcome. The LLM is faked throughout (never a real network call).
@@ -12,12 +12,11 @@ import pytest
 
 from backend.recon_engine.storage import value_pair_store
 from backend.recon_engine.value_pairing import pipeline
-from backend.recon_engine.value_pairing.batching import build_source_batches, build_target_batches
+from backend.recon_engine.value_pairing.batching import build_batches
 
 
 class _Settings:
     any_llm_configured = True
-    value_pairing_window_years = 2
 
 
 @pytest.fixture
@@ -29,60 +28,83 @@ def _series(values):
     return pd.Series(values)
 
 
-# ── build_source_batches ─────────────────────────────────────────────────────
+# ── build_batches ─────────────────────────────────────────────────────────
 
-def test_build_source_batches_degrades_to_one_batch_without_a_date_column():
-    series = _series(["A", "B"])
-    batches = build_source_batches(source_series=series, source_dates=None)
+def test_build_batches_degrades_to_one_batch_without_any_date_column():
+    source = _series(["A", "B"])
+    target = _series(["X"])
+    batches = build_batches(
+        source_series=source, target_series=target, source_dates=None, target_dates=None
+    )
     assert len(batches) == 1
-    label, mask = batches[0]
+    label, smask, tmask = batches[0]
     assert label == "All records"
-    assert mask.tolist() == [True, True]
+    assert smask.tolist() == [True, True]
+    assert tmask.tolist() == [True]
 
 
-def test_build_source_batches_partitions_calendar_windows_oldest_first():
-    series = _series(["A", "B", "C"])
-    dates = _series(["2021-01-01", "2023-06-01", "2021-12-31"])
-    batches = build_source_batches(source_series=series, source_dates=dates, window_years=2)
-    labels = [label for label, _mask in batches]
-    assert labels == ["2021-2022", "2023-2024"]
-    first_mask = batches[0][1]
-    assert first_mask.tolist() == [True, False, True]
+def test_build_batches_partitions_the_union_of_distinct_dates_oldest_first():
+    source = _series(["A", "B", "C"])
+    source_dates = _series(["2021-01-01", "2023-06-01", "2021-12-31"])
+    target = _series(["X"])
+    target_dates = _series(["2021-01-01"])
+    batches = build_batches(
+        source_series=source, target_series=target,
+        source_dates=source_dates, target_dates=target_dates,
+        max_dates_per_batch=1,
+    )
+    labels = [label for label, _s, _t in batches]
+    assert labels == ["2021-01-01", "2021-12-31", "2023-06-01"]
+    first_smask, first_tmask = batches[0][1], batches[0][2]
+    assert first_smask.tolist() == [True, False, False]
+    assert first_tmask.tolist() == [True], "same calendar date on source and target -> same batch"
 
 
-def test_build_source_batches_adds_a_trailing_undated_batch():
-    series = _series(["A", "B"])
-    dates = _series(["2021-01-01", None])
-    batches = build_source_batches(source_series=series, source_dates=dates, window_years=2)
-    labels = [label for label, _mask in batches]
+def test_build_batches_a_shared_date_lands_both_sides_in_one_slot():
+    source = _series(["A"])
+    source_dates = _series(["2021-01-01"])
+    target = _series(["X", "Y"])
+    target_dates = _series(["2021-01-01", "2022-01-01"])
+    batches = build_batches(
+        source_series=source, target_series=target,
+        source_dates=source_dates, target_dates=target_dates,
+        max_dates_per_batch=1,
+    )
+    labels = [label for label, _s, _t in batches]
+    assert labels == ["2021-01-01", "2022-01-01"], "date present on only one side still gets its own slot"
+    assert batches[0][2].tolist() == [True, False]
+    assert batches[0][1].tolist() == [True]
+
+
+def test_build_batches_adds_a_trailing_undated_batch():
+    source = _series(["A", "B"])
+    source_dates = _series(["2021-01-01", None])
+    target = _series(["X"])
+    target_dates = _series(["2021-01-01"])
+    batches = build_batches(
+        source_series=source, target_series=target,
+        source_dates=source_dates, target_dates=target_dates,
+    )
+    labels = [label for label, _s, _t in batches]
     assert labels[-1] == "Undated"
     assert batches[-1][1].tolist() == [False, True]
+    assert batches[-1][2].tolist() == [False]
 
 
-def test_build_source_batches_default_window_is_one_year():
-    series = _series(["A", "B", "C"])
-    dates = _series(["2021-01-01", "2022-06-01", "2022-12-31"])
-    batches = build_source_batches(source_series=series, source_dates=dates)
-    labels = [label for label, _mask in batches]
-    assert labels == ["2021", "2022"]
+def test_build_batches_default_cap_is_4000_distinct_dates():
+    from backend.recon_engine.value_pairing.batching import DEFAULT_MAX_DATES_PER_BATCH
 
+    assert DEFAULT_MAX_DATES_PER_BATCH == 4000
 
-# ── build_target_batches ─────────────────────────────────────────────────────
-
-def test_build_target_batches_mirrors_source_windowing():
-    series = _series(["X", "Y"])
-    dates = _series(["2021-01-01", "2022-01-01"])
-    batches = build_target_batches(target_series=series, target_dates=dates, window_years=1)
-    labels = [label for label, _mask in batches]
-    assert labels == ["2021", "2022"]
-    assert batches[0][1].tolist() == [True, False]
-
-
-def test_build_target_batches_degrades_to_one_batch_without_a_date_column():
-    series = _series(["X", "Y"])
-    batches = build_target_batches(target_series=series, target_dates=None)
-    assert len(batches) == 1
-    assert batches[0][0] == "All records"
+    source = _series(["A", "B"])
+    source_dates = _series(["2021-01-01", "2021-01-02"])
+    target = _series(["X"])
+    target_dates = _series(["2021-01-01"])
+    batches = build_batches(
+        source_series=source, target_series=target,
+        source_dates=source_dates, target_dates=target_dates,
+    )
+    assert len(batches) == 1, "2 distinct dates is well under the 4000-date cap -> one batch"
 
 
 # ── pipeline.pair_values batching integration ────────────────────────────────
@@ -90,11 +112,11 @@ def test_build_target_batches_degrades_to_one_batch_without_a_date_column():
 def test_recurring_value_across_batches_resolves_once_and_reuses_the_library(
     monkeypatch, configured_llm
 ):
-    """"5001" has one record dated 2021 (batch "2021-2022") and one dated 2023
-    (batch "2023-2024") — two batches, same value. The FIRST batch to reach it
-    must do the real LLM work and persist it; the SECOND must reuse the
-    library instead of asking the LLM again, and the final merged result must
-    be a single row (not one per batch)."""
+    """"5001" has one record dated 2021-06-01 and one dated 2023-06-01 — with
+    max_dates_per_batch=1 that's two batches, same value. The FIRST batch to
+    reach it must do the real LLM work and persist it; the SECOND must reuse
+    the library instead of asking the LLM again, and the final merged result
+    must be a single row (not one per batch)."""
     call_count = {"n": 0}
     payload = {
         "pairs": [
@@ -126,6 +148,7 @@ def test_recurring_value_across_batches_resolves_once_and_reuses_the_library(
         source_connector="s4",
         target_connector="ibp",
         source_dates=source_dates,
+        max_dates_per_batch=1,
     )
 
     assert call_count["n"] == 1, "the second batch must reuse the library, not call the LLM again"
@@ -150,19 +173,26 @@ def test_on_batch_callback_reports_every_batch_in_order(configured_llm):
         source_connector="s4",
         target_connector="ibp",
         source_dates=source_dates,
+        max_dates_per_batch=1,
         on_batch=lambda progress, matches: seen.append(  # noqa: ARG005
             (progress.batch_index, progress.batch_count, progress.batch_label)
         ),
     )
 
-    assert seen == [(0, 2, "2021-2022"), (1, 2, "2023-2024")]
+    assert seen == [(0, 2, "2021-01-01"), (1, 2, "2023-01-01")]
 
 
 def test_on_batch_callback_reports_target_candidate_count_without_gating_matches(configured_llm):
     """Target dates are batched purely for display: "5001" (source, 2021) must
     still be matchable against an identical target value dated 2023 — a
-    different calendar window — while the reported target_candidate_count for
-    the 2021 batch reflects only target rows actually dated 2021 (none)."""
+    different date window — while the reported target_candidate_count for
+    the 2021 batch reflects only target rows actually dated 2021 (none).
+
+    Source and target share ONE date-union batch plan (see batching.py's
+    module docstring), so 2021-06-01 and 2023-06-01 — two distinct dates —
+    are two separate batches under max_dates_per_batch=1; the second batch
+    has no source rows of its own (nothing to pair), but is still reported
+    via on_batch."""
     seen = []
     source_series = _series(["5001"])
     source_dates = _series(["2021-06-01"])
@@ -178,14 +208,18 @@ def test_on_batch_callback_reports_target_candidate_count_without_gating_matches
         target_connector="ibp",
         source_dates=source_dates,
         target_dates=target_dates,
-        date_window_years=1,
+        max_dates_per_batch=1,
         on_batch=lambda progress, matches: seen.append(progress),  # noqa: ARG005
     )
 
-    assert len(seen) == 1
-    assert seen[0].batch_label == "2021"
-    assert seen[0].target_candidate_count is None, (
-        "no target row is dated 2021, so the display count is None"
+    assert len(seen) == 2
+    assert seen[0].batch_label == "2021-06-01"
+    assert seen[0].target_candidate_count == 0, (
+        "no target row is dated 2021-06-01"
+    )
+    assert seen[1].batch_label == "2023-06-01"
+    assert seen[1].target_candidate_count == 1, (
+        "one target row is dated 2023-06-01"
     )
     assert result.matches[0].target_value == "5001", (
         "the match itself must still happen — target batching never gates matching"
@@ -308,6 +342,7 @@ def test_corroboration_unaffected_by_an_unrelated_batch(monkeypatch, configured_
         target_connector="ibp",
         source_dates=source_dates,
         target_dates=target_dates,
+        max_dates_per_batch=2,  # 2024-01-01 + 2024-03-01 share a batch; 2050-01-01 forced into a second
     )
     plant_matches = {m.target_value: m for m in result.matches if m.source_value == "01"}
     assert set(plant_matches) == {"01", "PL01@S21400"}

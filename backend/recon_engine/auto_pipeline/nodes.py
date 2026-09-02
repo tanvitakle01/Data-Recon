@@ -39,7 +39,7 @@ from backend.API_conn.connectors import registry
 from backend.API_conn.connectors.ibp_metadata_service import IBPMetadataService
 from backend.API_conn.connectors.s4_metadata_service import S4MetadataService
 from backend.excel_comparator.core.date_alignment import parse_dates
-from backend.recon_engine import heartbeat, ids, run_registry, service
+from backend.recon_engine import ids, run_registry, service
 from backend.recon_engine.run_registry import CooperativeCancellation, CooperativeSuspension
 from backend.recon_engine.engine.executor import build_shadow_source
 from backend.recon_engine.engine.reconciler import reconcile
@@ -752,7 +752,6 @@ def _do_run_batches(state: AutoRunState) -> dict[str, Any]:
         prior_attempt = pipeline_run_store.get_latest_batch_attempt(graph_run_id, batch.batch_index)
         batch_id = ids.new_id()
         supersedes_batch_id = prior_attempt["batch_id"] if prior_attempt else None
-        heartbeat.beat(graph_run_id, node="run_batches", batch_id=batch_id)
 
         try:
             _report_batch_stage(
@@ -1005,9 +1004,6 @@ def _run_step(state: AutoRunState, step: str, fn: Callable[[AutoRunState], dict[
         now = time.time()
         timestamps[step] = {"start": now, "end": now}
         return {"step_timestamps": timestamps, "status": "cancelled", "failed_step": None, "error": None}
-
-    if graph_run_id:
-        heartbeat.beat(graph_run_id, node=step)
 
     start = time.time()
     set_llm_call_context(run_id=graph_run_id, node=step)

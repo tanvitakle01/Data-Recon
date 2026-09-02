@@ -149,14 +149,15 @@ def test_compile_accepts_full_parsed_mapping_sheet_object(client):
 
 
 def test_compile_degrades_instead_of_422_when_groq_is_configured_but_fails(client, monkeypatch):
-    """End-to-end regression for the live bug: a real GROQ_API_KEY (e.g. from
-    backend/.env) whose network call fails must NOT surface as a 422 through
-    this route — it must degrade to the stub compiler and return 200."""
+    """End-to-end regression for the live bug: a real AZURE_FOUNDRY_MODEL (e.g.
+    from backend/recon_engine/.env) whose network call fails must NOT surface
+    as a 422 through this route — it must degrade to the stub compiler and
+    return 200."""
     from backend.recon_engine.config import reset_settings_cache
     from backend.recon_engine.compiler.base import ContractCompilerError
     from backend.recon_engine.compiler.groq_compiler import GroqContractCompiler as _Groq
 
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake_key_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
     reset_settings_cache()
     try:
 
@@ -169,7 +170,7 @@ def test_compile_degrades_instead_of_422_when_groq_is_configured_but_fails(clien
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["degraded"] is True
-        assert "Groq compile failed" in body["degraded_reason"]
+        assert "Azure AI Foundry compile failed" in body["degraded_reason"]
         assert body["draft"]["compiler"] == "stub"
     finally:
         reset_settings_cache()
@@ -181,7 +182,7 @@ def test_compile_route_uses_groq_when_it_succeeds(client, monkeypatch):
     from backend.recon_engine.config import reset_settings_cache
     from backend.recon_engine.models.contract import DraftContract
 
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake_key_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
     reset_settings_cache()
     try:
         fake_draft = DraftContract(
@@ -207,7 +208,7 @@ def test_compile_route_strict_mode_surfaces_groq_failure_instead_of_stub(client,
     from backend.recon_engine.compiler.base import ContractCompilerError as _Err
     from backend.recon_engine.compiler.groq_compiler import GroqContractCompiler as _Groq
 
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake_key_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
     monkeypatch.setenv("RECON_GROQ_STRICT", "true")
     reset_settings_cache()
     try:

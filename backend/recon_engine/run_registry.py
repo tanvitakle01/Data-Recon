@@ -9,7 +9,7 @@ INVARIANT: ``pipeline_runs.status`` is never written anywhere except inside
 parameter at all) for everything else — a status change literally cannot
 happen through any other code path.
 
-States: CREATED, RUNNING, PAUSED_FOR_INPUT, CANCELLING, SUSPENDING, STALLED,
+States: CREATED, RUNNING, PAUSED_FOR_INPUT, CANCELLING, SUSPENDING,
 SUSPENDED, and terminal COMPLETED / CANCELLED. FAILED is deliberately NOT
 fully terminal here — this codebase's batch-checkpointed run_batches/
 pair_values steps make a "failed" run resumable (see routes/auto_pipeline.py's
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable
 
 from backend.recon_engine.storage.db import main_db
 
@@ -41,7 +41,6 @@ class RunState(str, Enum):
     PAUSED_FOR_INPUT = "waiting_for_input"  # existing on-disk/frontend string, kept unchanged
     CANCELLING = "cancelling"
     SUSPENDING = "suspending"
-    STALLED = "stalled"
     SUSPENDED = "suspended"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -54,7 +53,7 @@ class RunState(str, Enum):
 # see PARKED_STATES), and the terminal set.
 ACTIVE_STATES = {
     RunState.RUNNING, RunState.PAUSED_FOR_INPUT, RunState.CANCELLING,
-    RunState.SUSPENDING, RunState.STALLED,
+    RunState.SUSPENDING,
 }
 
 TERMINAL_STATES = {RunState.COMPLETED, RunState.CANCELLED}
@@ -70,19 +69,10 @@ _TRANSITIONS: dict[RunState, set[RunState]] = {
         RunState.PAUSED_FOR_INPUT,
         RunState.CANCELLING,
         RunState.SUSPENDING,
-        RunState.STALLED,
         RunState.COMPLETED,
         RunState.FAILED,
     },
     RunState.PAUSED_FOR_INPUT: {RunState.RUNNING, RunState.CANCELLING, RunState.FAILED},
-    RunState.STALLED: {
-        RunState.RUNNING,
-        RunState.CANCELLING,
-        RunState.SUSPENDING,
-        RunState.FAILED,
-        RunState.COMPLETED,
-        RunState.PAUSED_FOR_INPUT,
-    },
     RunState.CANCELLING: {RunState.CANCELLED, RunState.FAILED},
     RunState.SUSPENDING: {RunState.SUSPENDED, RunState.CANCELLED, RunState.FAILED},
     RunState.SUSPENDED: {RunState.RUNNING, RunState.CANCELLED},  # resume, or discard/expire
@@ -141,6 +131,27 @@ def is_active(run_id: str) -> bool:
 
 def is_parked(run_id: str) -> bool:
     return current_state(run_id) in PARKED_STATES
+
+
+def last_resume_transition(run_id: str) -> dict[str, Any] | None:
+    """The most recent SUSPENDED -> RUNNING transition for this run (a
+    resume), or ``None`` if it has never been resumed.
+
+    ``routes.auto_pipeline.trigger_resume`` stamps ``reason`` as
+    ``"resume:<source>"`` (e.g. ``"resume:stored_runs_tab"`` vs
+    ``"resume:chat"``) precisely so this can be read back afterward — no
+    separate column needed, ``run_transitions`` is already the durable,
+    append-only history of exactly this. Used by the chat orchestrator to
+    tell a user "this run was resumed from the Stored Runs tab at <time>"
+    even though it wasn't resumed from chat at all (see ``_status_reply``)."""
+    with main_db() as conn:
+        row = conn.execute(
+            """SELECT reason, created_at FROM run_transitions
+               WHERE run_id = ? AND from_state = ? AND to_state = ?
+               ORDER BY id DESC LIMIT 1""",
+            (run_id, RunState.SUSPENDED.value, RunState.RUNNING.value),
+        ).fetchone()
+    return dict(row) if row is not None else None
 
 
 def transition(run_id: str, to_state: RunState, *, reason: str) -> None:

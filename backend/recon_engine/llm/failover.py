@@ -1,31 +1,24 @@
-"""Provider failover orchestrator: Groq (primary) → Gemini → Cerebras →
-OpenRouter (last resort, free models).
+"""LLM client construction: ``build_llm_client()`` returns an
+Azure-AI-Foundry-only client — Azure AI Foundry is the ONLY LLM provider in
+this codebase; no other provider client exists to fail over to.
 
-``FailoverLLMClient.complete_json`` is a drop-in for the old
-``GroqJSONClient.complete_json`` — same messages in, same parsed JSON out — but
-it attempts providers in order and fails over to the next one when a provider
-raises a *retryable* error (rate limit / quota / token limit / timeout / service
-unavailable / connection error, see :mod:`errors`). A non-retryable error
-propagates instead of failing over, matching the spec (only the listed classes
-trigger fallback).
+``FailoverLLMClient`` is a generic multi-provider orchestrator kept as
+reusable infrastructure (tests exercise it with fake providers), but
+``build_llm_client()`` constructs it with only a single
+``AzureFoundryJSONClient``, so there is nothing to fail over to in
+production — an Azure AI Foundry failure propagates (or is classified
+retryable and raises :class:`AllProvidersUnavailableError`) rather than
+trying another provider.
 
-Provider selection strategy (spec point 8)
-------------------------------------------
-A process-wide circuit breaker tracks the primary (Groq) only — the three
-fallback tiers (Gemini, Cerebras, OpenRouter) are always tried in fixed order
-on every request and carry no cooldown of their own. On a Groq retryable
-failure the breaker trips for a cooldown window, during which Groq is *demoted*
-below the fallbacks so requests go straight to Gemini instead of paying Groq's
-latency + a wasted call on every request while it is rate-limited. Groq is never
-fully excluded — if every fallback also fails it is still tried as a last resort.
-A Groq success closes the breaker; after the cooldown expires Groq is promoted
-back to first. This satisfies "switch away on failure, return to Groq once it
-recovers" without hammering a limited Groq.
+``FailoverLLMClient.complete_json`` takes messages in, returns parsed JSON
+out. When given more than one provider it attempts them in order and fails
+over to the next one on a *retryable* error (rate limit / quota / token limit
+/ timeout / service unavailable / connection error, see :mod:`errors`); a
+non-retryable error propagates instead of failing over.
 
-The provider actually used per request — and whether a fallback happened — is
-recorded on a context variable (:func:`get_last_llm_outcome`) so routes can log
-it and surface the non-blocking notification, without threading a return value
-through the compiler/generator call chain.
+The provider actually used per request is recorded on a context variable
+(:func:`get_last_llm_outcome`) so routes can log it, without threading a return
+value through the compiler/generator call chain.
 """
 
 from __future__ import annotations
@@ -46,22 +39,17 @@ from backend.recon_engine.storage import llm_call_store
 
 logger = logging.getLogger("recon.llm.failover")
 
-# User-facing notifications (spec points 5 and 6).
-FALLBACK_NOTICE = (
-    "Groq is temporarily unavailable or has reached its usage limit. "
-    "Processing continued using OpenAI."
-)
+# User-facing notifications. Dead in production (Azure AI Foundry is the only
+# configured provider, so there is nothing to fail over to), kept for the
+# generic FailoverLLMClient's fake-provider test coverage.
+FALLBACK_NOTICE = "The primary AI provider is temporarily unavailable. Processing continued using a fallback provider."
 ALL_UNAVAILABLE_NOTICE = (
     "All configured AI providers are currently unavailable. Please try again later."
 )
 
 # Human-readable provider labels for the fallback notice.
 _PROVIDER_LABELS = {
-    "groq": "Groq",
-    "gemini": "Gemini",
-    "cerebras": "Cerebras",
-    "openrouter": "OpenRouter",
-    "openai": "OpenAI",
+    "azure_foundry": "Azure AI Foundry",
 }
 
 
@@ -184,8 +172,8 @@ class FailoverLLMClient:
                 )
             )
             raise ContractCompilerError(
-                "No LLM provider is configured. Set GROQ_API_KEY and/or "
-                "GEMINI_API_KEY/CEREBRAS_API_KEY/OPENROUTER_API_KEY."
+                "No LLM provider is configured. Set AZURE_FOUNDRY_MODEL "
+                "(and sign in to Azure AD, e.g. `az login`, for DefaultAzureCredential)."
             )
 
         for provider in self._ordered(configured):
@@ -248,36 +236,25 @@ class FailoverLLMClient:
     @staticmethod
     def _fallback_notice(provider_name: str) -> str:
         label = _PROVIDER_LABELS.get(provider_name, provider_name)
-        if provider_name == "openai":
-            return FALLBACK_NOTICE
-        return (
-            "Groq is temporarily unavailable or has reached its usage limit. "
-            f"Processing continued using {label}."
-        )
+        return f"The primary AI provider is temporarily unavailable. Processing continued using {label}."
 
 
 def build_llm_client(
-    *, groq_api_key: str | None = None, groq_model: str | None = None
+    *, api_key: str | None = None, model: str | None = None
 ) -> FailoverLLMClient:
-    """Construct the Groq→Gemini→Cerebras→OpenRouter failover client from settings.
+    """Construct the Azure-AI-Foundry-only LLM client used by every call site
+    in the engine (contract compiler, field mapper, sheet identifier, chat
+    assistant, value pairing, script generator).
 
-    Groq is the primary; Gemini, Cerebras, then OpenRouter (free models) are
-    tried in order as it fails over. ``groq_api_key`` / ``groq_model`` override
-    the primary's credentials (used by callers/tests that inject them). Each
-    fallback tier reads its own key/model from settings — a tier with no key
-    configured is simply skipped (see ``FailoverLLMClient.complete_json``).
+    Azure AI Foundry is the sole provider — there is no failover to Groq,
+    Cerebras, OpenRouter, or OpenAI. ``model`` overrides the configured model
+    id (used by callers/tests that inject it); otherwise it is read from
+    settings (``AZURE_FOUNDRY_MODEL``). ``api_key`` overrides the Azure AD
+    token provider with a static value (used by tests only — production auth
+    is always via ``DefaultAzureCredential``).
     """
-    # Imported lazily to avoid an import cycle: groq_client imports llm.errors.
-    from backend.recon_engine.compiler.groq_client import GroqJSONClient
-    from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
-    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
-    from backend.recon_engine.llm.openrouter_client import OpenRouterJSONClient
+    from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
 
     settings = get_settings()
-    providers: list[LLMProvider] = [
-        GroqJSONClient(api_key=groq_api_key, model=groq_model),
-        GeminiJSONClient(),
-        CerebrasJSONClient(),
-        OpenRouterJSONClient(),
-    ]
+    providers: list[LLMProvider] = [AzureFoundryJSONClient(api_key=api_key, model=model)]
     return FailoverLLMClient(providers, cooldown_s=settings.llm_fallback_cooldown_s)

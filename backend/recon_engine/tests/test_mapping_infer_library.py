@@ -38,14 +38,14 @@ class _FakeClient:
 
 
 class _Outcome:
-    provider_used = "groq"
+    provider_used = "azure_foundry"
     fallback_occurred = False
     notice = None
 
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """Install a working fake Groq client + configured settings + outcome."""
+    """Install a working fake Azure AI Foundry client + configured settings + outcome."""
     monkeypatch.setattr(
         field_mapper, "get_settings", lambda: type("S", (), {"any_llm_configured": True})()
     )
@@ -72,9 +72,9 @@ def test_cold_start_uses_llm_and_labels_provider(client, fake_llm):
     assert resp.status_code == 200
     body = resp.json()
     assert body["source"] == "llm"
-    assert body["provider"] == "groq"
+    assert body["provider"] == "azure_foundry"
     assert body["display"]  # something was inferred
-    assert {row["provenance"] for row in body["display"]} == {"groq"}
+    assert {row["provenance"] for row in body["display"]} == {"azure_foundry"}
 
 
 def test_second_run_same_columns_any_order_hits_library_no_llm(client, monkeypatch):
@@ -118,5 +118,5 @@ def test_regenerate_forces_llm_even_with_library_hit(client, fake_llm):
     assert resp.status_code == 200
     body = resp.json()
     assert body["source"] == "llm"  # dropped to tier 2 despite the stored entry
-    assert body["provider"] == "groq"
-    assert {row["provenance"] for row in body["display"]} == {"groq"}
+    assert body["provider"] == "azure_foundry"
+    assert {row["provenance"] for row in body["display"]} == {"azure_foundry"}

@@ -150,7 +150,7 @@ def test_fallback_generator_produces_valid_previewable_script():
         target_schema=["PRDID", "LOCID", "QTY"],
     )
     assert script.generated_by.value == "fallback"
-    assert degraded_reason  # Groq not configured
+    assert degraded_reason  # Azure AI Foundry not configured
     assert validate_script(script.script).ok
     assert any("leading zeros" in step.lower() for step in script.explanation)
     assert any("renamed matnr" in step.lower() for step in script.explanation)

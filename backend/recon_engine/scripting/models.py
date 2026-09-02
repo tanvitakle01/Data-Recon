@@ -25,8 +25,7 @@ def script_sha256(script_text: str) -> str:
 
 
 class GeneratedBy(str, Enum):
-    GROQ = "groq"
-    OPENAI = "openai"
+    AZURE_FOUNDRY = "azure_foundry"
     FALLBACK = "fallback"
 
 

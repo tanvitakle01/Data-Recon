@@ -15,10 +15,14 @@ const BUSINESS_FIELD_OPTIONS = [
   ...Object.values(FIELD_ROLES).map((role) => ({ value: role, label: fieldRoleLabel(role) })),
 ];
 
-// Per-row origin badge (the "Origin" column). Library/Groq/OpenAI are the
-// generated tiers; user-added/user-edited are the manual tier.
+// Per-row origin badge (the "Origin" column). Library/Azure AI Foundry are
+// the generated tiers; user-added/user-edited are the manual tier.
+// gemini/groq/openai are kept for old rows generated before the LLM layer
+// became Azure-AI-Foundry-only.
 const ORIGIN_BADGE = {
   library: { label: "Vector Library", variant: "info" },
+  azure_foundry: { label: "Azure AI Foundry", variant: "default" },
+  gemini: { label: "Gemini", variant: "default" },
   groq: { label: "Groq", variant: "default" },
   openai: { label: "OpenAI", variant: "default" },
   generated: { label: "Generated", variant: "default" },

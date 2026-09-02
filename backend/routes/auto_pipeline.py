@@ -437,7 +437,7 @@ def trigger_suspend(graph_run_id: str, *, name: str | None = None, reason: str =
     (not whatever batch happens to be mid-flight once a cooperative signal is
     actually observed). Two paths, depending on the run's current status:
 
-    - RUNNING/STALLED: flips to SUSPENDING (the cooperative signal
+    - RUNNING: flips to SUSPENDING (the cooperative signal
       ``nodes._do_run_batches``' between-batch loop checks) — actually
       parking the run (SUSPENDING -> SUSPENDED) happens asynchronously, the
       same way CANCELLING -> CANCELLED already does. This is the "user
@@ -476,7 +476,7 @@ def trigger_suspend(graph_run_id: str, *, name: str | None = None, reason: str =
     )
 
 
-def trigger_resume(graph_run_id: str, *, force: bool = False) -> dict[str, Any]:
+def trigger_resume(graph_run_id: str, *, force: bool = False, source: str = "chat") -> dict[str, Any]:
     """Flips a SUSPENDED run back to RUNNING and kicks off
     :func:`resume_suspended_pipeline` in the background — the exact side
     effect ``POST /{id}/resume`` performs, factored out so the chat
@@ -492,6 +492,13 @@ def trigger_resume(graph_run_id: str, *, force: bool = False) -> dict[str, Any]:
     tracks "runs touched from here" regardless of current status, staying
     visible through RUNNING and into COMPLETED/FAILED until the user
     explicitly deletes it (see ``list_stored_runs``/``delete_stored_run``).
+
+    ``source`` is stamped onto the transition's ``reason`` as ``"resume:
+    <source>"`` — the ONLY record of where a resume came from (Stored Runs
+    tab vs. chat's own "resume <name>"), since chat needs to tell a user
+    "this run was resumed from the Stored Runs tab at <time>" even when that
+    resume didn't happen through chat at all (see ``run_registry.
+    last_resume_transition`` / ``chat_assistant.orchestrator._status_reply``).
     """
     suspension = pipeline_run_store.get_suspension(graph_run_id)
     if suspension is not None and not force:
@@ -502,7 +509,7 @@ def trigger_resume(graph_run_id: str, *, force: bool = False) -> dict[str, Any]:
             raise ValueError("stale")
 
     run = pipeline_run_store.get(graph_run_id)
-    run_registry.transition(graph_run_id, RunState.RUNNING, reason="resume")
+    run_registry.transition(graph_run_id, RunState.RUNNING, reason=f"resume:{source}")
     pipeline_run_store.update_progress(
         graph_run_id,
         current_step=run.get("current_step") if run else None,
@@ -543,8 +550,8 @@ async def suspend_auto_run(graph_run_id: str, req: AutoRunSuspendRequest) -> dic
         trigger_suspend(graph_run_id, name=req.name, reason=req.reason)
     except run_registry.IllegalTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    # RUNNING/STALLED -> SUSPENDING (park takes effect at the next batch
-    # boundary); FAILED -> SUSPENDED directly (see trigger_suspend).
+    # RUNNING -> SUSPENDING (park takes effect at the next batch boundary);
+    # FAILED -> SUSPENDED directly (see trigger_suspend).
     return {"graph_run_id": graph_run_id, "status": run_registry.current_state(graph_run_id).value}
 
 
@@ -558,7 +565,7 @@ async def resume_auto_run(graph_run_id: str, req: AutoRunResumeRequest) -> dict[
             status_code=409, detail=f"Auto-run '{graph_run_id}' is not suspended (status={run.get('status')!r})."
         )
     try:
-        return trigger_resume(graph_run_id, force=req.force)
+        return trigger_resume(graph_run_id, force=req.force, source="stored_runs_tab")
     except ValueError:
         raise HTTPException(
             status_code=409,
@@ -802,7 +809,7 @@ def get_auto_run_status(graph_run_id: str) -> dict[str, Any]:
     # yet to resume from. A FAILED run is also suspendable (alongside the
     # existing retry option) exactly when it's resumable at all — the
     # "network error / interruption" trigger point.
-    if run.get("status") in (RunState.RUNNING.value, RunState.STALLED.value):
+    if run.get("status") == RunState.RUNNING.value:
         run["suspendable"] = bool(pipeline_run_store.get_run_batch_plan(graph_run_id))
     elif run.get("status") == RunState.FAILED.value:
         run["suspendable"] = run["resumable"]

@@ -98,21 +98,21 @@ def test_llm_call_store_records_context_from_contextvar():
         run_id=get_llm_call_context().run_id,
         batch_id=get_llm_call_context().batch_id,
         node=get_llm_call_context().node,
-        preferred="groq",
-        provider_used="groq",
+        preferred="azure_foundry",
+        provider_used="azure_foundry",
         fallback_occurred=False,
         all_failed=False,
     )
     calls = llm_call_store.list_for_run("run-1")
     assert len(calls) == 1
     assert calls[0]["batch_id"] == "b1"
-    assert calls[0]["provider_used"] == "groq"
+    assert calls[0]["provider_used"] == "azure_foundry"
     clear_llm_call_context()
 
 
 def test_llm_call_store_allows_null_context_for_non_run_callers():
     call_id = llm_call_store.record(
         run_id=None, batch_id=None, node=None,
-        preferred="groq", provider_used=None, fallback_occurred=False, all_failed=True,
+        preferred="azure_foundry", provider_used=None, fallback_occurred=False, all_failed=True,
     )
     assert call_id

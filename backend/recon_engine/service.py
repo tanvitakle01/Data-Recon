@@ -151,15 +151,18 @@ def compile_draft(
     ``business_key`` / ``compare_fields`` (the Rules step's confirmed field
     mapping) and ``value_mappings`` (the deterministic matching engine's
     output, once a human has approved it on the Mapping Review page) are never
-    decided by a compiler (Groq or the stub always emit them empty — see
-    ``ContractBody``'s docstring) — they are attached onto the draft here,
-    deterministically, exactly like ``aggregation_rules`` below.
+    decided by a compiler (the LLM compiler or the stub always emit them
+    empty — see ``ContractBody``'s docstring) — they are attached onto the
+    draft here, deterministically, exactly like ``aggregation_rules`` below.
 
-    When no ``compiler`` is supplied, Groq is attempted first if configured
-    (``GROQ_API_KEY`` set). By default, any Groq failure — connection error,
-    bad response, invalid JSON, a draft that fails its own schema — degrades
-    to the deterministic stub compiler instead of failing the request,
-    mirroring the script-transformation generator's fallback
+    When no ``compiler`` is supplied, the Azure-AI-Foundry-backed
+    ``GroqContractCompiler`` (name kept for backward compatibility) is
+    attempted first if configured (``AZURE_FOUNDRY_MODEL`` set) — there is no
+    fallback to another provider. By
+    default, any failure — connection error, bad response, invalid JSON, a
+    draft that fails its own schema — degrades to the deterministic stub
+    compiler instead of failing the request, mirroring the
+    script-transformation generator's fallback
     (:func:`backend.recon_engine.scripting.generate_script`). Set
     ``RECON_GROQ_STRICT=true`` to instead raise the original
     :class:`ContractCompilerError` — useful in any environment where a
@@ -167,11 +170,11 @@ def compile_draft(
     bug. Every attempt and outcome is logged either way; degradation is never
     silent.
 
-    ``degraded_reason`` is ``None`` when Groq succeeded, when Groq was never
-    attempted (unconfigured — the stub is simply the normal offline path), or
-    when a caller supplied an explicit ``compiler`` override (used in tests).
-    An explicit ``compiler`` is used as-is and never falls back automatically
-    — only the default Groq-vs-stub auto-selection degrades.
+    ``degraded_reason`` is ``None`` when the LLM compile succeeded, when it was
+    never attempted (unconfigured — the stub is simply the normal offline
+    path), or when a caller supplied an explicit ``compiler`` override (used in
+    tests). An explicit ``compiler`` is used as-is and never falls back
+    automatically — only the default LLM-vs-stub auto-selection degrades.
     """
     init_storage()
     degraded_reason: str | None = None
@@ -197,15 +200,15 @@ def compile_draft(
         except ContractCompilerError as exc:
             if get_settings().groq_strict:
                 logger.exception(
-                    "Groq compile failed and RECON_GROQ_STRICT is set; raising "
+                    "Azure AI Foundry compile failed and RECON_GROQ_STRICT is set; raising "
                     "instead of degrading to the stub compiler."
                 )
                 raise
             logger.exception(
-                "Groq compile failed; degrading to StubContractCompiler. "
+                "Azure AI Foundry compile failed; degrading to StubContractCompiler. "
                 "Set RECON_GROQ_STRICT=true to raise instead."
             )
-            degraded_reason = f"Groq compile failed: {exc}"
+            degraded_reason = f"Azure AI Foundry compile failed: {exc}"
             active_compiler = StubContractCompiler()
             draft = active_compiler.compile(
                 mapping_sheet=mapping_sheet,
@@ -1728,105 +1731,6 @@ def _summarize_value_mapping(vm: Any | None) -> tuple[int, int]:
     matched = {m.source_value for m in vm.matches if m.target_value is not None}
     unmatched = {m.source_value for m in vm.matches if m.target_value is None}
     return len(matched), len(unmatched)
-
-
-def _quantity_variance_stats(df: pd.DataFrame) -> dict[str, Any] | None:
-    """Absolute quantity variance rolled up from structured field diffs (the
-    same ``field_diffs`` column :func:`build_enriched_detail` attaches)."""
-    if "field_diffs" not in df.columns:
-        return None
-    total = 0.0
-    largest = 0.0
-    count = 0
-    for diffs in df["field_diffs"]:
-        if not isinstance(diffs, list):
-            continue
-        for d in diffs:
-            delta = d.get("delta")
-            if delta is None:
-                continue
-            magnitude = abs(float(delta))
-            total += magnitude
-            count += 1
-            largest = max(largest, magnitude)
-    if count == 0:
-        return None
-    return {
-        "totalUnits": round(total, 2),
-        "largestUnit": round(largest, 2),
-        "fieldsAffected": count,
-    }
-
-
-def build_simple_insights(run_id: str) -> dict[str, Any]:
-    """Build a simple, honest insights payload straight off a run's own real
-    data — the same summary/enriched-detail/value-mapping building blocks
-    :func:`build_comparison_workbook` already exports, re-derived rather than
-    re-computed, so this can never disagree with the downloadable workbook.
-
-    Replaces the old bridge that synthesised a fake "Remarks" text column and
-    fed it to the legacy V1 ``InsightEngine`` — that engine's cockpit/
-    executive-summary system is retired for real reconciliation runs.
-
-    Returns:
-        {
-          "runId": str,
-          "total": int,
-          "results": [{"key", "label", "status", "count", "pct"}, ...],   # Match / Quantity Mismatch / Mismatch
-          "quantityVariance": {"totalUnits", "largestUnit", "fieldsAffected"} | None,
-          "mappings": [{"label", "sourceField", "targetField", "matched", "unmatched"}, ...],
-          "exceptions": {"columns": [...], "rows": [{...}, ...]},   # every non-match record
-        }
-    """
-    init_storage()
-    run = run_store.get_run(run_id)
-    if run is None:
-        raise KeyError(f"Unknown run '{run_id}'.")
-    result = result_store.get_result_for_run(run_id)
-    if result is None:
-        raise KeyError(f"No reconciliation result found for run '{run_id}'.")
-
-    contract = contract_store.get_contract(run.contract_id, run.contract_version)
-    contract = _effective_contract(contract, run_id)
-    summary = result.summary.model_dump()
-    total = int(summary.get("total", 0))
-
-    results_breakdown = []
-    for field in _SUMMARY_ORDER:
-        label, status, _raw_classes = _SUMMARY_BUCKETS[field]
-        count = int(summary.get(field, 0))
-        pct = round((count / total * 100.0), 1) if total else 0.0
-        results_breakdown.append({"key": field, "label": label, "status": status, "count": count, "pct": pct})
-
-    enriched = build_enriched_detail(run_id)
-    quantity_variance = _quantity_variance_stats(enriched) if not enriched.empty else None
-
-    mappings = []
-    for sf, tf, vm in _business_key_export_specs(contract):
-        if vm is None:
-            continue
-        matched, unmatched = _summarize_value_mapping(vm)
-        mappings.append(
-            {"label": f"{sf} → {tf}", "sourceField": sf, "targetField": tf, "matched": matched, "unmatched": unmatched}
-        )
-
-    columns = _export_columns_for_contract(contract)
-    if enriched.empty:
-        exception_rows: list[dict[str, Any]] = []
-    else:
-        exceptions_df = enriched[enriched["classification"] != "match"]
-        present_columns = [c for c in columns if c in exceptions_df.columns]
-        safe = exceptions_df[present_columns].astype(object).where(pd.notna(exceptions_df[present_columns]), None)
-        exception_rows = safe.to_dict(orient="records")
-
-    return {
-        "runId": run_id,
-        "total": total,
-        "results": results_breakdown,
-        "quantityVariance": quantity_variance,
-        "mappings": mappings,
-        "exceptions": {"columns": columns, "rows": exception_rows},
-    }
 
 
 def build_comparison_workbook(run_id: str) -> bytes:

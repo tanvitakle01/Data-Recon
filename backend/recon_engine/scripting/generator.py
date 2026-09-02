@@ -1,12 +1,13 @@
-"""Transformation script generation: LLM (Groq→Gemini→Cerebras→OpenRouter) with a deterministic fallback.
+"""Transformation script generation: LLM (Azure AI Foundry, no fallback) with a
+deterministic fallback.
 
     Parsed mapping JSON + rules  →  TransformationScript (pandas `transform(df)`)
 
-Graceful degradation is the contract here: an LLM is attempted only when a
-provider is configured — Groq first, automatically failing over to OpenAI on a
-retryable Groq error — and *any* failure (both providers down, bad JSON, a
-script that fails static validation) falls back to the deterministic generator,
-so the workflow never dies because the LLM is unavailable. Every generated script
+Graceful degradation is the contract here: the LLM is attempted only when
+Azure AI Foundry is configured, and *any* failure (Azure AI Foundry down, bad
+JSON, a script that fails static validation) falls back to the deterministic
+generator, so the
+workflow never dies because the LLM is unavailable. Every generated script
 (either origin) must still pass static validation and the sandbox before a
 user ever sees its output, and the user approves the transformed data, not
 the script.
@@ -25,7 +26,7 @@ from typing import Any
 
 from backend.recon_engine.compiler.base import ContractCompilerError
 from backend.recon_engine.config import get_settings
-from backend.recon_engine.llm import build_llm_client, get_last_llm_outcome
+from backend.recon_engine.llm import build_llm_client
 from backend.recon_engine.scripting.models import (
     GeneratedBy,
     TransformationScript,
@@ -72,7 +73,7 @@ def _norm(text: Any) -> str:
     return _re.sub(r"[^a-z0-9]", "", str(text).lower())
 
 
-# ── LLM generation (Groq primary → Gemini → Cerebras → OpenRouter fallback) ──
+# ── LLM generation (Azure-AI-Foundry-only, no fallback) ──
 
 def _generate_with_llm(
     *,
@@ -84,7 +85,7 @@ def _generate_with_llm(
 ) -> TransformationScript:
     client = build_llm_client()
     if not client.is_configured:
-        raise ContractCompilerError("No LLM provider is configured (GROQ_API_KEY / OPENAI_API_KEY).")
+        raise ContractCompilerError("No LLM provider is configured (AZURE_FOUNDRY_MODEL).")
 
     user_payload = {
         "source_schema": source_schema,
@@ -110,17 +111,9 @@ def _generate_with_llm(
     except (TypeError, ValueError):
         confidence = 0.75
 
-    # Provenance reflects the provider that actually served the request.
-    outcome = get_last_llm_outcome()
-    generated_by = (
-        GeneratedBy.OPENAI
-        if outcome and outcome.provider_used == "openai"
-        else GeneratedBy.GROQ
-    )
-
     return TransformationScript(
         script_id=_new_id(),
-        generated_by=generated_by,
+        generated_by=GeneratedBy.AZURE_FOUNDRY,
         explanation=[str(step) for step in explanation],
         script=script_text,
         script_hash=script_sha256(script_text),
@@ -273,7 +266,7 @@ def _fallback_script(
     )
 
 
-# ── orchestration: attempt Groq → fallback ───────────────────────────────────
+# ── orchestration: attempt Azure AI Foundry → deterministic fallback ────────
 
 def generate_script(
     *,
@@ -309,7 +302,7 @@ def generate_script(
         except Exception as exc:  # noqa: BLE001 - degradation is the contract
             degraded_reason = f"AI script generation failed: {exc}"
     else:
-        degraded_reason = "No AI provider is configured (GROQ_API_KEY / OPENAI_API_KEY not set)."
+        degraded_reason = "No AI provider is configured (AZURE_FOUNDRY_MODEL not set)."
 
     script = _fallback_script(
         parsed_mapping=parsed_mapping,

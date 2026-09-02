@@ -58,7 +58,7 @@ category.
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | Env-driven settings (`GROQ_API_KEY`, `RECON_STORE_DIR`, `SHADOW_TTL_DAYS`, sample sizes). |
+| `config.py` | Env-driven settings (`AZURE_FOUNDRY_MODEL`, `RECON_STORE_DIR`, `SHADOW_TTL_DAYS`, sample sizes). |
 | `models/` | Pydantic models: `TransformationContract`, `RawSnapshot`, `ShadowSource`, `ReconciliationRun`, `ReconciliationResult`, `AuditEvent`. |
 | `operations/` | The **allow-listed operation registry** + hand-written, tested op implementations. |
 | `compiler/` | `GroqContractCompiler` (LLM scaffolding) and `StubContractCompiler` (deterministic placeholder). Both emit **contract JSON only**. |
@@ -117,46 +117,46 @@ for code, expressions, or scripts (`ContractOperation` uses `extra="forbid"`).
 
 ---
 
-## Groq configuration — where the API key is required
+## LLM configuration — where Azure AI Foundry access is required
 
-The Groq LLM is used **only** in the compile phase, and **only** inside
-`compiler/groq_compiler.py::GroqContractCompiler.compile()`. Nothing else —
-validation, approval, the deterministic engine, reconciliation, persistence —
-needs Groq or any network access.
+Azure AI Foundry is the **sole** LLM provider for every call site in the engine
+(contract compile, field mapping, sheet identification, chat assistant, value
+pairing, script generation) — there is no fallback to Groq, Cerebras,
+OpenRouter, or OpenAI. Authentication is via Azure AD
+(`DefaultAzureCredential` — `az login` / managed identity / env-based service
+principal), not a static API key. The compile phase itself lives **only**
+inside `compiler/groq_compiler.py::GroqContractCompiler.compile()` (class name
+kept for backward compatibility). Nothing else — validation, approval, the
+deterministic engine, reconciliation, persistence — needs an LLM or any
+network access.
 
 Environment variables:
 
 | Variable | Required? | Default | Used by |
 |---|---|---|---|
-| `GROQ_API_KEY` | Only for the real Groq compile phase | *(unset)* | `GroqContractCompiler` |
-| `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | `GroqContractCompiler` |
-| `GROQ_BASE_URL` | No | Groq default | `GroqContractCompiler` |
+| `AZURE_FOUNDRY_MODEL` | For any LLM-backed feature | *(unset — no invented default)* | `build_llm_client()` (every LLM call site) |
+| `AZURE_FOUNDRY_BASE_URL` | No | AI-Adoption-COE's OpenAI-compatible endpoint | `build_llm_client()` |
 | `RECON_STORE_DIR` | No | `<repo>/data/recon_store` | persistence |
 | `SHADOW_TTL_DAYS` | No | `7` | shadow TTL |
 | `REPLAY_SAMPLE_MIN` / `REPLAY_SAMPLE_MAX` | No | `50` / `100` | Gate 2 |
 
-### Current status of the Groq integration
+### Current status of the LLM integration
 
-**Scaffolding only.** The plumbing is in place — config, lazy SDK client
-construction, prompt assembly (system preamble + the allow-listed registry +
-the required JSON output schema), and the safety contract that the response is
-parsed as JSON into a `DraftContract`. The actual model call and
-contract-generation intelligence are **intentionally not implemented yet**;
-`GroqContractCompiler.compile()` raises `ContractCompilerError` with guidance.
+**Fully implemented, Azure-AI-Foundry-only.** `GroqContractCompiler.compile()`
+(name kept for backward compatibility) sends the assembled prompt (system
+preamble + the allow-listed registry + the required JSON output schema) to
+Azure AI Foundry and parses the JSON-only response into a `DraftContract`.
+There is no fallback to another provider — an Azure AI Foundry failure
+degrades to `StubContractCompiler` instead (see `service.compile_draft`),
+unless `RECON_GROQ_STRICT=true`.
 
-To make the lifecycle runnable today, use `StubContractCompiler`, a
-deterministic placeholder that derives a minimal valid contract straight from
-the mapping sheet. It emits the same JSON shape the LLM will eventually produce,
-so nothing downstream depends on which compiler was used.
-
-To enable the LLM later:
-
-1. `pip install groq`
-2. Set `GROQ_API_KEY` (and optionally `GROQ_MODEL` / `GROQ_BASE_URL`).
-3. Implement the chat completion in `GroqContractCompiler.compile()` using the
-   already-assembled prompt, parse the JSON-only response into a `DraftContract`,
-   and return it. Everything after that (Gate 1, Gate 2, approval, execution)
-   already works unchanged.
+To enable it, set `AZURE_FOUNDRY_MODEL` (optionally `AZURE_FOUNDRY_BASE_URL`)
+and sign in to Azure AD (e.g. `az login`) — see the table above. Without them,
+`StubContractCompiler` (a deterministic placeholder that derives a minimal
+valid contract straight from the mapping sheet) is the normal offline path; it
+emits the same JSON
+shape the LLM produces, so nothing downstream depends on which compiler was
+used.
 
 ---
 

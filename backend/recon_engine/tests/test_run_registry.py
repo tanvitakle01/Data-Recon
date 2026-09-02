@@ -54,14 +54,6 @@ def test_failed_run_can_retry_back_to_running():
     assert run_registry.current_state("r5") == RunState.RUNNING
 
 
-def test_stalled_run_can_still_complete():
-    _new_run("r6")
-    run_registry.transition("r6", RunState.RUNNING, reason="start")
-    run_registry.transition("r6", RunState.STALLED, reason="heartbeat stale")
-    run_registry.transition("r6", RunState.COMPLETED, reason="finished after recovering")
-    assert run_registry.current_state("r6") == RunState.COMPLETED
-
-
 def test_sweep_orphans_only_flips_running_and_cancelling():
     _new_run("orphan_running")
     run_registry.transition("orphan_running", RunState.RUNNING, reason="start")

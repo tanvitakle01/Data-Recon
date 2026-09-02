@@ -1,4 +1,4 @@
-import ComingSoon from "../components/ComingSoon";
+import ConnectionsPage from "../datasources/connections/ConnectionsPage";
 
 function DataSourcesPage() {
   return (
@@ -10,7 +10,9 @@ function DataSourcesPage() {
         Connect and validate source systems (SAP, SQL, Excel/CSV).
       </div>
 
-      <ComingSoon note="This module will be expanded to support reusable connector configurations." />
+      <div style={{ marginTop: 24 }}>
+        <ConnectionsPage />
+      </div>
     </div>
   );
 }

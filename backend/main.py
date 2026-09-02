@@ -17,9 +17,9 @@ _diag_log = logging.getLogger("recon.diagnostics")
 def _load_env_file() -> None:
     """Load a backend .env into the environment (existing vars win).
 
-    GROQ_API_KEY lives there; without it the contract compile phase silently
-    falls back to the stub compiler. Minimal stdlib parser — avoids adding a
-    python-dotenv dependency.
+    AZURE_FOUNDRY_MODEL lives there; without it the contract compile phase
+    silently falls back to the stub compiler. Minimal stdlib parser — avoids
+    adding a python-dotenv dependency.
 
     We accept the file at either ``backend/.env`` (canonical) or
     ``backend/recon_engine/.env`` (where the recon engine's own config lives),
@@ -70,7 +70,7 @@ from backend.routes.auto_pipeline import router as auto_pipeline_router
 from backend.routes.auth import router as auth_router
 from backend.routes.connections import router as connections_router
 from backend.routes.chat import router as chat_router
-from backend.recon_engine import heartbeat, run_registry
+from backend.recon_engine import run_registry
 from backend.recon_engine.chat_assistant import confirmation_store, session_store
 from backend.recon_engine.run_registry import RunState
 from backend.recon_engine.storage import pipeline_run_store
@@ -132,10 +132,6 @@ async def _start_watchdog() -> None:
         while True:
             await asyncio.sleep(_WATCHDOG_INTERVAL_SECONDS)
             try:
-                stalled = await asyncio.to_thread(heartbeat.sweep_stalled)
-                for run_id in stalled:
-                    logger.warning("Run %s flipped to STALLED — no heartbeat for over %ss.",
-                                    run_id, heartbeat.STALLED_THRESHOLD_SECONDS)
                 await asyncio.to_thread(confirmation_store.clear_expired)
                 expired = await asyncio.to_thread(_sweep_expired_suspensions)
                 for run_id in expired:

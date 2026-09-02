@@ -16,14 +16,13 @@ column sets, so a value pair cannot survive the normalizer.
 
 Same safety posture as :mod:`sheet_identifier`:
 
-* **Same provider chain.** Goes through ``build_llm_client()`` (Groq primary →
-  Gemini → Cerebras → OpenRouter fallback), never a bespoke client.
+* **Same provider.** Goes through the Azure-AI-Foundry-only ``build_llm_client()`` (no
+  fallback), never a bespoke client.
 * **Never raises on LLM failure.** Degrades to an empty mapping the frontend
   treats as "map manually" — no deterministic fallback (the wizard's no-sheet
   path is LLM-only by design).
 * **Existence-gated.** Every column the model names must exist in the columns
-  actually sent (which already exclude MDT auxiliary evidence fields — those
-  are dropped by the frontend before the request). Invented names are rejected.
+  actually sent. Invented names are rejected.
 """
 
 from __future__ import annotations
@@ -308,7 +307,7 @@ def infer_field_mapping(
     """
     if not get_settings().any_llm_configured:
         return _degraded(
-            "No AI provider is configured (GROQ_API_KEY / OPENAI_API_KEY) — "
+            "No AI provider is configured (AZURE_FOUNDRY_MODEL) — "
             "build the field mapping manually."
         )
 

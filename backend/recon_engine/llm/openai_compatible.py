@@ -1,12 +1,13 @@
 """Generic OpenAI-compatible chat-completions client.
 
-Gemini, Cerebras, and OpenRouter (like OpenAI) each publish an OpenAI-compatible
-``chat.completions.create`` endpoint, so one implementation — parameterized by
-provider label/api_key/model/base_url — serves all of them via the
-already-installed ``openai`` SDK. No provider-specific SDK, no
-provider-specific response parsing. :class:`~backend.recon_engine.llm.
-openai_client.OpenAIJSONClient` and the new Gemini/Cerebras/OpenRouter clients
-are all thin subclasses of this.
+Azure AI Foundry publishes an OpenAI-compatible ``chat.completions.create``
+endpoint, so this one implementation — parameterized by provider
+label/api_key/model/base_url — serves it via the already-installed ``openai``
+SDK. No provider-specific SDK, no provider-specific response parsing.
+:class:`~backend.recon_engine.llm.azure_foundry_client.AzureFoundryJSONClient`
+is a thin subclass of this. ``api_key`` may be a static string or (as Azure
+Foundry does) a zero-arg callable the ``openai`` SDK calls to fetch a fresh
+bearer token per request.
 """
 
 from __future__ import annotations

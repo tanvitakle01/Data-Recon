@@ -42,7 +42,7 @@ def _draft():
 
 def test_groq_compiler_is_scaffolding_only():
     compiler = GroqContractCompiler()
-    assert compiler.is_configured is False  # no GROQ_API_KEY in tests
+    assert compiler.is_configured is False  # no AZURE_FOUNDRY_MODEL in tests
     with pytest.raises(ContractCompilerError):
         compiler.compile(
             mapping_sheet=MAPPING_SHEET, rules="", source_schema=["id"],
@@ -99,10 +99,11 @@ def test_stub_compiler_resolves_technical_field_for_transformation_ops():
 
 
 def test_compile_draft_never_fails_when_groq_is_configured_but_unreachable(monkeypatch):
-    """Regression: a live GROQ_API_KEY (e.g. from backend/.env) whose network
-    call fails must degrade to the stub compiler, not surface a 422 to the
-    caller — mirrors the script-transformation generator's Groq fallback."""
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake_key_for_this_test")
+    """Regression: a live AZURE_FOUNDRY_MODEL (e.g. from
+    backend/recon_engine/.env) whose network call fails must degrade to the
+    stub compiler, not surface a 422 to the caller — mirrors the
+    script-transformation generator's fallback."""
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
     from backend.recon_engine.config import reset_settings_cache
 
     reset_settings_cache()
@@ -120,7 +121,7 @@ def test_compile_draft_never_fails_when_groq_is_configured_but_unreachable(monke
         )
         assert draft.compiler == "stub"
         assert degraded_reason is not None
-        assert "Groq compile failed" in degraded_reason
+        assert "Azure AI Foundry compile failed" in degraded_reason
     finally:
         reset_settings_cache()
 

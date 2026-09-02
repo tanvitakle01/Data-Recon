@@ -1,10 +1,10 @@
-"""Provider-agnostic LLM layer with automatic Groq→Gemini→Cerebras→OpenRouter
-failover.
+"""Provider-agnostic LLM layer. Azure AI Foundry is the only LLM provider in
+the codebase — ``build_llm_client()`` wires up nothing else, and no other
+provider client exists to fail over to.
 
 Public surface:
 
-* :func:`build_llm_client` — the Groq(primary)→Gemini→Cerebras→OpenRouter
-  (last resort, free models) client, a drop-in for the old ``GroqJSONClient``
+* :func:`build_llm_client` — the Azure-AI-Foundry-only client
   (``complete_json(messages)``).
 * :func:`get_last_llm_outcome` / :func:`reset_llm_outcome` — read/clear which
   provider served the last request (routes use this to log + notify).
@@ -17,7 +17,6 @@ from backend.recon_engine.llm.call_context import (
     get_llm_call_context,
     set_llm_call_context,
 )
-from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
 from backend.recon_engine.llm.errors import (
     AllProvidersUnavailableError,
     RetryableLLMError,
@@ -33,9 +32,7 @@ from backend.recon_engine.llm.failover import (
     reset_breaker,
     reset_llm_outcome,
 )
-from backend.recon_engine.llm.gemini_client import GeminiJSONClient
-from backend.recon_engine.llm.openai_client import OpenAIJSONClient
-from backend.recon_engine.llm.openrouter_client import OpenRouterJSONClient
+from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
 
 __all__ = [
     "LLMProvider",
@@ -53,8 +50,5 @@ __all__ = [
     "get_last_llm_outcome",
     "reset_breaker",
     "reset_llm_outcome",
-    "OpenAIJSONClient",
-    "GeminiJSONClient",
-    "CerebrasJSONClient",
-    "OpenRouterJSONClient",
+    "AzureFoundryJSONClient",
 ]

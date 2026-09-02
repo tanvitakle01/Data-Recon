@@ -26,7 +26,7 @@ from backend.recon_engine.engine.reconciler import reconcile
 from backend.recon_engine.models.run import ReconciliationRun, RunStatus
 from backend.recon_engine.models.snapshot import RawLayer
 from backend.recon_engine.models.value_mapping import ValueMapping
-from backend.recon_engine.reporting.insights_pdf import build_insights_pdf
+from backend.recon_engine.insights import builder as insights_builder
 from backend.recon_engine.storage import result_store, run_store, run_value_mapping_store
 
 
@@ -184,19 +184,19 @@ def test_streaming_run_mapping_details_sheet_is_populated():
 
 def test_streaming_run_insights_and_pdf_work_for_chatbot_view_insights():
     """The chatbot's "View Insights" pill (AssistantBot.jsx's
-    handleViewInsights) hits GET /insights/{run_id}/pdf for exactly this run
-    shape — a chat-completed Auto-mode run, never a Manual-mode run with a
-    real shadow/snapshot pair. Both build_simple_insights (the same builder
-    the run-linked Insights page uses) and the PDF renderer must handle it
+    handleViewInsights) hits POST /insights/pdf for exactly this run shape —
+    a chat-completed Auto-mode run, never a Manual-mode run with a real
+    shadow/snapshot pair. Both the insights builder (the same one the
+    run-linked Insights page uses) and the PDF renderer must handle it
     without needing snapshot/shadow data."""
     run_id = _streaming_run()
-    payload = service.build_simple_insights(run_id)
+    payload = insights_builder.build_for_run(run_id)
 
     assert payload["runId"] == run_id
-    assert payload["total"] == 2
-    by_key = {r["key"]: r for r in payload["results"]}
+    assert payload["breakRate"]["total"] == 2
+    by_key = {r["key"]: r for r in payload["breakRate"]["results"]}
     assert by_key["match"]["count"] == 1
     assert by_key["quantity_mismatch"]["count"] == 1
 
-    pdf_bytes = build_insights_pdf(payload, run_id=run_id)
+    pdf_bytes = insights_builder.pdf_for(run_id=run_id)
     assert pdf_bytes[:4] == b"%PDF"

@@ -4,12 +4,7 @@
 // JSON `<role>_rows` array for SAP-fetched datasets. Returns true if data
 // was appended, false if the side has no usable payload (e.g. after a
 // refresh dropped the in-memory file/rows).
-//
-// `excludeFields` (optional) drops those columns from the JSON rows before
-// sending — used by the field-mapping inference (/api/recon/mapping/infer) to
-// keep MDT/recommended columns out of the inference entirely (see runInference
-// in TransformationSpecStep) without touching the dataset used for reconciliation.
-export function appendDatasetSide(formData, role, roleState, excludeFields) {
+export function appendDatasetSide(formData, role, roleState) {
   const dataset = roleState?.dataset;
   if (!dataset) return false;
 
@@ -20,8 +15,7 @@ export function appendDatasetSide(formData, role, roleState, excludeFields) {
   }
 
   if (Array.isArray(dataset.rows) && dataset.rows.length > 0) {
-    const rows = excludeFields?.length ? omitFields(dataset.rows, excludeFields) : dataset.rows;
-    formData.append(`${role}_rows`, JSON.stringify(rows));
+    formData.append(`${role}_rows`, JSON.stringify(dataset.rows));
     return true;
   }
 
@@ -81,17 +75,6 @@ export function missingValueMappingRequirements(display) {
       requiredRowRole: "key",
     },
   ];
-}
-
-function omitFields(rows, fields) {
-  const drop = new Set(fields);
-  return rows.map((row) => {
-    const next = {};
-    for (const key of Object.keys(row)) {
-      if (!drop.has(key)) next[key] = row[key];
-    }
-    return next;
-  });
 }
 
 // Sample rows for a wizard side, used both for Gate 2 replay (contract flow)

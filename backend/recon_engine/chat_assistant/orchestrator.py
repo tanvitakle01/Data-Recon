@@ -23,6 +23,7 @@ attachments only ever fill in whatever is still ``None``.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from backend.API_conn.connectors import registry
@@ -119,23 +120,40 @@ def _active_run_id(session_id: str) -> str | None:
     return None
 
 
+def _resume_note(run_id: str) -> str:
+    """"This run was resumed from the Stored Runs tab at <time>" — surfaced
+    the next time chat is asked about a run it never resumed itself (see
+    ``routes.auto_pipeline.trigger_resume``'s ``source`` param and
+    ``run_registry.last_resume_transition``). Empty for a run that was never
+    resumed, or whose most recent resume came from chat's own "resume
+    <name>" (chat already told the user about that resume in the same
+    turn — repeating it here would be redundant)."""
+    info = run_registry.last_resume_transition(run_id)
+    if info is None or info.get("reason") != "resume:stored_runs_tab":
+        return ""
+    try:
+        when = datetime.fromisoformat(info["created_at"]).strftime("%Y-%m-%d %H:%M UTC")
+    except ValueError:
+        when = info["created_at"]
+    return f"(This run was resumed from the Stored Runs tab at {when}.) "
+
+
 def _status_reply(run_id: str | None) -> str:
     if run_id is None:
         return "You don't have an active or stored run right now — name one, or check the Stored Runs tab."
     run = pipeline_run_store.get(run_id)
     if run is None:
         return f"I don't have any record of run {run_id} anymore."
+    note = _resume_note(run_id)
     status = run.get("status")
     step = run.get("current_step")
     if status == RunState.PAUSED_FOR_INPUT.value:
-        return f"Run {run_id} is waiting on your answer to a question I asked earlier."
-    if status == RunState.STALLED.value:
-        return f"Run {run_id} looks stalled — it hasn't reported progress in a while. It's still being watched."
+        return note + f"Run {run_id} is waiting on your answer to a question I asked earlier."
     if status == RunState.CANCELLING.value:
-        return f"Run {run_id} is being cancelled."
+        return note + f"Run {run_id} is being cancelled."
     if status == RunState.RUNNING.value:
-        return f"Run {run_id} is still running" + (f" (currently on '{step}')." if step else ".")
-    return f"Run {run_id} is currently {status!r}."
+        return note + f"Run {run_id} is still running" + (f" (currently on '{step}')." if step else ".")
+    return note + f"Run {run_id} is currently {status!r}."
 
 
 def _start_run_from_state(state: dict[str, Any], *, session_id: str, prefix: str = "") -> dict[str, Any]:
@@ -444,6 +462,35 @@ def handle_message(
             if len(matches) == 1:
                 status_run_id = matches[0]["graph_run_id"]
         return {"reply": prefix + _status_reply(status_run_id), "state": state, "run": {"graph_run_id": status_run_id}}
+
+    if control_intent == "INSIGHTS":
+        insights_run_id = None
+        matches = stored_run_lookup.find(message, any_status=True)
+        if len(matches) == 1:
+            insights_run_id = matches[0]["graph_run_id"]
+        elif len(matches) > 1:
+            names = ", ".join(m["graph_run_id"] for m in matches[:5])
+            return {
+                "reply": prefix + f"That matches more than one run ({names}) — which one did you mean?",
+                "state": state,
+                "run": None,
+            }
+        if insights_run_id is None:
+            insights_run_id = active_run_id or state.get("last_completed_run_id")
+        if insights_run_id is None:
+            return {
+                "reply": prefix
+                + "I don't have a run to build insights for yet — finish a reconciliation first, name a "
+                "stored run, or use the Insights tab.",
+                "state": state,
+                "run": None,
+            }
+        return {
+            "reply": prefix + f"Here's the insights report for run {insights_run_id}.",
+            "state": state,
+            "run": None,
+            "insights": {"run_id": insights_run_id},
+        }
 
     # ── 3. attachment-role / reconciliation-intent classification (LLM) ──
     # Only classify attachments this state hasn't already resolved a role

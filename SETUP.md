@@ -1,3 +1,4 @@
+
 # Supabase setup — auth portal + encrypted connections
 
 This is the full sequence to stand up the Supabase-backed auth and

@@ -8,9 +8,9 @@ column headers + first populated row), infer:
 * which role each new attachment plays: a mapping sheet, source data, target
   data, or none of those.
 
-Same provider chain as every other LLM call in this codebase
-(``build_llm_client()`` — Groq primary, Gemini/Cerebras/OpenRouter fallback,
-see ``backend/recon_engine/llm/failover.py``), and the same
+Same provider as every other LLM call in this codebase (Azure-AI-Foundry-only
+``build_llm_client()``, no fallback — see
+``backend/recon_engine/llm/failover.py``), and the same
 never-raise-degrade-instead contract as ``sheet_identifier.identify_systems``:
 a provider failure returns a conservative "not enough to tell" result rather
 than raising, so the chatbot always has something to say back.
@@ -29,9 +29,9 @@ logger = logging.getLogger("recon.chat_assistant.intent")
 
 _ROLE_VALUES = ("mapping_sheet", "source_data", "target_data", "unknown")
 
-RunIntent = Literal["CANCEL", "RETRY", "STATUS", "OTHER"]
+RunIntent = Literal["CANCEL", "RETRY", "STATUS", "INSIGHTS", "OTHER"]
 
-# Deterministic, not LLM — these three are run-mutating or safety-relevant
+# Deterministic, not LLM — these are run-mutating or safety-relevant
 # (CANCEL/RETRY act on the session's active run; STATUS must never silently
 # misreport), so guessing wrong on them is exactly the "silent failure" class
 # this classifier exists to prevent. An LLM call here would put the single
@@ -45,6 +45,20 @@ _RETRY_KEYWORDS = ("retry", "resume", "continue the run", "continue this run", "
 _STATUS_KEYWORDS = (
     "status", "progress", "how's it going", "how is it going", "what's happening",
     "is it done", "are we done", "update me",
+)
+# Unlike CANCEL/RETRY (which mutate a run and so only ever make sense against
+# THIS session's own active run), STATUS/INSIGHTS are read-only and are most
+# often asked about a run this chat session never started — most notably one
+# resumed from the Stored Runs tab, which never touches active_run_id at all
+# (see routes.auto_pipeline.trigger_resume's ``source`` param). Gating STATUS
+# on active_run_id would make orchestrator.handle_message's own "no run bound
+# to this session (e.g. resumed from the Stored Runs tab)" fallback dead code
+# — so, like INSIGHTS, STATUS is checked unconditionally and the orchestrator
+# resolves which run it refers to (by name/id in the message, else the
+# session's active run).
+_INSIGHTS_KEYWORDS = (
+    "insights", "insight report", "insights pdf", "insight pdf", "show me insights",
+    "generate insights", "view insights", "insights report",
 )
 
 
@@ -66,8 +80,10 @@ def classify_intent(message: str, *, run_snapshot: dict[str, Any]) -> RunIntent:
         return "CANCEL"
     if active_run_id and _matches(text, _RETRY_KEYWORDS):
         return "RETRY"
-    if active_run_id and _matches(text, _STATUS_KEYWORDS):
+    if _matches(text, _STATUS_KEYWORDS):
         return "STATUS"
+    if _matches(text, _INSIGHTS_KEYWORDS):
+        return "INSIGHTS"
     return "OTHER"
 
 

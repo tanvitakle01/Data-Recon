@@ -382,11 +382,6 @@
   background: rgba(245, 158, 11, 0.1);
 }
 
-.jc-tag--rec {
-  color: var(--ibpw-accent);
-  background: var(--ibpw-accent-soft);
-}
-
 .jc-tag--kf {
   color: #7c3aed;
   background: rgba(124, 58, 237, 0.12);

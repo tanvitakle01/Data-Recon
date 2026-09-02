@@ -14,9 +14,9 @@ concept sourced from the mapping sheet/business rules (see
 ``business_key`` construction keeps using, independently of this module).
 
 Same safety posture as ``sheet_identifier.py``/``field_mapper.py``: goes
-through ``build_llm_client()`` (Groq -> Gemini -> Cerebras -> OpenRouter),
-never raises on failure (degrades), and every field name the model returns is
-existence-gated against the real column lists before use.
+through the Azure-AI-Foundry-only ``build_llm_client()`` (no fallback), never raises on
+failure (degrades), and every field name the model returns is existence-gated
+against the real column lists before use.
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ def identify_candidate_keys(
     """
     if not get_settings().any_llm_configured:
         return _degraded(
-            "No AI provider is configured (GROQ_API_KEY / OPENAI_API_KEY) — "
+            "No AI provider is configured (AZURE_FOUNDRY_MODEL) — "
             "cannot identify candidate keys."
         )
     if not source_columns or not target_columns:

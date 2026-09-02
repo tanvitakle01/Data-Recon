@@ -149,7 +149,6 @@ class _FakeClient:
 
 class _Settings:
     any_llm_configured = True
-    value_pairing_window_years = 2
 
 
 @pytest.fixture
@@ -413,7 +412,7 @@ def test_pipeline_leaves_a_value_unpaired_when_the_llm_proposes_nothing(monkeypa
 
 
 def test_pipeline_never_calls_the_llm_when_no_provider_is_configured():
-    # The autouse isolated_store fixture clears GROQ_API_KEY/OPENAI_API_KEY, so
+    # The autouse isolated_store fixture clears AZURE_FOUNDRY_MODEL, so
     # get_settings().any_llm_configured is False here — no monkeypatch needed.
     result = pipeline.pair_values(
         source_field="Material",
@@ -513,7 +512,7 @@ def test_pair_values_resumes_from_start_batch_index_skipping_earlier_batches():
         source_connector="s4",
         target_connector="ibp",
         source_dates=source_dates,
-        date_window_years=1,
+        max_dates_per_batch=1,
         start_batch_index=1,
         resume_matches=[resumed_match],
         on_batch=_on_batch,

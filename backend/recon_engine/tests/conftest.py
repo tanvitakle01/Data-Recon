@@ -8,15 +8,10 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setenv("RECON_STORE_DIR", str(tmp_path / "store"))
-    # No live LLM providers in tests unless a test opts in explicitly. Clearing
-    # every tier's vars keeps the failover path deterministic (Groq-only / none).
-    for var in (
-        "GROQ_API_KEY", "GROQ_MODEL",
-        "GEMINI_API_KEY", "GEMINI_MODEL",
-        "CEREBRAS_API_KEY", "CEREBRAS_MODEL",
-        "OPENROUTER_API_KEY", "OPENROUTER_MODEL",
-        "OPENAI_API_KEY", "OPENAI_MODEL",
-    ):
+    # No live LLM calls in tests unless a test opts in explicitly. Clearing
+    # AZURE_FOUNDRY_MODEL keeps build_llm_client() deterministic
+    # (configured-or-unconfigured, never a live call).
+    for var in ("AZURE_FOUNDRY_MODEL", "AZURE_FOUNDRY_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
 
     from backend.recon_engine.config import reset_settings_cache

@@ -1,17 +1,21 @@
-"""Coverage for the Groq compile path itself: that it actually runs, that a
-failure is never silently swallowed, and that its output is schema-valid.
+"""Coverage for the LLM compile path itself (``GroqContractCompiler`` — name
+kept for backward compatibility, it now runs on Azure AI Foundry with no
+fallback): that it actually runs, that a failure is never silently swallowed,
+and that its output is schema-valid.
 
 Two kinds of test live here:
 
 * Mocked (always run, no network): exercise ``service.compile_draft``'s
   compiler-selection/strict-mode logic and the prompt/schema plumbing without
   ever calling the real API.
-* Live (skipped unless a real ``GROQ_API_KEY`` is available in
-  ``backend/.env``): prove the actual model, given the reported bug's mapping
-  data, produces a contract that passes Gate 1 — the real regression this
-  investigation was about. These read the key directly from the .env file so
-  they aren't affected by ``conftest.isolated_store`` deliberately clearing
-  ``GROQ_API_KEY`` from the environment for the offline tests.
+* Live (skipped unless a real ``AZURE_FOUNDRY_MODEL`` is available in
+  ``backend/recon_engine/.env`` and the ambient Azure AD credential — e.g.
+  ``az login`` — can obtain a token): prove the actual model, given the
+  reported bug's mapping data, produces a contract that passes Gate 1 — the
+  real regression this investigation was about. These read the model id
+  directly from the .env file so they aren't affected by
+  ``conftest.isolated_store`` deliberately clearing ``AZURE_FOUNDRY_MODEL``
+  from the environment for the offline tests.
 """
 
 from __future__ import annotations
@@ -31,30 +35,31 @@ MAPPING_SHEET = [
 ]
 
 
-def _read_live_groq_key() -> str | None:
-    env_path = Path(__file__).resolve().parents[3] / "backend" / ".env"
+def _read_env_value(var_name: str) -> str | None:
+    env_path = Path(__file__).resolve().parents[1] / ".env"
     if not env_path.is_file():
         return None
     for line in env_path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
-        if not line.startswith("GROQ_API_KEY"):
+        if not line.startswith(var_name):
             continue
         _, _, value = line.partition("=")
         return value.strip().strip("'\"") or None
     return None
 
 
-_LIVE_GROQ_KEY = _read_live_groq_key()
-requires_live_groq = pytest.mark.skipif(
-    not _LIVE_GROQ_KEY, reason="No real GROQ_API_KEY in backend/.env for a live Groq call."
+_LIVE_AZURE_FOUNDRY_MODEL = _read_env_value("AZURE_FOUNDRY_MODEL")
+requires_live_azure_foundry = pytest.mark.skipif(
+    not _LIVE_AZURE_FOUNDRY_MODEL,
+    reason="No real AZURE_FOUNDRY_MODEL in backend/recon_engine/.env for a live Azure AI Foundry call.",
 )
 
 
 # ── mocked: compiler selection / strict mode ────────────────────────────────
 
 def test_groq_path_marks_compiler_groq(monkeypatch):
-    """A successful Groq compile must be reported as compiler=='groq', not stub."""
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake_key_for_this_test")
+    """A successful compile must be reported as compiler=='groq', not stub."""
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
     from backend.recon_engine.config import reset_settings_cache
 
     reset_settings_cache()
@@ -79,8 +84,8 @@ def test_groq_path_marks_compiler_groq(monkeypatch):
 
 
 def test_strict_mode_raises_instead_of_silently_falling_back_to_stub(monkeypatch):
-    """RECON_GROQ_STRICT=true must surface a Groq failure, not mask it as stub."""
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake_key_for_this_test")
+    """RECON_GROQ_STRICT=true must surface a compile failure, not mask it as stub."""
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
     monkeypatch.setenv("RECON_GROQ_STRICT", "true")
     from backend.recon_engine.config import reset_settings_cache
 
@@ -104,7 +109,7 @@ def test_strict_mode_raises_instead_of_silently_falling_back_to_stub(monkeypatch
 
 def test_non_strict_mode_still_degrades_to_stub(monkeypatch):
     """Default behaviour (RECON_GROQ_STRICT unset) is unchanged: degrade, don't raise."""
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake_key_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
     from backend.recon_engine.config import reset_settings_cache
 
     reset_settings_cache()
@@ -196,8 +201,8 @@ _REPORTED_SOURCE_SCHEMA = ["Material", "Plnt", "Req.Dlv.Dt", "ReqDlvQty"]
 _REPORTED_TARGET_SCHEMA = ["I_LOCID", "I_PRDID", "I_SALESORDERREQUEST", "KEYFIGUREDATE"]
 
 
-@requires_live_groq
-def test_live_groq_never_sets_business_key_or_compare_fields():
+@requires_live_azure_foundry
+def test_live_azure_foundry_never_sets_business_key_or_compare_fields():
     """Regression for the NON-NEGOTIABLE SCOPE LIMIT in the system prompt: even
     given a mapping sheet whose rows look like key/compare candidates, the
     real model must obey the prompt and always emit business_key/
@@ -207,19 +212,19 @@ def test_live_groq_never_sets_business_key_or_compare_fields():
     model to derive business_key itself and checked it against Gate 1; that
     responsibility moved to service.compile_draft — see
     test_compile_field_mapping_wiring.py for that wiring's coverage.)"""
-    compiler = GroqContractCompiler(api_key=_LIVE_GROQ_KEY)
+    compiler = GroqContractCompiler(model=_LIVE_AZURE_FOUNDRY_MODEL)
     draft = compiler.compile(
         mapping_sheet=_REPORTED_MAPPING_SHEET, rules="",
         source_schema=_REPORTED_SOURCE_SCHEMA, target_schema=_REPORTED_TARGET_SCHEMA,
         comparison_type="sales_history", source_type="s4", target_type="ibp",
     )
-    assert draft.compiler == "groq"
+    assert draft.compiler == "azure_foundry"
     assert draft.business_key == []
     assert draft.compare_fields == []
 
 
-@requires_live_groq
-def test_live_groq_extracts_leading_zero_transformation():
+@requires_live_azure_foundry
+def test_live_azure_foundry_extracts_leading_zero_transformation():
     mapping_sheet = {
         "mapping_candidates": [
             {
@@ -230,7 +235,7 @@ def test_live_groq_extracts_leading_zero_transformation():
             },
         ]
     }
-    compiler = GroqContractCompiler(api_key=_LIVE_GROQ_KEY)
+    compiler = GroqContractCompiler(model=_LIVE_AZURE_FOUNDRY_MODEL)
     draft = compiler.compile(
         mapping_sheet=mapping_sheet, rules="", source_schema=["MATNR"], target_schema=["PRDID"],
         comparison_type="custom", source_type="excel", target_type="excel",
@@ -245,8 +250,8 @@ def test_live_groq_extracts_leading_zero_transformation():
     ), draft.operations
 
 
-@requires_live_groq
-def test_live_groq_extracts_join_and_filter_context():
+@requires_live_azure_foundry
+def test_live_azure_foundry_extracts_join_and_filter_context():
     mapping_sheet = {
         "mapping_candidates": [
             {"source_field": "VBELN", "target_field": "ORDERID", "technical_field": "ORDERID"},
@@ -254,7 +259,7 @@ def test_live_groq_extracts_join_and_filter_context():
         "join_conditions": [{"text": "VBAP-VBELN = VBAK-VBELN"}],
         "filters": [{"text": "VBAK-VKORG = 5875"}],
     }
-    compiler = GroqContractCompiler(api_key=_LIVE_GROQ_KEY)
+    compiler = GroqContractCompiler(model=_LIVE_AZURE_FOUNDRY_MODEL)
     draft = compiler.compile(
         mapping_sheet=mapping_sheet, rules="", source_schema=["VBELN", "VKORG"],
         target_schema=["ORDERID"], comparison_type="custom", source_type="excel", target_type="excel",

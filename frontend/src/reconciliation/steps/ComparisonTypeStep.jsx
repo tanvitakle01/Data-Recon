@@ -536,7 +536,6 @@ function ComparisonTypeStep() {
     sheet: null,
     sheets: [],
     fetchedAt: new Date().toISOString(),
-    mdtFields: [],
   });
 
   // Applies whatever the run has produced SO FAR to wizard state — called on
@@ -646,9 +645,9 @@ function ComparisonTypeStep() {
     if (!graphRunId) return;
     // A FAILED run converts to SUSPENDED directly, with no further polling
     // to observe it (the poll loop already stopped when the run failed) —
-    // reflect that immediately. A RUNNING/STALLED run's cooperative suspend
-    // still takes effect a batch later; the existing poll loop (still
-    // running) picks up the eventual "suspended" status itself.
+    // reflect that immediately. A RUNNING run's cooperative suspend still
+    // takes effect a batch later; the existing poll loop (still running)
+    // picks up the eventual "suspended" status itself.
     const isDirectFromFailure = Boolean(autoError);
     setAutoSuspending(true);
     try {

@@ -18,7 +18,7 @@ from backend.recon_engine.compiler.base import ContractCompilerError
 class LLMProvider(Protocol):
     """Minimal provider contract: messages in, parsed-JSON object out."""
 
-    #: short provenance tag (e.g. "groq", "openai").
+    #: short provenance tag (e.g. "azure_foundry").
     name: str
 
     @property

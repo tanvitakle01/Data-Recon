@@ -6,11 +6,6 @@ import {
   SapConnectedBar,
 } from "./SapConnectionGate";
 import JoinCanvas from "./JoinCanvas";
-import {
-  IBP_TRANSFORMATION_DISCOVERY_FIELDS,
-  recommendedFieldsFor,
-  withAuxiliaryFields,
-} from "../lib/transformationDiscoveryFields";
 import { matchProposedToSchema } from "../lib/fieldMatching";
 import "./ibpWorkspace.css";
 
@@ -87,11 +82,6 @@ function IbpDatasetWorkspace({
   const [selected, setSelected] = useState([]);
   const [propFilter, setPropFilter] = useState("");
   const [entityLoading, setEntityLoading] = useState(false);
-  // Fields auto-checked by a Transformation Discovery rule (e.g. selecting
-  // PRDID also checks PRODDESC, PRODTYPE, ...) — tracked separately so the
-  // "Recommended" badge only marks the supporting fields, not the trigger
-  // field itself, and clears once a field is deselected.
-  const [autoSelected, setAutoSelected] = useState(new Set());
   // Sheet-proposed fields that don't exist on the chosen entity's live schema.
   // Tracking preserved (setter still used); the surfacing note was retired with
   // the old Columns panel, so only the setter is kept.
@@ -199,7 +189,6 @@ function IbpDatasetWorkspace({
     setSelectedEntity(entityName);
     setProperties([]);
     setSelected([]);
-    setAutoSelected(new Set());
     setPreselectUnmatched([]);
     setPropFilter("");
     setPreviewRows([]);
@@ -237,18 +226,7 @@ function IbpDatasetWorkspace({
         setPreselectUnmatched(unmatched);
         base = matched;
       }
-      // Widen with MDT auxiliary evidence fields (PRODDESC / PRODGROUP / LOCNAME
-      // / …) for each trigger field present, tracked in autoSelected so they
-      // flow through the mdtFields boundary — fetched + previewed + fed to the
-      // deterministic matcher, but excluded from the field mapping /
-      // reconciliation output.
-      const { selection, autoAdded } = withAuxiliaryFields(
-        IBP_TRANSFORMATION_DISCOVERY_FIELDS,
-        base,
-        selectableNames
-      );
-      setSelected(selection);
-      setAutoSelected(autoAdded);
+      setSelected(base);
     } catch (err) {
       setError(`Failed to load entity metadata: ${err?.message || err}`);
     } finally {
@@ -302,48 +280,19 @@ function IbpDatasetWorkspace({
 
   // Any change to the selection invalidates a prior import, so the readiness
   // and summary reflect that the wizard's stored dataset is now stale.
-  //
-  // Checking a Transformation Discovery trigger field (e.g. PRDID, LOCID)
-  // also checks its supporting attributes, filtered to whatever actually
-  // exists on this entity — missing ones are skipped silently. The user can
-  // still deselect any of them individually afterward.
   const toggleProp = (name) => {
     setImported(false);
-    setSelected((prev) => {
-      if (prev.includes(name)) {
-        setAutoSelected((autoPrev) => {
-          if (!autoPrev.has(name)) return autoPrev;
-          const next = new Set(autoPrev);
-          next.delete(name);
-          return next;
-        });
-        return prev.filter((n) => n !== name);
-      }
-
-      const availableNames = selectableProps.map((p) => p.name);
-      const recommended = recommendedFieldsFor(
-        IBP_TRANSFORMATION_DISCOVERY_FIELDS,
-        name,
-        availableNames
-      );
-      if (recommended.length === 0) return [...prev, name];
-
-      const newlyAdded = recommended.filter((f) => f !== name && !prev.includes(f));
-      if (newlyAdded.length > 0) {
-        setAutoSelected((autoPrev) => new Set([...autoPrev, ...newlyAdded]));
-      }
-      return Array.from(new Set([...prev, ...recommended]));
-    });
+    setSelected((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+    );
   };
   const selectAll = () => {
     setImported(false);
     setSelected(selectableProps.map((p) => p.name));
-    setAutoSelected(new Set());
   };
   const deselectAll = () => {
     setImported(false);
     setSelected([]);
-    setAutoSelected(new Set());
   };
 
   const orderedSelected = useMemo(
@@ -460,18 +409,14 @@ function IbpDatasetWorkspace({
       setImported(true);
       setImportedCount(rows.length);
       // Stay on the Build card after import; the full data grid now lives on a
-      // dedicated preview page opened via "Open Detailed Preview".
-      // Fields auto-checked by a Transformation Discovery rule (MDT/recommended
-      // fields) — carried along so downstream mapping generation can exclude
-      // them while they remain selectable here for tracking/validation. The
-      // dataset (rows, preview, columns) is persisted to wizard state, which is
-      // what the detailed-preview page reads.
+      // dedicated preview page opened via "Open Detailed Preview". The dataset
+      // (rows, preview, columns) is persisted to wizard state, which is what
+      // the detailed-preview page reads.
       onLoaded?.({
         columns,
         preview: rows.slice(0, 10),
         rows,
         rowCount: rows.length,
-        mdtFields: Array.from(autoSelected),
       });
     } catch (err) {
       setError(`Failed to fetch dataset: ${err?.message || err}`);
@@ -487,9 +432,9 @@ function IbpDatasetWorkspace({
       : { cls: "wait", icon: "○", text: "Select columns to import" };
 
   // ---- Canvas view-model: IBP is single-entity (no joins), so the canvas
-  // holds exactly one node card. Field checkboxes, KF (measure) tags, and the
-  // recommended tag map straight from the existing selection state; no field
-  // reads a ref, so the handlers wire through unchanged. ----
+  // holds exactly one node card. Field checkboxes and KF (measure) tags map
+  // straight from the existing selection state; no field reads a ref, so the
+  // handlers wire through unchanged. ----
   const canvasNodes = selectedEntity
     ? [
         {
@@ -500,7 +445,6 @@ function IbpDatasetWorkspace({
             type: p.type,
             isKey: false,
             checked: selected.includes(p.name),
-            recommended: autoSelected.has(p.name),
             measure: p.role === "measure",
           })),
           onToggleField: (name) => toggleProp(name),

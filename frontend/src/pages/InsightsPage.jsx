@@ -1,13 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useParams } from "react-router-dom";
+import React, { useEffect, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
 import api from "../services/api";
-import SimpleInsightsView from "../components/insights/SimpleInsightsView";
+import InsightsView from "../components/insights/InsightsView";
 import SkeletonCards from "../components/insights/SkeletonCards";
-
-function useQuery() {
-  const { search } = useLocation();
-  return useMemo(() => new URLSearchParams(search), [search]);
-}
 
 class InsightsErrorBoundary extends React.Component {
   constructor(props) {
@@ -40,33 +35,31 @@ class InsightsErrorBoundary extends React.Component {
 }
 
 function InsightsPageInner() {
-  const query = useQuery();
   const { runId } = useParams();
-  const fileId = query.get("file_id");
 
-  const mode = runId ? "fromRunId" : fileId ? "fromFileId" : "upload";
-  const isAutoMode = mode === "fromRunId" || mode === "fromFileId";
+  const mode = runId ? "fromRunId" : "upload";
+  const isAutoMode = mode === "fromRunId";
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
   const [payload, setPayload] = useState(null);
+  const [uploadId, setUploadId] = useState(null);
 
   const [uploadFile, setUploadFile] = useState(null);
-  const [uploadSheetName, setUploadSheetName] = useState("");
   const [pdfBusy, setPdfBusy] = useState(false);
 
-  const cockpitSectionRef = useRef(null);
+  const insightsSectionRef = useRef(null);
 
   const onDownloadPdf = async () => {
-    if (!runId) return;
     setPdfBusy(true);
     try {
-      const res = await api.get(`/insights/${runId}/pdf`, { responseType: "blob" });
+      const body = runId ? { run_id: runId } : { upload_id: uploadId };
+      const res = await api.post("/insights/pdf", body, { responseType: "blob" });
       const blobUrl = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = blobUrl;
-      a.download = `insights_${runId}.pdf`;
+      a.download = `insights_${runId || uploadId}.pdf`;
       a.click();
       URL.revokeObjectURL(blobUrl);
     } catch (e) {
@@ -78,19 +71,16 @@ function InsightsPageInner() {
 
   useEffect(() => {
     const runAuto = async () => {
-      if (!runId && !fileId) return;
+      if (!runId) return;
       setBusy(true);
       setError(null);
       try {
-        const res = runId
-          ? await api.post("/insights/from-run-id", { run_id: runId })
-          : await api.post("/insights/from-file-id", { file_id: fileId });
-        const data = res.data?.payload ?? null;
-        setPayload(data);
+        const res = await api.post("/insights/from-run-id", { run_id: runId });
+        setPayload(res.data?.payload ?? null);
 
         requestAnimationFrame(() => {
-          if (cockpitSectionRef.current) {
-            cockpitSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+          if (insightsSectionRef.current) {
+            insightsSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
           }
         });
       } catch (e) {
@@ -101,28 +91,29 @@ function InsightsPageInner() {
     };
 
     runAuto();
-  }, [runId, fileId]);
+  }, [runId]);
 
   const onUploadGenerate = async () => {
     if (!uploadFile) return;
     setBusy(true);
     setError(null);
     setPayload(null);
+    setUploadId(null);
 
     try {
       const formData = new FormData();
       formData.append("file", uploadFile);
-      formData.append("sheet_name", uploadSheetName);
 
-      const res = await api.post("/insights", formData, {
+      const res = await api.post("/insights/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       const data = res.data?.payload ?? null;
       setPayload(data);
+      setUploadId(data?.uploadId ?? null);
 
       requestAnimationFrame(() => {
-        if (cockpitSectionRef.current) {
-          cockpitSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (insightsSectionRef.current) {
+          insightsSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
         }
       });
     } catch (e) {
@@ -141,7 +132,7 @@ function InsightsPageInner() {
             {isAutoMode ? "Auto-generated from reconciliation output" : "Standalone analysis"}
           </div>
         </div>
-        {runId && payload && (
+        {payload && (runId || uploadId) && (
           <button
             type="button"
             onClick={onDownloadPdf}
@@ -166,32 +157,17 @@ function InsightsPageInner() {
             marginBottom: 14,
           }}
         >
-          <div style={{ fontWeight: 850, marginBottom: 10 }}>Upload comparison report</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 240px", gap: 12, alignItems: "end" }}>
+          <div style={{ fontWeight: 850, marginBottom: 10 }}>Upload reconciliation results workbook</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, alignItems: "end" }}>
             <div>
               <label style={{ display: "block", color: "#475569", fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
-                Excel/CSV file
+                Results workbook (.xlsx)
               </label>
-              <input
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-              />
+              <input type="file" accept=".xlsx,.xls" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
               <div style={{ color: "#64748b", fontWeight: 600, marginTop: 6, fontSize: 12 }}>
-                Supported: Excel output with a “Remarks” column.
+                Upload the workbook downloaded from a completed reconciliation run — Summary / All Records / Mapping
+                Details sheets.
               </div>
-            </div>
-            <div>
-              <label style={{ display: "block", color: "#475569", fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
-                Sheet name (optional)
-              </label>
-              <input
-                type="text"
-                value={uploadSheetName}
-                onChange={(e) => setUploadSheetName(e.target.value)}
-                placeholder="Compared_Output"
-                style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #d1d5db" }}
-              />
             </div>
           </div>
           <div style={{ marginTop: 14 }}>
@@ -223,8 +199,8 @@ function InsightsPageInner() {
       )}
 
       {payload && (
-        <div ref={cockpitSectionRef} style={{ marginTop: 14 }}>
-          <SimpleInsightsView payload={payload} />
+        <div ref={insightsSectionRef} style={{ marginTop: 14 }}>
+          <InsightsView payload={payload} runId={runId} uploadId={uploadId} />
         </div>
       )}
     </div>

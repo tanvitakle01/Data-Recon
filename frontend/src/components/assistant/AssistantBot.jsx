@@ -108,7 +108,6 @@ const STATUS_LABELS = {
   failed: "Reconciliation failed",
   cancelling: "Cancelling…",
   cancelled: "Reconciliation cancelled",
-  stalled: "No progress reported recently — still watching…",
 };
 
 // Mirrors backend/recon_engine/auto_pipeline/state.py's STEP_NAMES exactly —
@@ -531,39 +530,55 @@ function AssistantBot() {
     }
   }
 
+  // Shared "fetch a blob, attach it to a chat message" recipe — used by the
+  // "View Insights" pill, the auto-attached results workbook, and a
+  // text-driven insights reply (see sendMessage's `insights` handling below).
+  async function attachBlobToMessage(messageId, { method = "get", url, data, filename, attachmentId }) {
+    try {
+      const res =
+        method === "post"
+          ? await api.post(url, data, { responseType: "blob" })
+          : await api.get(url, { responseType: "blob" });
+      const blobUrl = URL.createObjectURL(res.data);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                attachments: [
+                  ...(m.attachments || []),
+                  { id: attachmentId, name: filename, isImage: false, previewUrl: null, downloadUrl: blobUrl },
+                ],
+              }
+            : m
+        )
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // "View Insights" stays inside the chat — it fetches the same structured
   // Insights PDF the Insights page's "Download PDF" button produces and
   // posts it as a new bot message, rather than navigating away from the chat.
   async function handleViewInsights(run) {
     const runId = run?.result?.result_summary?.run_id || run?.result?.run_id;
     if (!runId) return;
+    await postInsightsPdf(runId, "Here's the insights report for this run.");
+  }
+
+  async function postInsightsPdf(runId, introText) {
     const botMessageId = `b-${Date.now()}`;
-    setMessages((prev) => [
-      ...prev,
-      { id: botMessageId, from: "bot", text: "Here's the insights report for this run." },
-    ]);
-    try {
-      const res = await api.get(`/insights/${runId}/pdf`, { responseType: "blob" });
-      const blobUrl = URL.createObjectURL(res.data);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === botMessageId
-            ? {
-                ...m,
-                attachments: [
-                  {
-                    id: `insights-pdf-${runId}`,
-                    name: `insights_${runId}.pdf`,
-                    isImage: false,
-                    previewUrl: null,
-                    downloadUrl: blobUrl,
-                  },
-                ],
-              }
-            : m
-        )
-      );
-    } catch {
+    setMessages((prev) => [...prev, { id: botMessageId, from: "bot", text: introText }]);
+    const ok = await attachBlobToMessage(botMessageId, {
+      method: "post",
+      url: "/insights/pdf",
+      data: { run_id: runId },
+      filename: `insights_${runId}.pdf`,
+      attachmentId: `insights-pdf-${runId}`,
+    });
+    if (!ok) {
       setMessages((prev) =>
         prev.map((m) =>
           m.id === botMessageId ? { ...m, text: "Couldn't generate the insights report for this run." } : m
@@ -598,37 +613,21 @@ function AssistantBot() {
   // the existing GET /api/recon/runs/{run_id}/comparison.xlsx route already
   // builds it.
   async function attachResultsExcel(messageId, runId) {
-    try {
-      const res = await api.get(`/api/recon/runs/${runId}/comparison.xlsx`, { responseType: "blob" });
-      const blobUrl = URL.createObjectURL(res.data);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === messageId
-            ? {
-                ...m,
-                attachments: [
-                  ...(m.attachments || []),
-                  {
-                    id: `xlsx-${runId}`,
-                    name: `results_${runId}.xlsx`,
-                    isImage: false,
-                    previewUrl: null,
-                    downloadUrl: blobUrl,
-                  },
-                ],
-              }
-            : m
-        )
-      );
-    } catch {
-      // The results workbook is a nice-to-have alongside the results — a
-      // failure here shouldn't disrupt the already-posted reconciliation results.
-    }
+    // The results workbook is a nice-to-have alongside the results — a
+    // failure here shouldn't disrupt the already-posted reconciliation results.
+    await attachBlobToMessage(messageId, {
+      url: `/api/recon/runs/${runId}/comparison.xlsx`,
+      filename: `results_${runId}.xlsx`,
+      attachmentId: `xlsx-${runId}`,
+    });
   }
 
-  // Watches for any message's run just having flipped to "completed" and
-  // fetches its results workbook exactly once (guarded by whether the
-  // message already carries that attachment).
+  // Watches for any message's run just having flipped to "completed": fetches
+  // its results workbook exactly once (guarded by whether the message already
+  // carries that attachment), and remembers it as the session's last
+  // completed run so a later "show me insights" with no run named can still
+  // resolve one (see orchestrator.handle_message's INSIGHTS branch, which
+  // reads `state.last_completed_run_id`).
   useEffect(() => {
     messages.forEach((m) => {
       if (m.run?.status !== "completed") return;
@@ -636,6 +635,7 @@ function AssistantBot() {
       if (!runId) return;
       const alreadyAttached = (m.attachments || []).some((a) => a.id === `xlsx-${runId}`);
       if (!alreadyAttached) attachResultsExcel(m.id, runId);
+      setChatState((prev) => (prev?.last_completed_run_id === runId ? prev : { ...(prev || {}), last_completed_run_id: runId }));
     });
   }, [messages]);
 
@@ -728,7 +728,7 @@ function AssistantBot() {
 
     try {
       const res = await api.post("/api/chat/message", formData);
-      const { reply, state, run } = res.data;
+      const { reply, state, run, insights } = res.data;
       setChatState(state);
 
       const botMessageId = `b-${Date.now()}`;
@@ -742,6 +742,18 @@ function AssistantBot() {
         },
       ]);
       if (run?.graph_run_id) pollRun(botMessageId, run.graph_run_id);
+      // A text-driven "show me insights" resolved to a run backend-side (see
+      // orchestrator.handle_message's INSIGHTS branch) — attach its PDF to
+      // this same bot message rather than replacing the reply text.
+      if (insights?.run_id) {
+        await attachBlobToMessage(botMessageId, {
+          method: "post",
+          url: "/insights/pdf",
+          data: { run_id: insights.run_id },
+          filename: `insights_${insights.run_id}.pdf`,
+          attachmentId: `insights-pdf-${insights.run_id}`,
+        });
+      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,

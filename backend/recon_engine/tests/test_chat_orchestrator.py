@@ -2,8 +2,8 @@
 tests are deterministic; the point is the branching contract, not the model.
 
 The degraded-classification test is a direct regression for a real incident:
-every configured LLM provider (Groq rate-limited, Gemini free-tier exhausted,
-Cerebras returning a 404 model-not-found) failed at once, and the assistant
+every configured LLM provider (Groq rate-limited, Azure AI Foundry free-tier
+exhausted, Cerebras returning a 404 model-not-found) failed at once, and the assistant
 silently told the user their reconciliation request "wasn't a reconciliation
 request" — indistinguishable from a real "no" when the honest answer was "AI
 service unavailable, try again."

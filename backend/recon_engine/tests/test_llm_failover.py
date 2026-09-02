@@ -1,11 +1,10 @@
-"""Automatic Groq→Gemini→Cerebras→OpenRouter LLM failover: classification,
-orchestration, circuit breaker, provider provenance, and the end-to-end
-compile path.
-
-These prove that a Groq rate-limit/quota/timeout/outage transparently continues
-on the next configured tier — deterministically, with no live API calls
-(providers are faked and the OpenAI SDK, which Gemini/Cerebras/OpenRouter all
-reuse via base_url, is monkeypatched).
+"""LLM failover: classification, orchestration, circuit breaker, provider
+provenance (generic ``FailoverLLMClient`` behaviour, exercised with fake
+providers — reusable infrastructure only), plus end-to-end coverage that
+``build_llm_client()`` — and therefore the compile path — is
+Azure-AI-Foundry-only, the sole LLM provider in this codebase. No live API
+calls (providers are faked and the OpenAI SDK, which Azure Foundry reuses via
+base_url, is monkeypatched).
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ from backend.recon_engine.compiler.base import ContractCompilerError
 from backend.recon_engine.config import reset_settings_cache
 from backend.recon_engine.llm import (
     ALL_UNAVAILABLE_NOTICE,
-    FALLBACK_NOTICE,
     AllProvidersUnavailableError,
     RetryableLLMError,
     get_last_llm_outcome,
@@ -95,31 +93,32 @@ def test_status_code_attribute_is_retryable():
     assert is_retryable_exception(exc) is False
 
 
-# ── orchestration ────────────────────────────────────────────────────────────
+# ── orchestration (generic FailoverLLMClient, exercised with fake providers —
+#    reusable infrastructure only; Azure AI Foundry is the only real provider) ──
 
-def test_failover_to_openai_on_retryable_groq_error():
-    groq = _FakeProvider("groq", behavior=_raise(RetryableLLMError("429", provider="groq")))
-    openai = _FakeProvider("openai", behavior=_ok({"ok": True}))
-    client = FailoverLLMClient([groq, openai], breaker=CircuitBreaker(), clock=_Clock())
+def test_failover_to_secondary_on_retryable_primary_error():
+    primary = _FakeProvider("primary", behavior=_raise(RetryableLLMError("429", provider="primary")))
+    secondary = _FakeProvider("secondary", behavior=_ok({"ok": True}))
+    client = FailoverLLMClient([primary, secondary], breaker=CircuitBreaker(), clock=_Clock())
 
     assert client.complete_json([]) == {"ok": True}
-    assert groq.calls == 1 and openai.calls == 1
+    assert primary.calls == 1 and secondary.calls == 1
 
     outcome = get_last_llm_outcome()
-    assert outcome.provider_used == "openai"
+    assert outcome.provider_used == "secondary"
     assert outcome.fallback_occurred is True
-    assert outcome.notice == FALLBACK_NOTICE
+    assert outcome.notice is not None and "secondary" in outcome.notice
 
 
 def test_primary_success_no_fallback():
-    groq = _FakeProvider("groq", behavior=_ok({"ok": 1}))
-    openai = _FakeProvider("openai", behavior=_ok({"ok": 2}))
-    client = FailoverLLMClient([groq, openai], breaker=CircuitBreaker(), clock=_Clock())
+    primary = _FakeProvider("primary", behavior=_ok({"ok": 1}))
+    secondary = _FakeProvider("secondary", behavior=_ok({"ok": 2}))
+    client = FailoverLLMClient([primary, secondary], breaker=CircuitBreaker(), clock=_Clock())
 
     assert client.complete_json([]) == {"ok": 1}
-    assert openai.calls == 0
+    assert secondary.calls == 0
     outcome = get_last_llm_outcome()
-    assert outcome.provider_used == "groq"
+    assert outcome.provider_used == "primary"
     assert outcome.fallback_occurred is False
     assert outcome.notice is None
 
@@ -127,19 +126,19 @@ def test_primary_success_no_fallback():
 def test_non_retryable_error_does_not_fail_over():
     """Only the listed availability errors trigger failover; a genuine error
     (e.g. malformed response) propagates without calling the next provider."""
-    groq = _FakeProvider("groq", behavior=_raise(ContractCompilerError("bad JSON")))
-    openai = _FakeProvider("openai", behavior=_ok({"ok": True}))
-    client = FailoverLLMClient([groq, openai], breaker=CircuitBreaker(), clock=_Clock())
+    primary = _FakeProvider("primary", behavior=_raise(ContractCompilerError("bad JSON")))
+    secondary = _FakeProvider("secondary", behavior=_ok({"ok": True}))
+    client = FailoverLLMClient([primary, secondary], breaker=CircuitBreaker(), clock=_Clock())
 
     with pytest.raises(ContractCompilerError):
         client.complete_json([])
-    assert openai.calls == 0
+    assert secondary.calls == 0
 
 
 def test_all_providers_unavailable_raises_clear_error():
-    groq = _FakeProvider("groq", behavior=_raise(RetryableLLMError("429", provider="groq")))
-    openai = _FakeProvider("openai", behavior=_raise(RetryableLLMError("429", provider="openai")))
-    client = FailoverLLMClient([groq, openai], breaker=CircuitBreaker(), clock=_Clock())
+    primary = _FakeProvider("primary", behavior=_raise(RetryableLLMError("429", provider="primary")))
+    secondary = _FakeProvider("secondary", behavior=_raise(RetryableLLMError("429", provider="secondary")))
+    client = FailoverLLMClient([primary, secondary], breaker=CircuitBreaker(), clock=_Clock())
 
     with pytest.raises(AllProvidersUnavailableError) as ei:
         client.complete_json([])
@@ -150,55 +149,55 @@ def test_all_providers_unavailable_raises_clear_error():
 
 
 def test_no_provider_configured_raises():
-    groq = _FakeProvider("groq", configured=False, behavior=_ok({}))
-    openai = _FakeProvider("openai", configured=False, behavior=_ok({}))
-    client = FailoverLLMClient([groq, openai], breaker=CircuitBreaker(), clock=_Clock())
+    primary = _FakeProvider("primary", configured=False, behavior=_ok({}))
+    secondary = _FakeProvider("secondary", configured=False, behavior=_ok({}))
+    client = FailoverLLMClient([primary, secondary], breaker=CircuitBreaker(), clock=_Clock())
     with pytest.raises(ContractCompilerError):
         client.complete_json([])
 
 
 # ── circuit breaker (spec point 8) ───────────────────────────────────────────
 
-def test_circuit_breaker_demotes_then_returns_to_groq():
+def test_circuit_breaker_demotes_then_returns_to_primary():
     clock = _Clock()
     breaker = CircuitBreaker()
-    calls = {"groq": 0, "openai": 0}
+    calls = {"primary": 0, "secondary": 0}
 
-    groq = _FakeProvider("groq")
-    openai = _FakeProvider("openai")
+    primary = _FakeProvider("primary")
+    secondary = _FakeProvider("secondary")
 
-    def groq_behavior(_m):
-        calls["groq"] += 1
-        # Groq is rate-limited until t >= 60, then healthy again.
+    def primary_behavior(_m):
+        calls["primary"] += 1
+        # Primary is rate-limited until t >= 60, then healthy again.
         if clock.t < 60:
-            raise RetryableLLMError("429", provider="groq")
-        return {"by": "groq"}
+            raise RetryableLLMError("429", provider="primary")
+        return {"by": "primary"}
 
-    def openai_behavior(_m):
-        calls["openai"] += 1
-        return {"by": "openai"}
+    def secondary_behavior(_m):
+        calls["secondary"] += 1
+        return {"by": "secondary"}
 
-    groq._behavior = groq_behavior
-    openai._behavior = openai_behavior
-    client = FailoverLLMClient([groq, openai], cooldown_s=60, breaker=breaker, clock=clock)
+    primary._behavior = primary_behavior
+    secondary._behavior = secondary_behavior
+    client = FailoverLLMClient([primary, secondary], cooldown_s=60, breaker=breaker, clock=clock)
 
-    # req1 (t=0): Groq 429 → trips breaker → OpenAI serves.
-    assert client.complete_json([])["by"] == "openai"
-    assert calls == {"groq": 1, "openai": 1}
+    # req1 (t=0): primary 429 → trips breaker → secondary serves.
+    assert client.complete_json([])["by"] == "secondary"
+    assert calls == {"primary": 1, "secondary": 1}
 
-    # req2 (t=10, breaker open): Groq demoted → OpenAI first, Groq never tried.
+    # req2 (t=10, breaker open): primary demoted → secondary first, primary never tried.
     clock.t = 10
-    assert client.complete_json([])["by"] == "openai"
-    assert calls == {"groq": 1, "openai": 2}  # groq not re-called
+    assert client.complete_json([])["by"] == "secondary"
+    assert calls == {"primary": 1, "secondary": 2}  # primary not re-called
 
-    # req3 (t=70, cooldown elapsed): Groq promoted back and now healthy.
+    # req3 (t=70, cooldown elapsed): primary promoted back and now healthy.
     clock.t = 70
-    assert client.complete_json([])["by"] == "groq"
-    assert calls == {"groq": 2, "openai": 2}
-    assert breaker.is_open(clock.t) is False  # a Groq success closed it
+    assert client.complete_json([])["by"] == "primary"
+    assert calls == {"primary": 2, "secondary": 2}
+    assert breaker.is_open(clock.t) is False  # a primary success closed it
 
 
-# ── end-to-end through compile_draft + the OpenAI client ─────────────────────
+# ── end-to-end: build_llm_client() is Azure-AI-Foundry-only, no fallback ────
 
 _VALID_CONTRACT = {
     "comparison_type": "sales_history",
@@ -217,80 +216,63 @@ _MAPPING = [
 ]
 
 
-def test_compile_draft_fails_over_to_gemini(monkeypatch):
-    """With both keys set, a Groq retryable failure produces a Gemini-authored
-    draft (compiler=='gemini', tier 2), no degradation, and a fallback notice."""
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake")
-    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+def test_compile_draft_uses_azure_foundry_with_no_fallback(monkeypatch):
+    """Azure AI Foundry alone serves the request — there is no other provider
+    to fail over to, and no fallback/failover notice."""
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
     reset_settings_cache()
 
-    from backend.recon_engine.compiler.groq_client import GroqJSONClient
-    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
+    from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
 
-    def _groq_429(self, messages):
-        raise RetryableLLMError("Groq API call failed: 429 rate_limit_exceeded", provider="groq")
-
-    monkeypatch.setattr(GroqJSONClient, "complete_json", _groq_429)
-    monkeypatch.setattr(GeminiJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
+    monkeypatch.setattr(AzureFoundryJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
 
     draft, degraded_reason = service.compile_draft(
         mapping_sheet=_MAPPING, rules="", source_schema=["id", "qty"],
         target_schema=["id", "qty"], comparison_type="sales_history",
         source_type="s4", target_type="ibp",
     )
-    assert draft.compiler == "gemini"       # provenance = actual provider
-    assert degraded_reason is None          # Gemini succeeded → no degradation
-    outcome = get_last_llm_outcome()
-    assert outcome.fallback_occurred is True
-    assert outcome.provider_used == "gemini"
-
-
-def test_compile_draft_falls_through_all_four_tiers_in_order(monkeypatch):
-    """Groq, Gemini, and Cerebras all fail with a retryable error; OpenRouter
-    (the last resort, free-model tier) serves the request."""
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake")
-    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
-    monkeypatch.setenv("CEREBRAS_API_KEY", "cb_fake")
-    monkeypatch.setenv("CEREBRAS_MODEL", "llama3.1-8b")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or_fake")
-    reset_settings_cache()
-
-    from backend.recon_engine.compiler.groq_client import GroqJSONClient
-    from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
-    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
-    from backend.recon_engine.llm.openrouter_client import OpenRouterJSONClient
-
-    def _retryable(name):
-        def _behavior(self, messages):
-            raise RetryableLLMError(f"{name} API call failed: 503", provider=name)
-        return _behavior
-
-    monkeypatch.setattr(GroqJSONClient, "complete_json", _retryable("groq"))
-    monkeypatch.setattr(GeminiJSONClient, "complete_json", _retryable("gemini"))
-    monkeypatch.setattr(CerebrasJSONClient, "complete_json", _retryable("cerebras"))
-    monkeypatch.setattr(OpenRouterJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
-
-    draft, degraded_reason = service.compile_draft(
-        mapping_sheet=_MAPPING, rules="", source_schema=["id", "qty"],
-        target_schema=["id", "qty"], comparison_type="sales_history",
-        source_type="s4", target_type="ibp",
-    )
-    assert draft.compiler == "openrouter"
+    assert draft.compiler == "azure_foundry"
     assert degraded_reason is None
     outcome = get_last_llm_outcome()
-    assert outcome.fallback_occurred is True
-    assert outcome.provider_used == "openrouter"
+    assert outcome.fallback_occurred is False
+    assert outcome.provider_used == "azure_foundry"
 
 
-def test_openai_client_uses_sdk(monkeypatch):
-    """The real OpenAIJSONClient parses a chat-completion JSON response."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk_fake")
+def test_compile_draft_degrades_to_stub_when_azure_foundry_unavailable(monkeypatch):
+    """A retryable Azure AI Foundry failure has nothing to fail over to — it
+    degrades straight to the deterministic stub compiler (default, non-strict
+    mode)."""
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
+    reset_settings_cache()
+
+    from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
+
+    def _azure_foundry_503(self, messages):
+        raise RetryableLLMError("Azure AI Foundry API call failed: 503", provider="azure_foundry")
+
+    monkeypatch.setattr(AzureFoundryJSONClient, "complete_json", _azure_foundry_503)
+
+    draft, degraded_reason = service.compile_draft(
+        mapping_sheet=_MAPPING, rules="", source_schema=["id", "qty"],
+        target_schema=["id", "qty"], comparison_type="sales_history",
+        source_type="s4", target_type="ibp",
+    )
+    assert draft.compiler == "stub"
+    assert degraded_reason is not None
+    outcome = get_last_llm_outcome()
+    assert outcome.all_failed is True
+    assert outcome.provider_used is None
+
+
+def test_azure_foundry_client_uses_openai_compatible_sdk(monkeypatch):
+    """AzureFoundryJSONClient reuses the openai SDK against the Azure AI
+    Foundry base_url, authenticating via an Azure AD bearer-token callable
+    rather than a static API key."""
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
     reset_settings_cache()
 
     class _Msg:
-        content = '{"hello": "world"}'
+        content = '{"hello": "azure_foundry"}'
 
     class _Choice:
         message = _Msg()
@@ -300,7 +282,7 @@ def test_openai_client_uses_sdk(monkeypatch):
 
     class _Completions:
         def create(self, **kwargs):
-            assert kwargs["temperature"] == 0
+            assert kwargs["model"] == "DeepSeek-V4-Pro"
             return _Resp()
 
     class _Chat:
@@ -308,89 +290,45 @@ def test_openai_client_uses_sdk(monkeypatch):
 
     class _FakeOpenAI:
         def __init__(self, **kwargs):
+            assert kwargs["base_url"] == "https://AI-Adoption-COE.services.ai.azure.com/openai/v1"
+            assert callable(kwargs["api_key"])
             self.chat = _Chat()
 
     import openai
     monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
 
-    from backend.recon_engine.llm.openai_client import OpenAIJSONClient
-    client = OpenAIJSONClient()
+    from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
+    client = AzureFoundryJSONClient()
     assert client.is_configured is True
-    assert client.complete_json([{"role": "user", "content": "hi"}]) == {"hello": "world"}
+    assert client.complete_json([{"role": "user", "content": "hi"}]) == {"hello": "azure_foundry"}
 
 
-def test_gemini_client_uses_openai_compatible_sdk(monkeypatch):
-    """GeminiJSONClient reuses the openai SDK against Gemini's base_url."""
-    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+def test_azure_foundry_client_without_a_model_fails_loudly(monkeypatch):
+    """A client built without a model id must not silently guess one — it
+    should raise a clear, actionable error instead of a confusing API error."""
     reset_settings_cache()
 
-    class _Msg:
-        content = '{"hello": "gemini"}'
-
-    class _Choice:
-        message = _Msg()
-
-    class _Resp:
-        choices = [_Choice()]
-
-    class _Completions:
-        def create(self, **kwargs):
-            assert kwargs["model"] == "gemini-2.0-flash"
-            return _Resp()
-
-    class _Chat:
-        completions = _Completions()
-
-    class _FakeOpenAI:
-        def __init__(self, **kwargs):
-            assert kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai/"
-            self.chat = _Chat()
-
-    import openai
-    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
-
-    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
-    client = GeminiJSONClient()
-    assert client.is_configured is True
-    assert client.complete_json([{"role": "user", "content": "hi"}]) == {"hello": "gemini"}
-
-
-def test_fallback_tier_without_a_model_env_var_fails_loudly(monkeypatch):
-    """A configured API key but no model id must not silently guess a model —
-    it should raise a clear, actionable error instead."""
-    monkeypatch.setenv("CEREBRAS_API_KEY", "cb_fake")
-    monkeypatch.delenv("CEREBRAS_MODEL", raising=False)
-    reset_settings_cache()
-
-    from backend.recon_engine.llm.cerebras_client import CerebrasJSONClient
-    client = CerebrasJSONClient()
-    assert client.is_configured is True  # a key alone is enough for is_configured
-    with pytest.raises(ContractCompilerError, match="CEREBRAS_MODEL"):
+    from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
+    client = AzureFoundryJSONClient(api_key="static-fake-key-for-this-test")
+    assert client.is_configured is False  # no AZURE_FOUNDRY_MODEL set
+    with pytest.raises(ContractCompilerError, match="AZURE_FOUNDRY_MODEL"):
         client.complete_json([{"role": "user", "content": "hi"}])
 
 
-def test_compile_route_surfaces_fallback_fields(monkeypatch):
+def test_compile_route_surfaces_provider_fields(monkeypatch):
     """The /compile HTTP response carries provider/fallback/provider_notice so
-    the frontend can show the non-blocking notice (contextvar → route)."""
+    the frontend can show the non-blocking notice (contextvar → route). With
+    Azure AI Foundry as the sole provider, a successful compile is never a
+    fallback."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from backend.recon_engine.compiler.groq_client import GroqJSONClient
-    from backend.recon_engine.llm.gemini_client import GeminiJSONClient
+    from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
     from backend.routes.contracts import router
 
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake")
-    monkeypatch.setenv("GEMINI_API_KEY", "gm_fake")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+    monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
     reset_settings_cache()
-    monkeypatch.setattr(
-        GroqJSONClient, "complete_json",
-        lambda self, messages: (_ for _ in ()).throw(
-            RetryableLLMError("429 rate_limit_exceeded", provider="groq")
-        ),
-    )
-    monkeypatch.setattr(GeminiJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
+    monkeypatch.setattr(AzureFoundryJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
 
     app = FastAPI()
     app.include_router(router)
@@ -409,7 +347,7 @@ def test_compile_route_surfaces_fallback_fields(monkeypatch):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["provider"] == "gemini"
-    assert body["fallback"] is True
-    assert body["provider_notice"] is not None
+    assert body["provider"] == "azure_foundry"
+    assert body["fallback"] is False
+    assert body["provider_notice"] is None
     assert body["degraded"] is False

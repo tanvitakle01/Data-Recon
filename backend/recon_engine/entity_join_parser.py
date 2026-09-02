@@ -9,9 +9,8 @@ Two paths reach the same place, and they share ONE validator:
   :func:`resolve_entity_join` below for its gating.
 * **Free-text fallback.** :func:`parse_entity_join` turns a typed instruction
   ("join salesorder and scheduleline with left join on salesorder key") into the
-  same structure, through the same ``build_llm_client()`` chain (Groq primary →
-  Gemini → Cerebras → OpenRouter fallback) every other LLM call in the codebase
-  uses.
+  same structure, through the same Azure-AI-Foundry-only ``build_llm_client()`` (no
+  fallback) every other LLM call in the codebase uses.
 
 Three rules make this safe, mirroring ``sheet_identifier``/``field_mapper``:
 
@@ -484,7 +483,7 @@ def parse_entity_join(
     available = entity_names(entities)
     if not get_settings().any_llm_configured:
         return _degraded_parse(
-            "No AI provider is configured (GROQ_API_KEY / OPENAI_API_KEY) — "
+            "No AI provider is configured (AZURE_FOUNDRY_MODEL) — "
             "build the dataset manually."
         )
     if not available:

@@ -13,15 +13,12 @@ const MODE = {
   bw: "Live Fetch",
 };
 
-// One resolved side of the mapping (source or target). Shows the connector, its
-// acquisition mode, and the columns brought in for comparison (excluding the
-// MDT/recommended supporting fields, which are tracked but not compared).
+// One resolved side of the mapping (source or target). Shows the connector,
+// its acquisition mode, and the columns brought in for comparison.
 function CardSide({ title, role, roleState, onEdit }) {
   const kind = roleState?.kind;
   const dataset = roleState?.dataset;
   const columns = dataset?.columns ?? [];
-  const mdt = new Set(dataset?.mdtFields ?? []);
-  const compareCols = columns.filter((c) => !mdt.has(c));
 
   return (
     <div className="wizard-mapcard__side">
@@ -44,12 +41,9 @@ function CardSide({ title, role, roleState, onEdit }) {
       </div>
       {dataset ? (
         <p className="wizard-mapcard__fields">
-          {compareCols.length} field{compareCols.length === 1 ? "" : "s"}
-          {compareCols.length > 0 && `: ${compareCols.slice(0, 10).join(", ")}`}
-          {compareCols.length > 10 ? ` +${compareCols.length - 10} more` : ""}
-          {mdt.size > 0 && (
-            <span className="wizard-mapcard__mdt"> ({mdt.size} supporting)</span>
-          )}
+          {columns.length} field{columns.length === 1 ? "" : "s"}
+          {columns.length > 0 && `: ${columns.slice(0, 10).join(", ")}`}
+          {columns.length > 10 ? ` +${columns.length - 10} more` : ""}
         </p>
       ) : (
         <p className="wizard-mapcard__fields wizard-mapcard__fields--empty">

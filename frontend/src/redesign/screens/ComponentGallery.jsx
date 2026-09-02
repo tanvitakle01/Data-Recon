@@ -180,7 +180,7 @@ export function ComponentGallery() {
             <EmptyState
               icon={<Library className="h-5 w-5" />}
               title="No stored mappings yet"
-              description="Approved value mappings and MDT fields will appear here once you run a deterministic mapping."
+              description="Approved value mappings will appear here once you run a deterministic mapping."
               action={<Button size="sm" variant="primary">Run deterministic mapping</Button>}
             />
           </div>

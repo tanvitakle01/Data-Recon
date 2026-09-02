@@ -8,8 +8,8 @@ mapping only — never value mapping (that stays the deterministic matcher's job
 Pattern B: the columns you filter on (connectors, comparison type, the two
 canonical column-set keys) are real typed columns; the variable payload
 (``mappings``) and any future/artifact-specific fields (``details``) live in
-JSON. Sibling artifact stores (mdt_fields, value_mappings) would be NEW tables
-of this same shape — copy these conventions, don't generalize prematurely.
+JSON. A sibling artifact store (e.g. value_mappings) would be a NEW table of
+this same shape — copy these conventions, don't generalize prematurely.
 """
 
 from __future__ import annotations
@@ -28,10 +28,13 @@ def _utcnow() -> datetime:
 class MappingProvenance(str, Enum):
     """Where a stored/served mapping came from (shown on the mapping card)."""
 
-    LIBRARY = "library"  # reused from this store ("Generated via Vector Library")
-    GROQ = "groq"        # inferred by Groq
-    OPENAI = "openai"    # inferred by the OpenAI fallback
-    MANUAL = "manual"    # hand-edited / hand-added row
+    LIBRARY = "library"              # reused from this store ("Generated via Vector Library")
+    AZURE_FOUNDRY = "azure_foundry"  # inferred by Azure AI Foundry
+    MANUAL = "manual"                # hand-edited / hand-added row
+    # Legacy values kept only so MappingProvenance(row["provenance"]) can still
+    # deserialize rows persisted before the LLM layer became Azure-AI-Foundry-only.
+    GROQ = "groq"
+    OPENAI = "openai"
 
 
 class AttributePair(BaseModel):

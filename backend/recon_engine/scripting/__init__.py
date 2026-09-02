@@ -3,7 +3,7 @@
 Feature-flagged alternative (``USE_SCRIPT_TRANSFORMATIONS``) to the
 contract-based compile/validate/approve flow. The pipeline is:
 
-    Parsed Mapping JSON → Generator (Groq → deterministic fallback)
+    Parsed Mapping JSON → Generator (Azure AI Foundry → deterministic fallback)
         → TransformationScript → Static Validation (AST allow-list)
         → Sandbox Execution → Transformation Preview
         → User approves the transformed DATA (not the code)
