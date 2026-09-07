@@ -56,7 +56,6 @@ from backend.routes.ibp_test_preview import router as ibp_test_preview_router
 from backend.routes.ibp_metadata import router as ibp_metadata_router
 from backend.routes.s4_metadata import router as s4_metadata_router
 from backend.routes.date_alignment_preview import router as date_alignment_preview_router
-from backend.routes.comparison_types import router as comparison_types_router
 from backend.routes.contracts import router as contracts_router
 from backend.routes.value_mapping import router as value_mapping_router
 from backend.routes.live_pairing import router as live_pairing_router
@@ -204,7 +203,6 @@ app.include_router(reconcile_router)
 app.include_router(files_router)
 app.include_router(insights_router)
 app.include_router(date_alignment_preview_router)
-app.include_router(comparison_types_router)
 app.include_router(contracts_router)
 app.include_router(value_mapping_router)
 app.include_router(live_pairing_router)

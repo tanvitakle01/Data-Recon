@@ -33,9 +33,9 @@ const CAPABILITIES = [
     accent: "var(--info)",
     bg: "var(--info-bg)",
     bd: "var(--info-bd)",
-    title: "Mapping Library",
+    title: "Library",
     description:
-      "Reusable field mappings with confidence tiers, review drawers and side-by-side before/after on every proposed change.",
+      "Reusable field mappings and value pairs, plus the fixed catalogue of transformations a recipe can apply.",
   },
   {
     key: "insights",

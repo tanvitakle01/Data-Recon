@@ -59,21 +59,32 @@ const AUTO_BATCH_STAGE_LABELS = {
   completed: "batch reconciled",
 };
 
-// Only Sales Order History is offered for now. Additional comparison types
-// will be added here (or sourced from /api/comparison-types) as their
-// transformation logic is built out.
-const COMPARISON_TYPES = [{ id: "salesorderhistory", label: "Sales Order History" }];
+// The Dataset Type list is no longer static: it is the interface list read
+// from the uploaded workbook's "Interfaces" index sheet (see
+// backend/recon_engine/interface_index.py). Until a workbook is parsed there
+// are no dataset types to offer at all.
 
 const SHEET_ACCEPT = ".xlsx,.xls,.csv";
 
+// Suffix shown on an interface that can't be run because its worksheet
+// couldn't be resolved. It stays LISTED (greyed out) rather than silently
+// dropped, so an incomplete workbook is visible instead of mysterious.
+function brokenReason(iface) {
+  if (iface.match === "ambiguous") {
+    return `matches ${iface.candidates?.length ?? 2} sheets`;
+  }
+  return "sheet missing";
+}
+
 // ── Upload (empty state) ──────────────────────────────────────────────────
-// The primary action on this step: a clean dropzone card, drag/drop or a
-// single prominent button. Nothing else is on screen until a file lands.
+// A single compact dropzone row — icon, copy, button — so the card carries
+// the workbook's interface list rather than being dominated by the picker.
+// Drag/drop still works across the whole row; the hint says so in the caption.
 function UploadDropzone({ onPick, onDropFile, loading }) {
   const [dragOver, setDragOver] = useState(false);
   return (
     <div
-      className={`wizard-upload-card ${dragOver ? "is-dragover" : ""}`}
+      className={`wizard-upload-row ${dragOver ? "is-dragover" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -86,13 +97,15 @@ function UploadDropzone({ onPick, onDropFile, loading }) {
         if (file) onDropFile(file);
       }}
     >
-      <Upload className="wizard-upload-card__icon" aria-hidden />
-      <p className="wizard-upload-card__title">Upload your mapping sheet</p>
-      <p className="wizard-upload-card__subtitle">
-        Drag &amp; drop a file here, or choose one (.xlsx, .xls, .csv)
-      </p>
-      <Button variant="primary" onClick={onPick} loading={loading} disabled={loading}>
-        {loading ? "Reading sheet…" : "Upload Mapping Sheet"}
+      <Upload className="wizard-upload-row__icon" aria-hidden />
+      <div className="wizard-upload-row__text">
+        <p className="wizard-upload-row__title">Upload your mapping sheet</p>
+        <p className="wizard-upload-row__hint">
+          Drag &amp; drop, or choose a file (.xlsx, .xls, .csv)
+        </p>
+      </div>
+      <Button variant="primary" size="sm" onClick={onPick} loading={loading} disabled={loading}>
+        {loading ? "Reading…" : "Upload"}
       </Button>
     </div>
   );
@@ -269,26 +282,82 @@ function PreflightRow({ status, name, detail }) {
   );
 }
 
-function buildPreflightRows({ identification, sheetError, sourceSpec, targetSpec, canAuto, canContinueManual }) {
-  if (!identification) {
-    return [
-      {
-        status: "pending",
-        name: "Mapping sheet parsed",
-        detail: "Upload a mapping sheet to begin.",
-      },
-    ];
-  }
-
+function buildPreflightRows({
+  interfaceIndex,
+  identification,
+  sheetError,
+  selectedInterface,
+  sliceLoading,
+  sourceSpec,
+  targetSpec,
+  canAuto,
+  canContinueManual,
+}) {
   const rows = [];
 
+  // A one-sheet upload is the supported "I exported just this interface"
+  // shape, not a workbook whose index went missing — so it reports as a pass
+  // with nothing to choose, rather than as a degraded fallback.
+  const singleSheet = Boolean(interfaceIndex?.single_sheet);
+
+  // 1. The workbook read: reports the INTERFACE COUNT, which is what the
+  //    parse now actually produces — the field tables are read later, one
+  //    interface at a time.
+  if (!interfaceIndex) {
+    rows.push({
+      status: sheetError ? "warn" : "pending",
+      name: "Mapping sheet parsed",
+      detail: sheetError ?? "Upload a mapping sheet to begin.",
+    });
+  } else {
+    const all = interfaceIndex.interfaces ?? [];
+    const broken = all.filter((i) => i.status === "broken");
+    const count = `${all.length} interface${all.length === 1 ? "" : "s"} found`;
+    rows.push({
+      status: singleSheet ? "pass" : !interfaceIndex.indexed || broken.length > 0 ? "warn" : "pass",
+      name: "Mapping sheet parsed",
+      detail: singleSheet
+        ? "Single sheet — no interface index needed."
+        : !interfaceIndex.indexed
+          ? `${count} from the workbook's sheet names — no interface index.`
+          : count +
+            (broken.length > 0
+              ? ` · ${broken.length} could not be matched to a worksheet`
+              : ""),
+    });
+  }
+
+  // 2. Which single worksheet is being handed to interpretation. For an
+  //    indexed workbook the rest is discarded, so it's worth saying which one
+  //    won; for a one-sheet upload there was never anything else.
   rows.push({
-    status: sheetError ? "fail" : "pass",
-    name: "Mapping sheet parsed",
-    detail: sheetError
-      ? sheetError
-      : `${identification.parsed?.headers?.length ?? 0} columns · ${identification.parsed?.rows?.length ?? 0} rows`,
+    status: selectedInterface?.sheet ? "pass" : "pending",
+    name: singleSheet ? "Dataset sheet" : "Interface selected",
+    detail: selectedInterface?.sheet
+      ? singleSheet
+        ? `The uploaded "${selectedInterface.sheet}" sheet is the dataset.`
+        : `Only the "${selectedInterface.sheet}" sheet is interpreted.`
+      : interfaceIndex
+        ? "Select a dataset type to slice its sheet."
+        : "Waiting on a mapping sheet.",
   });
+
+  if (!identification) {
+    const detail = sliceLoading
+      ? "Reading the selected interface's sheet…"
+      : "Runs once a dataset type is selected.";
+    rows.push({ status: "pending", name: "Source system identified", detail });
+    rows.push({ status: "pending", name: "Target system identified", detail });
+    rows.push({ status: "pending", name: "Entities resolve", detail });
+    rows.push({
+      status: "pending",
+      name: "Ready to run",
+      detail: canContinueManual
+        ? "Continue manually through Source, Target and Mapping."
+        : "Select a dataset type to continue.",
+    });
+    return rows;
+  }
 
   rows.push({
     status: identification.source?.kind ? "pass" : "warn",
@@ -334,38 +403,58 @@ function ComparisonTypeStep() {
   const { state, dispatch } = useWizard();
   const selectedId = state.comparisonType?.id ?? "";
   const identification = state.sheetIdentification;
+  const interfaceIndex = state.interfaceIndex;
+
+  const interfaces = interfaceIndex?.interfaces ?? [];
+  const selectedInterface = interfaces.find((i) => i.id === selectedId) ?? null;
+  // A workbook whose index lists exactly one interface (or a single-sheet
+  // upload) has nothing to choose — the dropdown is skipped and the interface
+  // is auto-selected on upload.
+  const singleInterface = interfaces.length === 1;
+  // Specifically the one-sheet upload: the user sent a single interface's
+  // sheet instead of the whole project workbook, so that sheet IS the dataset
+  // and there is no "rest of the workbook" being discarded.
+  const singleSheet = Boolean(interfaceIndex?.single_sheet);
 
   const sheetInputRef = useRef(null);
   const [sheetLoading, setSheetLoading] = useState(false);
   const [sheetError, setSheetError] = useState(null);
+  // The chosen interface's own sheet being read + identified. Separate from
+  // sheetLoading (the workbook index read) because they are separate phases:
+  // the index read only ever yields the interface list.
+  const [sliceLoading, setSliceLoading] = useState(false);
 
   const [instrBusy, setInstrBusy] = useState(false);
   const [instrError, setInstrError] = useState(null);
 
-  const handleChange = (event) => {
-    const id = event.target.value;
-    if (!id) {
+  // Slice ONE interface out of the workbook and interpret only that slice:
+  // parse (deterministic, scoped to that worksheet) → identify (LLM,
+  // allow-listed). The interpretation step itself is unchanged — only its
+  // input scope is, from "the whole workbook" to "this interface's sheet".
+  // Identification degrades gracefully, so a failure here never blocks the
+  // wizard: the user just selects connectors manually on Steps 2/3.
+  const selectInterface = async (iface, index = interfaceIndex) => {
+    dispatch({ type: WizardActions.CLEAR_SHEET_IDENTIFICATION });
+    if (!iface) {
       dispatch({ type: WizardActions.SET_COMPARISON_TYPE, comparisonType: null });
       return;
     }
-    const option = COMPARISON_TYPES.find((c) => c.id === id);
     dispatch({
       type: WizardActions.SET_COMPARISON_TYPE,
-      comparisonType: { id: option.id, label: option.label },
+      comparisonType: { id: iface.id, label: iface.record },
     });
-  };
 
-  // Upload → parse (deterministic) → identify (LLM, allow-listed). Both go
-  // through the existing endpoints; identification degrades gracefully, so a
-  // failure here never blocks the wizard — the user just selects connectors
-  // manually on Steps 2/3. The Step 4 mapping-sheet upload is untouched.
-  const handleSheetFile = async (file) => {
-    if (!file) return;
+    const file = index?.file;
+    // A broken interface has no worksheet to slice — it is selectable-proof in
+    // the dropdown, so this only guards a workbook re-read losing the File.
+    if (!file || !iface.sheet) return;
+
     setSheetError(null);
-    setSheetLoading(true);
+    setSliceLoading(true);
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("sheet_name", iface.sheet);
       const parseRes = await api.post("/api/recon/mapping-sheet/parse", formData);
       // include_entities: the same identification call also returns which
       // entities to fetch per side and any implied join, gated against each
@@ -379,13 +468,57 @@ function ComparisonTypeStep() {
         identification: {
           ...idRes.data,
           sheet: { name: file.name, size: file.size },
+          // Which interface this identification came from — the rest of the
+          // workbook played no part in it.
+          interface: { id: iface.id, record: iface.record, sheet: iface.sheet },
           parsed: parseRes.data,
         },
       });
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setSheetError(
-        typeof detail === "string" ? detail : "Could not read/identify the mapping sheet."
+        typeof detail === "string"
+          ? detail
+          : `Could not read/identify the "${iface.record}" interface.`
+      );
+    } finally {
+      setSliceLoading(false);
+    }
+  };
+
+  const handleChange = (event) => {
+    const id = event.target.value;
+    selectInterface(interfaces.find((i) => i.id === id) ?? null);
+  };
+
+  // Upload reads the workbook's INTERFACE INDEX only — no field table is read
+  // and nothing is interpreted yet. The interface list it returns becomes the
+  // Dataset Type options; the chosen one's sheet is sliced in selectInterface.
+  const handleSheetFile = async (file) => {
+    if (!file) return;
+    setSheetError(null);
+    setSheetLoading(true);
+    // A different workbook invalidates the previous interface list, the
+    // dataset type chosen from it, and anything identified from the old slice.
+    dispatch({ type: WizardActions.SET_COMPARISON_TYPE, comparisonType: null });
+    dispatch({ type: WizardActions.CLEAR_SHEET_IDENTIFICATION });
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await api.post("/api/recon/mapping-sheet/interfaces", formData);
+      // The File is retained so selecting a dataset type can issue the scoped
+      // parse without asking for the workbook again.
+      const index = { ...res.data, file };
+      dispatch({ type: WizardActions.SET_INTERFACE_INDEX, interfaceIndex: index });
+
+      const list = res.data.interfaces ?? [];
+      if (list.length === 1 && list[0].status === "ok") {
+        await selectInterface(list[0], index);
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setSheetError(
+        typeof detail === "string" ? detail : "Could not read the mapping workbook."
       );
     } finally {
       setSheetLoading(false);
@@ -394,6 +527,8 @@ function ComparisonTypeStep() {
   };
 
   const clearSheet = () => {
+    dispatch({ type: WizardActions.CLEAR_INTERFACE_INDEX });
+    dispatch({ type: WizardActions.SET_COMPARISON_TYPE, comparisonType: null });
     dispatch({ type: WizardActions.CLEAR_SHEET_IDENTIFICATION });
     dispatch({ type: WizardActions.CLEAR_ENTITY_JOIN, role: "source" });
     dispatch({ type: WizardActions.CLEAR_ENTITY_JOIN, role: "target" });
@@ -401,7 +536,12 @@ function ComparisonTypeStep() {
     if (sheetInputRef.current) sheetInputRef.current.value = "";
   };
 
-  const canContinueManual = useMemo(() => Boolean(state.comparisonType), [state.comparisonType]);
+  // Both gates, not just the dataset type: the run needs a parsed workbook to
+  // have produced the interface AND that interface to have been chosen.
+  const canContinueManual = useMemo(
+    () => Boolean(state.comparisonType) && Boolean(state.interfaceIndex),
+    [state.comparisonType, state.interfaceIndex]
+  );
 
   const hasIdentification = Boolean(identification && !identification.degraded);
 
@@ -736,14 +876,37 @@ function ComparisonTypeStep() {
   const sourceSpec = effectiveEntityJoin(state, "source");
   const targetSpec = effectiveEntityJoin(state, "target");
   const preflightRows = useMemo(
-    () => buildPreflightRows({ identification, sheetError, sourceSpec, targetSpec, canAuto, canContinueManual }),
-    [identification, sheetError, sourceSpec, targetSpec, canAuto, canContinueManual]
+    () =>
+      buildPreflightRows({
+        interfaceIndex,
+        identification,
+        sheetError,
+        selectedInterface,
+        sliceLoading,
+        sourceSpec,
+        targetSpec,
+        canAuto,
+        canContinueManual,
+      }),
+    [
+      interfaceIndex,
+      identification,
+      sheetError,
+      selectedInterface,
+      sliceLoading,
+      sourceSpec,
+      targetSpec,
+      canAuto,
+      canContinueManual,
+    ]
   );
 
-  const fileMetaText = identification
+  const fileMetaText = interfaceIndex
     ? [
-        identification.sheet?.size != null ? `${Math.round(identification.sheet.size / 1024)} KB` : null,
-        identification.parsed?.rows ? `${identification.parsed.rows.length} rows` : null,
+        interfaceIndex.file?.size != null
+          ? `${Math.round(interfaceIndex.file.size / 1024)} KB`
+          : null,
+        `${interfaces.length} ${interfaceIndex.indexed ? "interface" : "sheet"}${interfaces.length === 1 ? "" : "s"}`,
       ]
         .filter(Boolean)
         .join(" · ")
@@ -773,11 +936,11 @@ function ComparisonTypeStep() {
                 onChange={(e) => handleSheetFile(e.target.files?.[0] ?? null)}
               />
 
-              {!identification ? (
+              {!interfaceIndex ? (
                 <>
                   <p className="wizard-field__help" style={{ marginTop: 0 }}>
-                    Upload a mapping workbook to auto-detect the source/target connectors, fields,
-                    entities and join.
+                    Upload a mapping workbook to auto-detect its interfaces, connectors, fields,
+                    entities and join. A single-sheet file is taken as one interface directly.
                   </p>
                   <UploadDropzone
                     onPick={() => sheetInputRef.current?.click()}
@@ -789,8 +952,8 @@ function ComparisonTypeStep() {
                 <div className="ct-mapping-body">
                   <div className="ct-file-row">
                     <FileSpreadsheet className="ct-file-row__icon" aria-hidden />
-                    <span className="ct-file-row__name" title={identification.sheet?.name}>
-                      {identification.sheet?.name ?? "mapping sheet"}
+                    <span className="ct-file-row__name" title={interfaceIndex.filename}>
+                      {interfaceIndex.filename ?? "mapping sheet"}
                     </span>
                     {fileMetaText && <span className="ct-file-row__meta mono">{fileMetaText}</span>}
                     <span className="ct-card__spacer" />
@@ -859,7 +1022,22 @@ function ComparisonTypeStep() {
                     </table>
                   )}
 
-                  {identification.degraded && identification.degraded_reason && (
+                  {sliceLoading && (
+                    <p className="wizard-field__help" style={{ marginTop: 0 }}>
+                      <Loader2 size={12} className="animate-spin" aria-hidden /> Reading the
+                      selected interface&apos;s sheet…
+                    </p>
+                  )}
+
+                  {/* What the index read itself found wrong: no index sheet, a
+                      duplicated IBP Record, interfaces with no worksheet. */}
+                  {(interfaceIndex.warnings ?? []).map((warning, i) => (
+                    <Alert variant="warning" key={i}>
+                      {warning}
+                    </Alert>
+                  ))}
+
+                  {identification?.degraded && identification.degraded_reason && (
                     <Alert variant="warning">{identification.degraded_reason}</Alert>
                   )}
                 </div>
@@ -892,6 +1070,33 @@ function ComparisonTypeStep() {
               ))}
             </div>
           </section>
+
+          {/* The interface-scoping contract, stated plainly: exactly one
+              worksheet reaches interpretation. For a workbook that means the
+              rest is discarded here; for a one-sheet upload there is no rest,
+              so claiming a discard would be untrue. */}
+          {selectedInterface?.sheet && (
+            <section className="ct-card">
+              <div className="ct-card__body ct-scope-note">
+                <FileSpreadsheet className="ct-scope-note__icon" aria-hidden />
+                <p className="ct-scope-note__text">
+                  {singleSheet ? (
+                    <>
+                      {interfaceIndex.filename ?? "This upload"} holds a single sheet, so it is
+                      the dataset: <strong>&ldquo;{selectedInterface.sheet}&rdquo;</strong> is
+                      sent straight for connector, entity and join interpretation.
+                    </>
+                  ) : (
+                    <>
+                      Only the <strong>&ldquo;{selectedInterface.sheet}&rdquo;</strong> sheet is
+                      extracted and sent for connector, entity and join interpretation. The rest
+                      of {interfaceIndex.filename ?? "the workbook"} is discarded at this step.
+                    </>
+                  )}
+                </p>
+              </div>
+            </section>
+          )}
         </div>
 
         {/* ══ Right column: Run configuration ══ */}
@@ -905,15 +1110,40 @@ function ComparisonTypeStep() {
                 <label className="wizard-field__label" htmlFor="comparison-type-select">
                   Dataset Type
                 </label>
-                <Select
-                  id="comparison-type-select"
-                  value={selectedId}
-                  onChange={handleChange}
-                  options={[
-                    { value: "", label: "Select a dataset type…" },
-                    ...COMPARISON_TYPES.map((option) => ({ value: option.id, label: option.label })),
-                  ]}
-                />
+                {singleInterface ? (
+                  // One interface in the workbook — there is no choice to make,
+                  // so it's stated rather than offered as a dropdown of one.
+                  <div className="ct-file-row">
+                    <FileSpreadsheet className="ct-file-row__icon" aria-hidden />
+                    <span className="ct-file-row__name">{interfaces[0].record}</span>
+                  </div>
+                ) : (
+                  <Select
+                    id="comparison-type-select"
+                    value={selectedId}
+                    onChange={handleChange}
+                    disabled={!interfaceIndex || sliceLoading}
+                    options={[
+                      {
+                        value: "",
+                        label: interfaceIndex
+                          ? "Select a dataset type…"
+                          : "Parse a mapping sheet first",
+                      },
+                      // Interfaces whose worksheet couldn't be resolved stay
+                      // listed but unselectable — an incomplete workbook should
+                      // be visible, not silently shortened.
+                      ...interfaces.map((iface) => ({
+                        value: iface.id,
+                        label:
+                          iface.status === "ok"
+                            ? iface.record
+                            : `${iface.record} — ${brokenReason(iface)}`,
+                        disabled: iface.status !== "ok",
+                      })),
+                    ]}
+                  />
+                )}
                 {state.comparisonType && (
                   <div className="wizard-dataset-summary">
                     <Badge variant="success">Selected</Badge>

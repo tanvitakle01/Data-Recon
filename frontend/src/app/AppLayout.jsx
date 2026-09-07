@@ -100,7 +100,7 @@ function AppLayout({ children }) {
       label: "Reconcile",
       items: [
         { key: "reconciliation", to: "/reconciliation", icon: FiLayers, label: "Reconciliation Engine" },
-        { key: "library", to: "/library", icon: FiBookOpen, label: "Mapping Library" },
+        { key: "library", to: "/library", icon: FiBookOpen, label: "Library" },
         { key: "insights", to: "/insights", icon: FiBarChart2, label: "Insights" },
       ],
     },

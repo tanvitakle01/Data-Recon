@@ -18,6 +18,7 @@ from backend.API_conn.connectors import registry
 from backend.recon_engine import service
 from backend.recon_engine.compiler import ContractCompilerError
 from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome
+from backend.recon_engine.interface_index import read_interface_index as _read_interface_index
 from backend.recon_engine.mapping_sheet_parser import parse_mapping_sheet as _parse_sheet
 from backend.recon_engine.sheet_identifier import identify_systems as _identify_systems
 from backend.recon_engine.models.contract import DraftContract
@@ -93,6 +94,37 @@ def get_operations() -> dict[str, Any]:
 
 
 # ── mapping-sheet parsing ────────────────────────────────────────────────────
+
+@router.post("/mapping-sheet/interfaces")
+async def read_mapping_sheet_interfaces(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Read an uploaded mapping workbook's INTERFACE INDEX (no field tables).
+
+    A mapping workbook holds many interfaces, one worksheet each, indexed by an
+    "Interfaces" sheet. This returns that list — each interface's ``IBP Record``
+    name plus the worksheet it resolves to — so Step 1 can offer the interfaces
+    as Dataset Type choices and later parse only the chosen one.
+
+    Deterministic: no LLM, and record -> sheet resolution never guesses. An
+    interface that doesn't land on exactly one worksheet comes back
+    ``status="broken"``. A workbook with no usable index falls back to its own
+    worksheet NAMES as the interface list (``indexed=false``, plus a warning
+    saying why) — so every sheet stays reachable rather than the upload being
+    reduced to one dataset.
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded mapping sheet is empty.")
+
+    filename = file.filename or "mapping-sheet"
+    try:
+        index = _read_interface_index(content, filename=filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read the mapping workbook.")
+
+    return {"filename": filename, **index}
+
 
 @router.post("/mapping-sheet/parse")
 async def parse_mapping_sheet(

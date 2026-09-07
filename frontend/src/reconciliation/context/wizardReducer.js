@@ -8,6 +8,8 @@ export const WizardActions = {
   SET_DATASET: "SET_DATASET",
   RESET_ROLE: "RESET_ROLE",
   SET_COMPARISON_TYPE: "SET_COMPARISON_TYPE",
+  SET_INTERFACE_INDEX: "SET_INTERFACE_INDEX",
+  CLEAR_INTERFACE_INDEX: "CLEAR_INTERFACE_INDEX",
   SET_SHEET_IDENTIFICATION: "SET_SHEET_IDENTIFICATION",
   CLEAR_SHEET_IDENTIFICATION: "CLEAR_SHEET_IDENTIFICATION",
   SET_ENTITY_JOIN_TEXT: "SET_ENTITY_JOIN_TEXT",
@@ -118,6 +120,14 @@ export function createInitialWizardState() {
     source: createInitialRoleState(),
     target: createInitialRoleState(),
     comparisonType: null,
+    // The uploaded mapping workbook's INTERFACE INDEX (/mapping-sheet/interfaces):
+    // { filename, sheets, index_sheet, interfaces: [{id, record, sheet, status,
+    // match, candidates}], indexed, warnings, file }. A workbook is a collection
+    // of interfaces, one worksheet each — this list IS the Dataset Type choice,
+    // and the chosen interface's `sheet` is the only worksheet parsed. `file` is
+    // retained so that scoped parse can be issued when the choice is made.
+    // Null until a workbook is uploaded.
+    interfaceIndex: null,
     // Sheet-driven system identification from the Step 1 mapping-sheet upload.
     // Drives the Step 2/3 connector auto-select + field pre-selection. Null
     // until a sheet is uploaded and identified; independent of the Step 4
@@ -283,6 +293,16 @@ export function wizardReducer(state, action) {
 
     case WizardActions.SET_COMPARISON_TYPE:
       return { ...state, comparisonType: action.comparisonType };
+
+    case WizardActions.SET_INTERFACE_INDEX:
+      // A newly uploaded workbook replaces the previous interface list. The
+      // dataset-type choice and the identification derived from the OLD list
+      // are cleared by the caller, not here — the two are separate dispatches
+      // so replacing a workbook and picking an interface stay independent.
+      return { ...state, interfaceIndex: action.interfaceIndex };
+
+    case WizardActions.CLEAR_INTERFACE_INDEX:
+      return { ...state, interfaceIndex: null };
 
     case WizardActions.SET_SHEET_IDENTIFICATION:
       // Result of the Step 1 sheet upload → /mapping-sheet/identify. Purely

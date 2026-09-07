@@ -1,9 +1,16 @@
-# backend/API_conn/test_ibp.py
+"""Manual IBP connectivity probe — prints a full request/response trace.
+
+Not a pytest test (it was named test_ibp.py, which made pytest collect it):
+it's a hand-run diagnostic. The import below is relative to THIS directory,
+so run it from here:
+
+    cd backend/API_conn && python probe_ibp.py
+"""
 
 import requests
 from requests.auth import HTTPBasicAuth
 
-# Replace with your config loader
+# Resolved from backend/API_conn/config/ — see the module docstring on cwd.
 from config.config_loader import load_config, resolve_verify
 
 

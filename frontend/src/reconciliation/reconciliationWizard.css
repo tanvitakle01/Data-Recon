@@ -1469,41 +1469,49 @@
   margin-top: 12px;
 }
 
-/* ---- Upload card (empty state) ---- */
-.wizard-upload-card {
+/* ---- Upload row (empty state) ----
+   One compact dashed row rather than a tall centred card: icon, copy and
+   button on a single line (~half the previous height), with the drag & drop
+   hint demoted to the caption. Drag/drop still targets the whole row. */
+.wizard-upload-row {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 32px 20px;
-  margin-top: 12px;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-top: 10px;
   border: 1.5px dashed var(--border-strong, var(--border));
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md, 8px);
   background: var(--surface-2, var(--surface));
-  text-align: center;
   transition: border-color 0.15s ease, background-color 0.15s ease;
 }
-.wizard-upload-card.is-dragover {
+.wizard-upload-row.is-dragover {
   border-color: var(--accent);
   background: var(--accent-tint, var(--surface-2));
 }
-.wizard-upload-card__icon {
-  width: 28px;
-  height: 28px;
+.wizard-upload-row__icon {
+  width: 19px;
+  height: 19px;
+  flex: none;
   color: var(--accent);
-  margin-bottom: 4px;
 }
-.wizard-upload-card__title {
+.wizard-upload-row__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.wizard-upload-row__title {
   margin: 0;
   font-weight: 700;
-  font-size: 14.5px;
+  font-size: 13px;
   color: var(--ink);
 }
-.wizard-upload-card__subtitle {
-  margin: 0 0 8px;
-  font-size: 12.5px;
+.wizard-upload-row__hint {
+  margin: 1px 0 0;
+  font-size: 11px;
   color: var(--ink-2);
   opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---- File chip (filled state) ---- */
@@ -1930,6 +1938,30 @@
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
+}
+
+/* ── Interface scoping note: one line stating which single worksheet reaches
+   the interpretation step. Icon + text on a row, no card header of its own. ── */
+.ct-scope-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.ct-scope-note__icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--muted);
+}
+.ct-scope-note__text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.ct-scope-note__text strong {
+  color: var(--ink);
 }
 
 /* Horizontal-only overflow — never a vertical scroll box. Preview/table data

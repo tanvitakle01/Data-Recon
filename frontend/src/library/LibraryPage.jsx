@@ -393,6 +393,133 @@ function ValuePairsSection() {
   );
 }
 
+// Plain-language wording for the allow-listed operation registry
+// (backend/recon_engine/operations/registry.py). Keyed by operation name; any
+// operation added there without an entry here falls back to its registry
+// description, so the table is never incomplete.
+const TRANSFORMATION_DEFINITIONS = {
+  identity_cast_string: "Converts the field's values to text, leaving blanks blank.",
+  trim_string: "Removes spaces from the start and end of a value.",
+  numeric_cast: "Converts text to a number; anything unreadable becomes blank.",
+  date_parse: "Reads a date in a given format and rewrites it in one standard format.",
+  rename_field: "Renames a column. The values themselves are untouched.",
+  prepend_prefix: "Adds fixed text to the front of every value (5006 → PL5006).",
+  append_suffix: "Adds fixed text to the end of every value (5006 → 5006@S21400).",
+  remove_leading_zeros: "Drops padding zeros from the number inside a value (005006 → 5006).",
+  replace_value: "Swaps one piece of text for another inside the value.",
+  uppercase: "Converts text to upper case.",
+  lowercase: "Converts text to lower case.",
+  substring: "Keeps only part of a value, chosen by start position and length.",
+  regex_replace: "Rewrites the value using a search pattern and a replacement.",
+  concat_fields: "Joins several columns into one new column, with a separator between them.",
+  decimal_round: "Rounds a number to a set number of decimal places.",
+  null_to_default: "Fills blank values with a default you choose.",
+  value_mapping: "Replaces whole values using a lookup list (e.g. EA → PC).",
+  conditional_prefix: "Adds a prefix only to the rows that meet a condition.",
+  conditional_suffix: "Adds a suffix only to the rows that meet a condition.",
+  date_format: "Same as Date parse — reformats a date into one standard format.",
+  split_field: "Splits a value on a separator and keeps one of the parts.",
+  convert_uom: "Converts units by multiplying or dividing by a fixed factor.",
+  calculated_column: "Builds a new column from a formula over existing columns.",
+  reject_null: "Drops rows where the field is blank.",
+  exclude_value: "Drops rows whose field matches any of the listed values.",
+  include_value: "Keeps only the rows whose field matches one of the listed values.",
+  group_by: "Collapses the data to one row per unique key combination.",
+  sum_aggregate: "Totals the field for each key combination.",
+  deduplicate: "Removes duplicate rows for a key, keeping either the first or the last.",
+  aggregate_group: "Groups by one or more columns and applies sums, counts or averages in one step.",
+};
+
+function humanizeOperation(name) {
+  const words = String(name).replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+// The fixed allow-listed operation set a transformation recipe may use — the
+// same catalogue the wizard's "Select from Transformation Library" palette
+// offers, so this page can never drift from what a run can actually execute.
+function TransformationsSection() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.get("/api/recon/operations");
+      // compare ops are reconcile-time matchers, not transformations.
+      setRows((res.data?.operations ?? []).filter((o) => o.kind !== "compare"));
+    } catch {
+      setError("Failed to load the transformation library.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const didInit = useRef(false);
+  useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
+    load();
+  }, [load]);
+
+  return (
+    <section className="ct-card">
+      <div className="ct-card__head">
+        <h3 className="ct-card__title">Transformations</h3>
+        <span className="ct-card__spacer" />
+        <Button type="button" variant="outline" size="sm" onClick={load} disabled={loading}>
+          <FiRefreshCw /> Refresh
+        </Button>
+      </div>
+
+      <div className="ct-card__body">
+        <p className="wizard-field__help" style={{ marginTop: 0 }}>
+          Every transformation a recipe is allowed to use. This set is fixed — a run can only apply
+          what is listed here.
+        </p>
+
+        {error && <Alert variant="error">{error}</Alert>}
+        {loading && !rows.length && <p className={styles.empty}>Loading…</p>}
+        {!loading && !rows.length && !error && (
+          <p className={styles.empty}>No transformations available.</p>
+        )}
+      </div>
+
+      {rows.length > 0 && (
+        <div className="ct-table-wrap">
+          <table className="ct-table">
+            <thead>
+              <tr>
+                <th>Transformation</th>
+                <th>Definition</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((op) => (
+                <tr key={op.name}>
+                  <td>
+                    <div className={styles.opName}>{humanizeOperation(op.name)}</div>
+                    <code className={styles.opCode}>{op.name}</code>
+                  </td>
+                  <td>{TRANSFORMATION_DEFINITIONS[op.name] ?? op.description}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const TABS = [
+  { key: "fields", label: "Field mappings", render: () => <AttributeMappingSection /> },
+  { key: "values", label: "Value pairs", render: () => <ValuePairsSection /> },
+  { key: "transformations", label: "Transformations", render: () => <TransformationsSection /> },
+];
+
 export default function LibraryPage() {
   const [tab, setTab] = useState("fields");
 
@@ -400,24 +527,29 @@ export default function LibraryPage() {
     <div className={styles.page}>
       <div className={styles.header}>
         <div>
-          <h1 className={styles.title}>Mapping Library</h1>
+          <h1 className={styles.title}>Library</h1>
           <p className={styles.subtitle}>
             Stored field mappings and value pairs, reused automatically when the same connector
-            pair and dataset type reappear.
+            pair and dataset type reappear, plus the fixed set of transformations a recipe can
+            apply.
           </p>
         </div>
       </div>
 
       <div className="ct-tabs">
-        <button type="button" className={tab === "fields" ? "is-active" : ""} onClick={() => setTab("fields")}>
-          Field mappings
-        </button>
-        <button type="button" className={tab === "values" ? "is-active" : ""} onClick={() => setTab("values")}>
-          Value pairs
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            className={tab === t.key ? "is-active" : ""}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <div style={{ marginTop: 16 }}>{tab === "fields" ? <AttributeMappingSection /> : <ValuePairsSection />}</div>
+      <div style={{ marginTop: 16 }}>{TABS.find((t) => t.key === tab)?.render()}</div>
     </div>
   );
 }

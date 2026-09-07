@@ -63,6 +63,15 @@
   font-size: 0.75rem;
 }
 
+.opName {
+  font-weight: 500;
+}
+
+.opCode {
+  font-size: 0.75rem;
+  color: var(--color-text-muted, #94a3b8);
+}
+
 .empty {
   color: var(--color-text-muted, #64748b);
   padding: 40px 0;

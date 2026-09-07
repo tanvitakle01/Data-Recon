@@ -75,7 +75,6 @@ backend/
 │   ├── insight_engine.py            deterministic rule-based analytics
 │   └── insight_adapter.py           cockpit payload reshaping (no LLM)
 │
-├── comparison_types/registry.py     flat lookup {id,label,domain,description} — NO rules
 ├── services/                        excel_service, mapping_service, reconciliation_service
 ├── routes/                          HTTP layer (see §2)
 └── models/schemas.py                pydantic (mostly unused by live routes)
@@ -282,10 +281,13 @@ placeholder for the compiled contract JSON.
   `engine/executor.py` exist and are tested.
 - ❌ Don't extend the v1 `/reconcile` + `ExcelComparator` to interpret `rules_text` —
   that would create a *third* parallel transformation path. Route rules through v2.
-- ❌ Don't add rules/mappings to `comparison_types/registry.py` — it's an
-  intentionally flat lookup; contracts carry that config.
+- ❌ Don't reintroduce a static dataset-type registry. Dataset types are the
+  interface list read from the uploaded mapping workbook
+  (`recon_engine/interface_index.py`); `comparison_type` on a contract is the
+  slug of the chosen interface's name, and contracts carry the rest of that
+  config.
 - ❌ Don't revive the dead route files (`upload.py`, `mapping.py`,
-  `auto_map_preview.py`, `sap_preview.py`).
+  `auto_map_preview.py`, `sap_preview.py`, `comparison_types.py`).
 - ❌ Don't touch `backend/ai/` for this — it's deterministic insight analytics, unrelated.
 
 ---
