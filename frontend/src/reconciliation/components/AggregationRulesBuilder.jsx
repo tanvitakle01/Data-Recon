@@ -10,6 +10,7 @@ const AGGREGATION_OPTIONS = [
   { value: "average", label: "Average" },
   { value: "min", label: "Min" },
   { value: "max", label: "Max" },
+  { value: "first", label: "First" },
   { value: "group_by_day", label: "Group By Date (Day)" },
   { value: "group_by_week", label: "Group By Week" },
   { value: "group_by_month", label: "Group By Month" },

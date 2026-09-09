@@ -3,6 +3,7 @@ import { Button } from "@bristlecone/canopy";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import { getVisibleSteps } from "../steps/stepConfig";
+import { clearWizardDraft } from "../context/wizardPersistence";
 
 // Human label for a connector kind — kept local since it's a one-line lookup.
 const CONNECTOR_LABEL = {
@@ -72,12 +73,29 @@ function StepShell({
     if (nextStep) goToStep(nextStep);
   };
 
+  // Discards all wizard progress (in-memory state AND the persisted
+  // sessionStorage draft — see wizardPersistence.js) and returns to Step 1.
+  // Confirmed first since this can't be undone: a restarted server or a
+  // reloaded page otherwise silently rehydrates the old draft, which is
+  // exactly the confusion this button exists to let someone escape from.
+  const handleStartOver = () => {
+    if (!window.confirm("Start over? This discards all progress in this wizard.")) return;
+    clearWizardDraft();
+    dispatch({ type: WizardActions.RESET_WIZARD });
+    navigate(`/reconciliation/${steps[0].path}`);
+  };
+
   return (
     <section className="wizard-step">
       <header className="wizard-step__header">
-        <p className="wizard-step__eyebrow">
-          Step {index + 1} of {steps.length}
-        </p>
+        <div className="wizard-step__header-row">
+          <p className="wizard-step__eyebrow">
+            Step {index + 1} of {steps.length}
+          </p>
+          <button type="button" className="wizard-link wizard-step__start-over" onClick={handleStartOver}>
+            Start Over
+          </button>
+        </div>
         <h2 className="wizard-step__title">{step?.label}</h2>
         <p className="wizard-step__desc">{step?.description}</p>
       </header>

@@ -80,6 +80,41 @@ def date_parse(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataF
     return out
 
 
+# Pandas period-alias per granularity — the SAME vocabulary the structured
+# ``aggregation_rules`` period-aggregations use (see
+# ``engine.executor._PERIOD_FREQ`` / ``AggregationType.GROUP_BY_*``), so a date
+# bucketed here and one bucketed via an aggregation rule land on the same
+# period-start convention.
+_DATE_BUCKET_FREQ: dict[str, str] = {
+    "day": "D", "week": "W", "month": "M", "quarter": "Q", "year": "Y",
+}
+
+
+def date_bucket(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
+    """Floor/ceil a date column to a period boundary, emitting canonical
+    YYYY-MM-DD.
+
+    ``granularity`` is one of day/week/month/quarter/year; ``anchor`` is
+    'start' (default — the period's first day, e.g. 2025-08-19 -> 2025-08-01
+    for month) or 'end' (the period's last day, e.g. -> 2025-08-31).
+    Unparseable values become null. This is the general, standalone form of
+    the period-bucketing the structured ``aggregation_rules``
+    ``group_by_*``/``AggregationType`` family applies during aggregation —
+    use this one when a bucketed date is needed as an ordinary value
+    transform (e.g. before a filter or comparison), not as a grouping key.
+    """
+    out = df.copy()
+    granularity = str(params["granularity"]).strip().lower()
+    anchor = str(params.get("anchor", "start")).strip().lower()
+    freq = _DATE_BUCKET_FREQ[granularity]
+
+    dt = pd.to_datetime(out[field], errors="coerce")
+    period = dt.dt.to_period(freq)
+    boundary = period.dt.start_time if anchor != "end" else period.dt.end_time.dt.normalize()
+    out[field] = boundary.dt.strftime("%Y-%m-%d").where(dt.notna(), None)
+    return out
+
+
 def rename_field(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
     """Rename column ``field`` to ``params['to']``.
 
@@ -102,6 +137,17 @@ def rename_field(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.Dat
 def _str_where_notna(col: pd.Series, transformed: pd.Series) -> pd.Series:
     """Return ``transformed`` where ``col`` is non-null, else the original NaN."""
     return col.where(col.isna(), transformed)
+
+
+def _map_notna(col: pd.Series, func) -> pd.Series:
+    """Apply a string->string ``func`` to each non-null value; nulls pass through.
+
+    Guards a pandas quirk where ``col.astype(str).map(func)`` can still hand
+    ``func`` a raw float NaN for a null cell instead of a stringified one
+    (observed with Arrow-backed string dtypes) — ``func`` here only ever sees
+    real strings, never a NaN it would have to guard against itself.
+    """
+    return col.map(lambda v: func(str(v)) if pd.notna(v) else v)
 
 
 def prepend_prefix(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
@@ -150,7 +196,30 @@ def remove_leading_zeros(df: pd.DataFrame, field: str, params: dict[str, Any]) -
             stripped = digits[-min_width:] if len(digits) >= min_width else digits
         return value[: match.start()] + stripped + value[match.end() :]
 
-    out[field] = _str_where_notna(col, col.astype(str).map(_strip))
+    out[field] = _map_notna(col, _strip)
+    return out
+
+
+def pad_leading_zeros(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
+    """Left-pad the first embedded numeric run with zeros to ``width``, leaving
+    any non-digit prefix/suffix untouched ('5006' -> '005006' at width=6,
+    'FG6' -> 'FG006' at width=3). Inverse of :func:`remove_leading_zeros`. A
+    numeric run already at or beyond ``width`` is left unchanged; a value with
+    no digits at all is left unchanged.
+    """
+    out = df.copy()
+    col = out[field]
+    width = int(params["width"])
+
+    def _pad(value: str) -> str:
+        match = _NUMERIC_RUN.search(value)
+        if not match:
+            return value
+        digits = match.group(1)
+        padded = digits.rjust(width, "0")
+        return value[: match.start()] + padded + value[match.end() :]
+
+    out[field] = _map_notna(col, _pad)
     return out
 
 
@@ -368,6 +437,74 @@ def calculated_column(df: pd.DataFrame, field: str | None, params: dict[str, Any
     return out
 
 
+# ``run_date`` is never authored on a contract — the executor injects it as
+# ``params["_run_date"]`` at EXECUTION time only, for the operations declared
+# ``needs_run_date`` in the registry (see ``OperationSpec``). Gate 1 validates
+# the stored contract's authored params, which never include this key.
+_WEEKDAY_NAMES: dict[str, int] = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _resolve_weekday(value: Any) -> int:
+    if isinstance(value, int):
+        return value
+    return _WEEKDAY_NAMES[str(value).strip().lower()]
+
+
+def relative_date_reassign(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
+    """Replace a date with an offset from run_date when a condition holds,
+    else pass the value through unchanged.
+
+    ``date_condition`` ('lt' | 'gt' | 'eq') compares ``field`` against
+    ``compare_to`` — 'run_date' (default) or another column name. When it
+    holds, ``field`` is replaced with ``run_date + offset_days`` (canonical
+    YYYY-MM-DD). Optional ``weekday_exception``
+    ({"on_weekday": <name or 0-6 Mon-Sun>, "offset_days": <int>}) overrides
+    ``offset_days`` when run_date itself falls on that weekday — e.g. a
+    past-due date rolls forward by 1 day normally, but by 2 days when
+    run_date is a Saturday. Rows where ``field``/``compare_to`` don't parse as
+    dates are left unchanged (the condition can't be decided).
+    """
+    out = df.copy()
+    run_date = pd.Timestamp(params["_run_date"]).normalize()
+    compare_to = str(params.get("compare_to") or "run_date")
+    condition = str(params["date_condition"]).strip().lower()
+    offset_days = int(params["offset_days"])
+    weekday_exception = params.get("weekday_exception")
+
+    dt = pd.to_datetime(out[field], errors="coerce")
+    other = run_date if compare_to == "run_date" else pd.to_datetime(out[compare_to], errors="coerce")
+
+    if condition == "lt":
+        mask = dt < other
+    elif condition == "gt":
+        mask = dt > other
+    elif condition == "eq":
+        mask = dt == other
+    else:
+        raise ValueError(f"relative_date_reassign: unknown date_condition '{condition}'")
+    mask &= dt.notna()
+    if compare_to != "run_date":
+        mask &= other.notna()
+
+    effective_offset = offset_days
+    if weekday_exception:
+        if not isinstance(weekday_exception, dict) or "on_weekday" not in weekday_exception or "offset_days" not in weekday_exception:
+            raise ValueError(
+                "relative_date_reassign: 'weekday_exception' must be an object with "
+                "'on_weekday' and 'offset_days', e.g. "
+                '{"on_weekday": "saturday", "offset_days": 2}.'
+            )
+        if run_date.weekday() == _resolve_weekday(weekday_exception["on_weekday"]):
+            effective_offset = int(weekday_exception["offset_days"])
+
+    replacement = (run_date + pd.Timedelta(days=effective_offset)).strftime("%Y-%m-%d")
+    out.loc[mask, field] = replacement
+    return out
+
+
 # ── filter ops ───────────────────────────────────────────────────────────────
 
 def reject_null(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
@@ -375,6 +512,28 @@ def reject_null(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.Data
     col = df[field]
     blank = col.isna() | col.astype(str).str.strip().eq("")
     return df.loc[~blank].copy()
+
+
+def date_window_filter(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
+    """Keep rows whose date in ``field`` falls within an offset window of
+    run_date: ``[run_date + lower_offset_days, run_date + upper_offset_days]``.
+
+    Either bound may be omitted for an open-ended window (e.g. only
+    ``lower_offset_days=-30`` keeps everything from 30 days ago onward).
+    Unparseable dates are dropped (they can't be evaluated against the
+    window). Unlike ``exclude_value``/``include_value`` (literal values),
+    this filters relative to the run-time anchor, not a fixed date.
+    """
+    run_date = pd.Timestamp(params["_run_date"]).normalize()
+    dt = pd.to_datetime(df[field], errors="coerce")
+    mask = dt.notna()
+    lower = params.get("lower_offset_days")
+    upper = params.get("upper_offset_days")
+    if lower is not None:
+        mask &= dt >= run_date + pd.Timedelta(days=int(lower))
+    if upper is not None:
+        mask &= dt <= run_date + pd.Timedelta(days=int(upper))
+    return df.loc[mask].copy()
 
 
 def exclude_value(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
@@ -433,6 +592,7 @@ _AGG_PANDAS_FUNC: dict[str, str] = {
     AggregationType.AVERAGE.value: "mean",
     AggregationType.MIN.value: "min",
     AggregationType.MAX.value: "max",
+    AggregationType.FIRST.value: "first",
 }
 _NUMERIC_AGG_FUNCS = {
     AggregationType.SUM.value,
@@ -443,10 +603,22 @@ _NUMERIC_AGG_FUNCS = {
 
 
 def aggregate_group(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> pd.DataFrame:
-    """Group by ``params['by']`` and apply one or more aggregations in a
-    single step — "Aggregate & Group": each entry in ``params['aggregations']``
-    is ``{"field": <column>, "func": "sum"|"count"|"average"|"min"|"max"}``.
-    One function per field; a field named twice keeps the last entry.
+    """Group by ``params['by']`` (any number of columns) and apply one or more
+    aggregations in a single step — "Aggregate & Group": each entry in
+    ``params['aggregations']`` is ``{"field": <column>, "func":
+    "sum"|"count"|"average"|"min"|"max"|"first"}``. Any number of ``by``
+    columns and any number of measures are supported in one call — e.g. group
+    by product+plant+customer+month while summing quantity AND averaging
+    price in the same step. One function per field; a field named twice keeps
+    the last entry. ``first`` passes a non-measured column (e.g. a
+    description) through from an arbitrary row in the group rather than
+    dropping it.
+
+    Lineage is preserved automatically and unconditionally: every AGGREGATE-
+    kind operation (this one included) is wrapped by
+    ``engine.executor._apply_aggregate``, which records every contributing
+    raw source row id against the collapsed group row — never opt-in, never
+    skippable by a param here.
     """
     by = list(params["by"])
     tmp = df.copy()

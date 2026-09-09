@@ -47,6 +47,8 @@ function InsightsPageInner() {
   const [uploadId, setUploadId] = useState(null);
 
   const [uploadFile, setUploadFile] = useState(null);
+  const [uploadDragOver, setUploadDragOver] = useState(false);
+  const uploadInputRef = useRef(null);
   const [pdfBusy, setPdfBusy] = useState(false);
 
   const insightsSectionRef = useRef(null);
@@ -163,10 +165,41 @@ function InsightsPageInner() {
               <label style={{ display: "block", color: "#475569", fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
                 Results workbook (.xlsx)
               </label>
-              <input type="file" accept=".xlsx,.xls" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
+              <div
+                onClick={() => uploadInputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setUploadDragOver(true);
+                }}
+                onDragLeave={() => setUploadDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setUploadDragOver(false);
+                  setUploadFile(e.dataTransfer.files?.[0] ?? null);
+                }}
+                style={{
+                  border: `1.5px dashed ${uploadDragOver ? "#2563eb" : "rgba(148,163,184,0.6)"}`,
+                  borderRadius: 10,
+                  padding: 16,
+                  textAlign: "center",
+                  cursor: "pointer",
+                  background: uploadDragOver ? "rgba(37,99,235,0.06)" : "transparent",
+                }}
+              >
+                <div style={{ fontSize: 13, color: "#475569", fontWeight: 600 }}>
+                  {uploadFile ? uploadFile.name : "Drag & drop the workbook here, or click to choose"}
+                </div>
+                <input
+                  ref={uploadInputRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                  style={{ display: "none" }}
+                />
+              </div>
               <div style={{ color: "#64748b", fontWeight: 600, marginTop: 6, fontSize: 12 }}>
                 Upload the workbook downloaded from a completed reconciliation run — Summary / All Records / Mapping
-                Details sheets.
+                Details sheets. CSV isn't supported here since the workbook must carry these named sheets.
               </div>
             </div>
           </div>

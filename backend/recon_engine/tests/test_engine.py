@@ -88,6 +88,216 @@ def test_executor_aggregate_group_lineage():
     assert lineage_map == {"x": [0, 1], "y": [2]}
 
 
+def test_executor_aggregate_group_multi_key_multi_measure_lineage():
+    # Every contributing raw row id is retained even with several `by`
+    # columns and several measures in one aggregate_group call — the
+    # "monthly-bucket-by-product-plant-customer" shape.
+    contract = _contract(
+        operations=[
+            {
+                "op": "aggregate_group",
+                "params": {
+                    "by": ["product", "plant"],
+                    "aggregations": [
+                        {"field": "qty", "func": "sum"},
+                        {"field": "price", "func": "average"},
+                    ],
+                },
+            }
+        ],
+        business_key=[
+            {"source_field": "product", "target_field": "product"},
+            {"source_field": "plant", "target_field": "plant"},
+        ],
+        compare_fields=[{"source_field": "qty", "target_field": "qty"}],
+        source_schema=["product", "plant", "qty", "price"],
+        target_schema=["product", "plant", "qty", "price"],
+    )
+    raw = pd.DataFrame({
+        "product": ["A", "A", "B"],
+        "plant": ["P1", "P1", "P1"],
+        "qty": [10, 15, 5],
+        "price": [2.0, 3.0, 9.0],
+    })
+    built = build_shadow_source(contract, raw)
+    rows = {
+        (r.product, r.plant): (r.qty, r.price) for r in built.shadow_df.itertuples()
+    }
+    assert rows == {("A", "P1"): (25, 2.5), ("B", "P1"): (5, 9.0)}
+    lineage_map = {
+        key: json.loads(ids)
+        for key, ids in zip(
+            zip(built.shadow_df["product"], built.shadow_df["plant"]),
+            built.shadow_df[LINEAGE_COL],
+        )
+    }
+    assert lineage_map == {("A", "P1"): [0, 1], ("B", "P1"): [2]}
+
+
+def test_executor_date_bucket_transform():
+    contract = _contract(
+        operations=[{"op": "date_bucket", "field": "id", "params": {"granularity": "month"}}],
+        source_schema=["id", "qty"],
+        target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["2025-08-19", "2025-08-02"], "qty": ["1", "2"]})
+    built = build_shadow_source(contract, raw)
+    assert built.shadow_df["id"].tolist() == ["2025-08-01", "2025-08-01"]
+
+
+def test_executor_date_window_filter_uses_injected_run_date():
+    contract = _contract(
+        operations=[
+            {
+                "op": "date_window_filter",
+                "field": "id",
+                "params": {"lower_offset_days": -10, "upper_offset_days": 0},
+            }
+        ],
+        business_key=[],
+        compare_fields=[],
+        source_schema=["id", "qty"],
+        target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["2025-07-20", "2025-08-10", "2025-08-11"], "qty": ["1", "2", "3"]})
+    built = build_shadow_source(contract, raw, run_date="2025-08-10")
+    # 2025-07-20 is 21 days before run_date, outside the -10 lower bound -> dropped;
+    # 2025-08-11 is after run_date (upper bound 0) -> dropped.
+    assert built.shadow_df["id"].tolist() == ["2025-08-10"]
+
+
+def test_executor_relative_date_reassign_uses_injected_run_date():
+    contract = _contract(
+        operations=[
+            {
+                "op": "relative_date_reassign",
+                "field": "id",
+                "params": {"date_condition": "lt", "offset_days": 1},
+            }
+        ],
+        business_key=[],
+        compare_fields=[],
+        source_schema=["id", "qty"],
+        target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["2025-08-01", "2025-08-20"], "qty": ["1", "2"]})
+    built = build_shadow_source(contract, raw, run_date="2025-08-10")
+    assert built.shadow_df["id"].tolist() == ["2025-08-11", "2025-08-20"]
+
+
+def test_executor_run_date_never_leaks_into_stored_contract_params():
+    # `_run_date` is injected only at execution time; the caller's contract
+    # object (and its params dicts) must come back unmodified.
+    contract = _contract(
+        operations=[
+            {"op": "date_window_filter", "field": "id", "params": {"lower_offset_days": -10}}
+        ],
+        business_key=[],
+        compare_fields=[],
+        source_schema=["id", "qty"],
+        target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["2025-08-01"], "qty": ["1"]})
+    build_shadow_source(contract, raw, run_date="2025-08-10")
+    assert contract.operations[0].params == {"lower_offset_days": -10}
+
+
+# ── operation_stats: per-operation row attribution ───────────────────────────
+
+def test_operation_stats_filter_records_dropped_rows():
+    contract = _contract(
+        operations=[{"op": "include_value", "field": "id", "params": {"values": ["A", "B"]}}],
+        business_key=[], compare_fields=[],
+        source_schema=["id", "qty"], target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["A", "B", "C"], "qty": [1, 2, 3]})
+    built = build_shadow_source(contract, raw)
+
+    assert len(built.operation_stats) == 1
+    stat = built.operation_stats[0]
+    assert stat["op"] == "include_value"
+    assert stat["kind"] == "filter"
+    assert stat["applied_row_ids"] == [2]  # row 2 ("C") is the one dropped
+
+
+def test_operation_stats_transform_only_covers_rows_it_actually_changed():
+    # remove_leading_zeros is conditional — only rows with a leading zero to
+    # strip should count as "applied to", not the whole column.
+    contract = _contract(
+        operations=[{"op": "remove_leading_zeros", "field": "id", "params": {}}],
+        business_key=[], compare_fields=[],
+        source_schema=["id", "qty"], target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["0005", "5006", "0007"], "qty": [1, 2, 3]})
+    built = build_shadow_source(contract, raw)
+
+    stat = built.operation_stats[0]
+    assert stat["kind"] == "transform"
+    assert stat["applied_row_ids"] == [0, 2]  # rows 0 and 2 had leading zeros; row 1 didn't
+
+
+def test_operation_stats_transform_new_column_applies_to_every_row():
+    contract = _contract(
+        operations=[
+            {"op": "concat_fields", "field": None, "params": {"fields": ["id"], "into": "key", "separator": ""}}
+        ],
+        business_key=[], compare_fields=[],
+        source_schema=["id", "qty"], target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["A", "B"], "qty": [1, 2]})
+    built = build_shadow_source(contract, raw)
+
+    stat = built.operation_stats[0]
+    assert stat["applied_row_ids"] == [0, 1]  # a brand-new column: every row gets one
+
+
+def test_operation_stats_aggregate_covers_union_of_contributing_rows():
+    contract = _contract(
+        operations=[
+            {"op": "aggregate_group", "field": None,
+             "params": {"by": ["id"], "aggregations": [{"field": "qty", "func": "sum"}]}}
+        ],
+        business_key=[], compare_fields=[],
+        source_schema=["id", "qty"], target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["A", "A", "B"], "qty": [1, 2, 3]})
+    built = build_shadow_source(contract, raw)
+
+    stat = built.operation_stats[0]
+    assert stat["kind"] == "aggregate"
+    assert stat["applied_row_ids"] == [0, 1, 2]  # every raw row fed some group
+
+
+def test_operation_stats_preserves_contract_operations_order():
+    contract = _contract(
+        operations=[
+            {"op": "include_value", "field": "id", "params": {"values": ["A", "B"]}},
+            {"op": "trim_string", "field": "id", "params": {}},
+        ],
+        business_key=[], compare_fields=[],
+        source_schema=["id", "qty"], target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["A", " B ", "C"], "qty": [1, 2, 3]})
+    built = build_shadow_source(contract, raw)
+
+    assert [s["op"] for s in built.operation_stats] == ["include_value", "trim_string"]
+
+
+def test_held_out_entries_carry_raw_row_ids():
+    contract = _contract(
+        operations=[],
+        business_key=[{"source_field": "id", "target_field": "id"}],
+        compare_fields=[],
+        source_schema=["id", "qty"], target_schema=["id", "qty"],
+    )
+    raw = pd.DataFrame({"id": ["A", None, "C"], "qty": [1, 2, 3]})
+    built = build_shadow_source(contract, raw)
+
+    assert len(built.held_out) == 1
+    assert built.held_out[0]["rule"] == "key_completeness"
+    assert built.held_out[0]["row_ids"] == [1]
+
+
 def test_apply_bucket_reaches_join_hold_out_bucket_is_excluded():
     """VERY_HIGH/HIGH Material+Plant rows reach the join; MEDIUM/NONE ones are
     held out entirely rather than silently rejoining on their unresolved raw

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import api from "../services/api";
 import PreviewTable from "./PreviewTable";
@@ -6,7 +6,7 @@ import PreviewTable from "./PreviewTable";
 
 function FileUploadCard({
   title,
-  accept = ".xlsx,.xls",
+  accept = ".xlsx,.xls,.csv",
   onLoaded,
 }) {
   const [fileInfo, setFileInfo] = useState(null);
@@ -15,6 +15,8 @@ function FileUploadCard({
   const [showPreview, setShowPreview] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef(null);
 
 
   const fetchPreview = async (file, sheetName = null) => {
@@ -26,8 +28,7 @@ function FileUploadCard({
     return response.data;
   };
 
-  const handleUpload = async (event) => {
-    const file = event.target.files?.[0];
+  const handleFile = async (file) => {
     if (!file) return;
 
     setFileObj(file);
@@ -54,6 +55,17 @@ function FileUploadCard({
     }
   };
 
+  const handleUpload = (event) => {
+    handleFile(event.target.files?.[0] ?? null);
+    event.target.value = "";
+  };
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    setDragOver(false);
+    handleFile(event.dataTransfer.files?.[0] ?? null);
+  };
+
 
   return (
     <div
@@ -68,7 +80,35 @@ function FileUploadCard({
       <h3 style={{ marginTop: 0, fontSize: 16, fontWeight: 700, color: "rgba(15,23,42,0.92)" }}>{title}</h3>
 
 
-      <input type="file" accept={accept} onChange={handleUpload} />
+      <div
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+        style={{
+          border: `1.5px dashed ${dragOver ? "#2563eb" : "rgba(148,163,184,0.6)"}`,
+          borderRadius: 10,
+          padding: 16,
+          textAlign: "center",
+          cursor: "pointer",
+          background: dragOver ? "rgba(37,99,235,0.06)" : "transparent",
+        }}
+      >
+        <div style={{ fontSize: 13, color: "#475569", fontWeight: 600 }}>
+          Drag &amp; drop a file here, or click to choose
+        </div>
+        <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Accepted: .xlsx, .xls, .csv</div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept={accept}
+          onChange={handleUpload}
+          style={{ display: "none" }}
+        />
+      </div>
 
       {loading && <div style={{ marginTop: 8 }}>Loading preview…</div>}
       {error && (

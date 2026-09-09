@@ -49,6 +49,7 @@ class AggregationType(str, Enum):
     AVERAGE = "average"
     MIN = "min"
     MAX = "max"
+    FIRST = "first"
     GROUP_BY_DAY = "group_by_day"
     GROUP_BY_WEEK = "group_by_week"
     GROUP_BY_MONTH = "group_by_month"
@@ -70,6 +71,7 @@ MEASURE_AGGREGATIONS: frozenset[AggregationType] = frozenset({
     AggregationType.AVERAGE,
     AggregationType.MIN,
     AggregationType.MAX,
+    AggregationType.FIRST,
 })
 
 

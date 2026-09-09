@@ -1702,14 +1702,210 @@ _CONFIDENCE_LABELS: dict[str, str] = {
     "out_of_scope": "Out of Scope",
 }
 
-# "Mapping Details" sheet columns (task spec): both Material↔PRDID and
-# Plant↔LOCID value-pairing reviews, flattened into one filterable table
-# rather than two disconnected blocks, with a leading "Mapping" column to
-# tell the two apart.
+# "Transformations Applied" sheet's per-value drill-down columns (formerly
+# the whole "Mapping Details" sheet) — one block of these nested under each
+# value-pairing summary row. Also the exact shape `backend.recon_engine.insights`
+# reads/builds (`insights/normalize.py`'s two `mapping_df` construction paths,
+# `insights/query.py`'s "mappingUnpaired" filter, `insights/facts.py`'s
+# `_unmapped_by_field`) — "Mapping" (the "<source> → <target>" field-pair
+# label) MUST stay a real column for that cross-feature contract, even though
+# it's now redundant with this sheet's own "Field(s)" summary column.
 _MAPPING_DETAIL_COLUMNS = [
     "Mapping", "Source Value", "Target Value", "Status", "Confidence",
     "Corroboration", "Also Candidate For", "Row Count", "Reason", "Pair ID",
 ]
+
+
+def _explode_classification_map(detail_df: pd.DataFrame) -> dict[int, str]:
+    """Raw source row id -> reconciliation ``classification``, from the
+    persisted detail frame's ``source_row_ids`` (JSON-encoded list per
+    record) + ``classification`` columns (see ``reconciler._DETAIL_COLUMNS``).
+    A row id appearing in more than one record (rare: multi-candidate
+    value-pairing duplicates a row across several shadow rows while it
+    decides between candidates) keeps the FIRST classification seen — an
+    arbitrary but harmless tie-break, since those duplicates are the SAME
+    source row's competing candidates, not independent outcomes.
+    """
+    out: dict[int, str] = {}
+    if "source_row_ids" not in detail_df.columns or "classification" not in detail_df.columns:
+        return out
+    for _, row in detail_df.iterrows():
+        raw = row.get("source_row_ids")
+        try:
+            ids = json.loads(raw) if isinstance(raw, str) else []
+        except (TypeError, ValueError):
+            ids = []
+        cls = str(row.get("classification") or "")
+        for rid in ids:
+            out.setdefault(int(rid), cls)
+    return out
+
+
+def _explode_reason_map(
+    held_out: list[dict[str, Any]], operation_stats: list[dict[str, Any]]
+) -> dict[int, str]:
+    """Raw source row id -> a human reason it never reached classification:
+    either the Value Mapping stage held it out, or a FILTER operation
+    dropped it. Anything NOT in this map and NOT in the classification map
+    is genuinely unresolved — this map is exactly "the known reasons," so
+    unresolved is computed by exclusion, never as a separate enumerated case.
+    """
+    out: dict[int, str] = {}
+    for h in held_out:
+        for rid in h.get("row_ids") or []:
+            out.setdefault(int(rid), f"Held out by value-pairing: {h.get('reason') or h.get('rule')}")
+    for stat in operation_stats:
+        if stat.get("kind") != "filter":
+            continue
+        for rid in stat.get("applied_row_ids") or []:
+            out.setdefault(int(rid), f"Filtered out by '{stat.get('op')}'")
+    return out
+
+
+def _operation_field_label(field: str | None, params: dict[str, Any]) -> str:
+    """Display label for an operation with no single ``field`` (e.g.
+    ``aggregate_group``'s ``by``/``aggregations``, ``concat_fields``'s
+    ``fields``) — falls back to the params that name the columns it uses."""
+    if field:
+        return field
+    for key in ("by", "fields"):
+        val = params.get(key)
+        if isinstance(val, list) and val:
+            return ", ".join(str(v) for v in val)
+    into = params.get("into")
+    return str(into) if into else ""
+
+
+def _compute_operation_outcomes(
+    operation_stats: list[dict[str, Any]],
+    detail_df: pd.DataFrame,
+    total_raw_rows: int,
+    held_out: list[dict[str, Any]],
+    value_mappings_by_source_field: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Per-operation summary for the "Transformations Applied" sheet.
+
+    For each ENABLED recipe operation (in ``contract.operations`` order),
+    PLUS one synthesized "value_pairing" entry per value-mapped business-key
+    field (Value Mapping is its own pipeline stage, not a
+    ``contract.operations`` entry, but is exactly the kind of transformation
+    a key field goes through — synthesizing it here means its per-value
+    drill-down is never lost, whether or not a recipe operation ALSO
+    happens to touch that same field): what fraction of ALL source rows it
+    applied to (``rows_applied``/``pct_applied``), and how those SPECIFIC
+    rows resolved:
+
+    * MATCH — the row's shadow record classified as a match.
+    * MISMATCH — any KNOWN non-match: a real reconciliation mismatch/missing
+      record, a Value Mapping hold-out, or a later filter drop. The specific
+      reason stays visible in that field's ``detail_rows`` (when it's a
+      value-mapped business key) rather than being lost in the rollup.
+    * UNRESOLVED — found in NEITHER the classification map nor the reason
+      map. A residual bucket computed purely by exclusion — never an
+      enumerated case — so it surfaces exactly the rows our own accounting
+      can't explain, instead of silently counting them as an ordinary
+      mismatch.
+    """
+    classification_map = _explode_classification_map(detail_df)
+    reason_map = _explode_reason_map(held_out, operation_stats)
+
+    def _pct(n: int, denom: int) -> float:
+        return round((n / denom) * 100.0, 1) if denom else 0.0
+
+    def _classify(ids: list[int]) -> tuple[int, int, int]:
+        match = mismatch = unresolved = 0
+        for rid in ids:
+            cls = classification_map.get(rid)
+            if cls == "match":
+                match += 1
+            elif cls is not None or rid in reason_map:
+                mismatch += 1
+            else:
+                unresolved += 1
+        return match, mismatch, unresolved
+
+    def _outcome(
+        op: str, field_label: str, applied_ids: list[int], detail_rows: list[Any],
+        mapping_label: str | None = None,
+    ) -> dict[str, Any]:
+        match, mismatch, unresolved = _classify(applied_ids)
+        applied_count = len(applied_ids)
+        return {
+            "op": op,
+            "field_label": field_label,
+            "rows_applied": applied_count,
+            "pct_applied": _pct(applied_count, total_raw_rows),
+            "pct_match": _pct(match, applied_count),
+            "pct_mismatch": _pct(mismatch, applied_count),
+            "pct_unresolved": _pct(unresolved, applied_count),
+            "detail_rows": detail_rows,
+            # The "<source> → <target>" label — carried through onto each
+            # detail row's "Mapping" column for the Insights cross-feature
+            # contract (see the module comment on _MAPPING_DETAIL_COLUMNS).
+            "mapping_label": mapping_label,
+        }
+
+    outcomes: list[dict[str, Any]] = [
+        _outcome(
+            stat.get("op"),
+            _operation_field_label(stat.get("field"), stat.get("params") or {}),
+            stat.get("applied_row_ids") or [],
+            [],
+        )
+        for stat in operation_stats
+    ]
+
+    # Value pairing "applies to" every row that survived filtering (i.e.
+    # reached that stage) — the union of every FILTER op's dropped rows,
+    # subtracted from the full raw row-id range.
+    filtered_out_ids: set[int] = set()
+    for stat in operation_stats:
+        if stat.get("kind") == "filter":
+            filtered_out_ids.update(stat.get("applied_row_ids") or [])
+    survived_ids = [i for i in range(total_raw_rows) if i not in filtered_out_ids]
+
+    for source_field, vm in value_mappings_by_source_field.items():
+        outcomes.append(
+            _outcome(
+                "value_pairing", source_field, survived_ids, list(vm.matches),
+                mapping_label=f"{source_field} → {vm.target_field}",
+            )
+        )
+
+    return outcomes
+
+
+def _value_pairing_outcomes_from_contract_only(
+    value_mappings_by_source_field: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Fallback for a run whose raw source snapshot can no longer be
+    reloaded (e.g. an Auto-mode streaming run's snapshot id is a synthetic
+    identifier, not a real reloadable one) — no recipe-operation stats are
+    derivable without replaying the contract, but ``contract.value_mappings``
+    needs no replay at all, so this still shows the per-value drill-down and
+    a best-effort match/mismatch split by distinct-value row count (no true
+    % of total source rows, and no unresolved bucket — both need the raw
+    row lineage this path doesn't have).
+    """
+    outcomes: list[dict[str, Any]] = []
+    for source_field, vm in value_mappings_by_source_field.items():
+        matched_rows = sum(m.row_count for m in vm.matches if m.target_value is not None)
+        unpaired_rows = sum(m.row_count for m in vm.matches if m.target_value is None)
+        total = matched_rows + unpaired_rows
+        outcomes.append(
+            {
+                "op": "value_pairing",
+                "field_label": source_field,
+                "rows_applied": total,
+                "pct_applied": None,
+                "pct_match": round((matched_rows / total) * 100.0, 1) if total else 0.0,
+                "pct_mismatch": round((unpaired_rows / total) * 100.0, 1) if total else 0.0,
+                "pct_unresolved": 0.0,
+                "detail_rows": list(vm.matches),
+                "mapping_label": f"{source_field} → {vm.target_field}",
+            }
+        )
+    return outcomes
 
 
 def _find_value_mapping(contract: Any, target_field: str | None) -> Any | None:
@@ -1734,12 +1930,14 @@ def _summarize_value_mapping(vm: Any | None) -> tuple[int, int]:
 
 
 def build_comparison_workbook(run_id: str) -> bytes:
-    """Build the downloadable, colour-coded 2-sheet comparison workbook (.xlsx).
+    """Build the downloadable, colour-coded 3-sheet comparison workbook (.xlsx).
 
     Read-only reconstruction — reconciliation logic is untouched; values are
-    re-derived verbatim via :func:`build_enriched_detail`; the Mapping Details
-    sheet is re-derived verbatim from ``contract.value_mappings`` (the exact
-    same data the Mapping Review page shows). Exactly three sheets:
+    re-derived verbatim via :func:`build_enriched_detail`; the
+    "Transformations Applied" sheet is re-derived by replaying the approved
+    contract's operations against the immutable raw source snapshot (see
+    :func:`_compute_operation_outcomes`) — the exact same deterministic
+    reproduction :func:`build_shadow_preview` relies on. Exactly three sheets:
 
     1. ``Summary`` — the **Results** table first (every category, even at
        count 0, with Count and % of Total, each row filled with the
@@ -1755,9 +1953,12 @@ def build_comparison_workbook(run_id: str) -> bytes:
        auto-fit. Column set is computed per contract (see
        :func:`_export_columns_for_contract`) — scales to however many
        key/compare pairs the contract has.
-    3. ``Mapping Details`` — every value-mapping match for EVERY value-mapped
-       key pair in one flat, filterable table — the same pairing decisions
-       the Mapping Review page shows, colour-coded Paired/Unpaired.
+    3. ``Transformations Applied`` — one summary row per DISTINCT recipe
+       operation that actually ran (name, field(s), % of source rows it
+       applied to, and how those specific rows resolved: % Match / %
+       Mismatch / % Unresolved), with the per-value pairing detail for any
+       value-mapped business-key field nested underneath as a collapsible
+       Excel row group (native outline +/- control) rather than removed.
     """
     from openpyxl import Workbook
     from openpyxl.chart import PieChart, Reference
@@ -1784,6 +1985,34 @@ def build_comparison_workbook(run_id: str) -> bytes:
     mapped_specs = [
         (sf, tf, vm) for sf, tf, vm in _business_key_export_specs(contract) if vm is not None
     ]
+
+    # Per-operation (and per-value-pairing-field) outcome summary, shared by
+    # the Summary sheet's structured table and the Transformations Applied
+    # sheet's full detail. Requires replaying the approved contract against
+    # the immutable raw source snapshot — reloadable for a normal Manual-mode
+    # run, but an Auto-mode streaming run's snapshot id is a synthetic
+    # identifier that was never meant to be reloaded this way; degrade to a
+    # value-pairing-only summary (still no functionality lost relative to the
+    # old sheet, which needed no snapshot at all) rather than failing the
+    # whole export.
+    value_mappings_by_source_field = {vm.source_field: vm for vm in contract.value_mappings}
+    try:
+        raw_source_df = snapshot_store.load_snapshot_frame(run.source_snapshot_id)
+        # `run.created_at` anchors any run_date-dependent op (date_window_filter,
+        # relative_date_reassign) to when the run actually executed, not to
+        # whenever this export happens to be downloaded.
+        built = build_shadow_source(contract, raw_source_df, run_date=run.created_at)
+        detail_df = result_store.load_result_frame_any(result.result_id)
+        operation_outcomes = _compute_operation_outcomes(
+            built.operation_stats, detail_df, len(raw_source_df), built.held_out,
+            value_mappings_by_source_field,
+        )
+    except Exception:  # noqa: BLE001 - degrade, never fail the export over this
+        logger.warning(
+            "Transformations Applied: could not replay run %s's source snapshot; "
+            "falling back to a value-pairing-only summary.", run_id, exc_info=True,
+        )
+        operation_outcomes = _value_pairing_outcomes_from_contract_only(value_mappings_by_source_field)
 
     bold = Font(bold=True)
     block_header = Font(bold=True, size=12)
@@ -1862,41 +2091,34 @@ def build_comparison_workbook(run_id: str) -> bytes:
         ws1.cell(row=r, column=2, value=value)
         r += 1
 
-    # -- Chart data (one Matched/Unmatched mini-table per mapped key pair) --
-    # Written as a visible, labelled mini-table (column E) rather than a hidden
-    # scratch area — useful on its own, and it's what each pair's mapping pie
-    # chart references.
-    chart_col = 5  # column E
-    cr = 1
-    mapping_chart_ranges: list[tuple[str, str, int, int]] = []  # (sf, tf, data_start, data_end)
-    for sf, tf, vm in mapped_specs:
-        matched, unmatched = _summarize_value_mapping(vm)
-        ws1.cell(row=cr, column=chart_col, value=f"{sf} → {tf} Mapping").font = block_header
-        cr += 1
-        data_start = cr
-        ws1.cell(row=cr, column=chart_col, value="Matched")
-        ws1.cell(row=cr, column=chart_col + 1, value=matched)
-        cr += 1
-        ws1.cell(row=cr, column=chart_col, value="Unmatched")
-        ws1.cell(row=cr, column=chart_col + 1, value=unmatched)
-        data_end = cr
-        cr += 2
-        mapping_chart_ranges.append((sf, tf, data_start, data_end))
+    # -- Transformations Applied (structured table) --
+    # Replaces the old per-key-pair "Mapping Review" pie charts with the same
+    # per-operation / per-value-pairing-field summary the "Transformations
+    # Applied" sheet carries in full — condensed here (no per-value
+    # drill-down) for an at-a-glance view without leaving the Summary sheet.
+    table_col = 5  # column E
+    tr = 1
+    ws1.cell(row=tr, column=table_col, value="Transformations Applied").font = block_header
+    tr += 1
+    ta_headers = ["Transformation", "Field(s)", "% Applied", "% Match", "% Mismatch", "% Unresolved"]
+    for offset, name in enumerate(ta_headers):
+        ws1.cell(row=tr, column=table_col + offset, value=name).font = bold
+    tr += 1
+    for outcome in operation_outcomes:
+        values = [
+            outcome["op"], outcome["field_label"], outcome["pct_applied"],
+            outcome["pct_match"], outcome["pct_mismatch"], outcome["pct_unresolved"],
+        ]
+        for offset, value in enumerate(values):
+            cell = ws1.cell(row=tr, column=table_col + offset, value=value)
+            if offset == 5 and isinstance(value, (int, float)) and value > 0:
+                cell.fill = PatternFill("solid", fgColor="FFA500")
+        tr += 1
 
-    # -- Charts (bottom): overall results, then one per mapped key pair, in a
-    # repeating grid (4 per row) — with today's single mapped-pair-or-two
-    # count this reproduces the original A/I/Q single-row layout exactly. --
-    charts_row = max(r, cr) + 2
+    # -- Chart (bottom): overall run results only — the per-key-pair mapping
+    # pie charts were replaced by the structured table above. --
+    charts_row = max(r, tr) + 2
     ws1.cell(row=charts_row - 1, column=1, value="Charts").font = block_header
-
-    _CHARTS_PER_ROW = 4
-    _COL_STRIDE = 8
-    _ROW_STRIDE = 18
-
-    def _chart_anchor(index: int) -> str:
-        row = charts_row + (index // _CHARTS_PER_ROW) * _ROW_STRIDE
-        col = 1 + (index % _CHARTS_PER_ROW) * _COL_STRIDE
-        return f"{get_column_letter(col)}{row}"
 
     overall_chart = _labeled_pie(
         "Overall Run Results",
@@ -1904,16 +2126,7 @@ def build_comparison_workbook(run_id: str) -> bytes:
         Reference(ws1, min_col=1, min_row=results_start_row, max_row=results_end_row),
         [_STATUS_FILL[_SUMMARY_BUCKETS[field][1]] for field in _SUMMARY_ORDER],
     )
-    ws1.add_chart(overall_chart, _chart_anchor(0))
-
-    for idx, (sf, tf, data_start, data_end) in enumerate(mapping_chart_ranges, start=1):
-        pair_chart = _labeled_pie(
-            f"{sf} → {tf} Mapping Review",
-            Reference(ws1, min_col=chart_col + 1, min_row=data_start, max_row=data_end),
-            Reference(ws1, min_col=chart_col, min_row=data_start, max_row=data_end),
-            ["C6EFCE", "FFC7CE"],  # Matched (green) / Unmatched (red)
-        )
-        ws1.add_chart(pair_chart, _chart_anchor(idx))
+    ws1.add_chart(overall_chart, f"{get_column_letter(1)}{charts_row}")
 
     ws1.freeze_panes = "A2"
     _autofit(ws1)
@@ -1944,18 +2157,39 @@ def build_comparison_workbook(run_id: str) -> bytes:
     ws2.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{max(1, row_idx - 1)}"
     _autofit(ws2)
 
-    # ── Sheet 3: Mapping Details ─────────────────────────────────────────────
-    ws3 = wb.create_sheet("Mapping Details")
-    mapping_columns = _MAPPING_DETAIL_COLUMNS
-    for col, name in enumerate(mapping_columns, start=1):
+    # ── Sheet 3: Transformations Applied ─────────────────────────────────────
+    ws3 = wb.create_sheet("Transformations Applied")
+    ws3.sheet_properties.outlinePr.summaryBelow = False  # summary row sits ABOVE its detail group
+
+    _OP_SUMMARY_COLUMNS = [
+        "Transformation", "Field(s)", "Rows Applied", "% Applied",
+        "% Match", "% Mismatch", "% Unresolved",
+    ]
+    all_columns = _OP_SUMMARY_COLUMNS + _MAPPING_DETAIL_COLUMNS
+    for col, name in enumerate(all_columns, start=1):
         c = ws3.cell(row=1, column=col, value=name)
         c.font = header_font
         c.fill = header_fill
 
+    # `operation_outcomes` was already computed above (shared with the
+    # Summary sheet's structured table).
+    unresolved_fill = PatternFill("solid", fgColor="FFA500")  # distinct from the paired/unpaired green/red
     row_idx = 2
-    for sf, tf, vm in mapped_specs:
-        label = f"{sf} → {tf}"
-        for m in vm.matches:
+    for outcome in operation_outcomes:
+        summary_row = row_idx
+        summary_values = [
+            outcome["op"], outcome["field_label"], outcome["rows_applied"],
+            outcome["pct_applied"], outcome["pct_match"], outcome["pct_mismatch"],
+            outcome["pct_unresolved"],
+        ]
+        for col, value in enumerate(summary_values, start=1):
+            cell = ws3.cell(row=summary_row, column=col, value=value)
+            cell.font = bold
+        if outcome["pct_unresolved"] > 0:
+            ws3.cell(row=summary_row, column=7).fill = unresolved_fill
+        row_idx += 1
+
+        for m in outcome["detail_rows"]:
             paired = m.target_value is not None
             status = "Paired" if paired else "Unpaired"
             siblings = [c for c in (m.candidates or []) if c != m.target_value]
@@ -1966,20 +2200,26 @@ def build_comparison_workbook(run_id: str) -> bytes:
                     else "No date overlap" if m.corroboration is False
                     else "No signal"
                 )
-            values = [
-                label, m.source_value, m.target_value, status,
+            detail_values = [
+                outcome.get("mapping_label"), m.source_value, m.target_value, status,
                 _CONFIDENCE_LABELS.get(m.confidence.value, m.confidence.value),
                 corroboration, ", ".join(siblings), m.row_count, m.evidence,
                 m.pair_id,
             ]
             fill = PatternFill("solid", fgColor="C6EFCE" if paired else "FFC7CE")
-            for col, value in enumerate(values, start=1):
-                cell = ws3.cell(row=row_idx, column=col, value=value)
+            for offset, value in enumerate(detail_values, start=1):
+                cell = ws3.cell(row=row_idx, column=len(_OP_SUMMARY_COLUMNS) + offset, value=value)
                 cell.fill = fill
+            # Collapsible under its summary row — Excel's native row-group
+            # +/- gutter control, so the per-value detail is still there to
+            # diagnose exactly which values failed, without cluttering the
+            # default (collapsed) view.
+            ws3.row_dimensions[row_idx].outlineLevel = 1
+            ws3.row_dimensions[row_idx].hidden = True
             row_idx += 1
 
     ws3.freeze_panes = "A2"
-    ws3.auto_filter.ref = f"A1:{get_column_letter(len(mapping_columns))}{max(1, row_idx - 1)}"
+    ws3.auto_filter.ref = f"A1:{get_column_letter(len(all_columns))}{max(1, row_idx - 1)}"
     _autofit(ws3)
 
     buf = BytesIO()

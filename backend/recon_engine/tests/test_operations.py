@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
 from backend.recon_engine.operations import ops
 
@@ -255,3 +256,146 @@ def test_conditional_suffix_default_non_empty():
     df = pd.DataFrame({"a": ["x", "", "y"]}, dtype=object)
     out = ops.conditional_suffix(df, "a", {"value": "!"})
     assert out["a"].tolist() == ["x!", "", "y!"]
+
+
+# ── new primitives ────────────────────────────────────────────────────────────
+
+def test_pad_leading_zeros_is_inverse_of_remove_leading_zeros():
+    df = pd.DataFrame({"a": ["5006", "FG6", None]}, dtype=object)
+    out = ops.pad_leading_zeros(df, "a", {"width": 6})
+    assert out["a"].tolist()[:2] == ["005006", "FG000006"]
+    assert pd.isna(out["a"].iloc[2])
+
+
+def test_pad_leading_zeros_round_trips_with_remove_leading_zeros():
+    df = pd.DataFrame({"a": ["FG0006"]})
+    stripped = ops.remove_leading_zeros(df, "a", {"min_width": 2})
+    assert stripped["a"].iloc[0] == "FG06"
+    padded_back = ops.pad_leading_zeros(stripped, "a", {"width": 4})
+    assert padded_back["a"].iloc[0] == "FG0006"
+
+
+def test_pad_leading_zeros_leaves_already_wide_values_unchanged():
+    df = pd.DataFrame({"a": ["123456"]})
+    out = ops.pad_leading_zeros(df, "a", {"width": 4})
+    assert out["a"].iloc[0] == "123456"
+
+
+def test_date_bucket_month_start_and_end():
+    df = pd.DataFrame({"d": ["2025-08-19", "bad"]})
+    start = ops.date_bucket(df, "d", {"granularity": "month", "anchor": "start"})
+    assert start["d"].iloc[0] == "2025-08-01"
+    bad = start["d"].iloc[1]
+    assert bad is None or (isinstance(bad, float) and math.isnan(bad))
+    end = ops.date_bucket(df, "d", {"granularity": "month", "anchor": "end"})
+    assert end["d"].iloc[0] == "2025-08-31"
+
+
+def test_date_bucket_week_and_quarter_and_year():
+    df = pd.DataFrame({"d": ["2025-08-19"]})
+    assert ops.date_bucket(df, "d", {"granularity": "quarter"})["d"].iloc[0] == "2025-07-01"
+    assert ops.date_bucket(df, "d", {"granularity": "year"})["d"].iloc[0] == "2025-01-01"
+    # ISO week starting Monday: 2025-08-19 is a Tuesday -> Monday 2025-08-18.
+    assert ops.date_bucket(df, "d", {"granularity": "week"})["d"].iloc[0] == "2025-08-18"
+
+
+def test_date_window_filter_open_and_closed_bounds():
+    df = pd.DataFrame({"d": ["2025-08-01", "2025-08-15", "2025-09-01", "bad"]})
+    run_date = pd.Timestamp("2025-08-15")
+
+    closed = ops.date_window_filter(
+        df, "d", {"_run_date": run_date, "lower_offset_days": -14, "upper_offset_days": 0}
+    )
+    assert closed["d"].tolist() == ["2025-08-01", "2025-08-15"]
+
+    open_lower = ops.date_window_filter(df, "d", {"_run_date": run_date, "upper_offset_days": 0})
+    assert open_lower["d"].tolist() == ["2025-08-01", "2025-08-15"]
+
+    open_upper = ops.date_window_filter(df, "d", {"_run_date": run_date, "lower_offset_days": 0})
+    assert open_upper["d"].tolist() == ["2025-08-15", "2025-09-01"]
+
+
+def test_relative_date_reassign_rolls_past_due_forward():
+    df = pd.DataFrame({"d": ["2025-08-10", "2025-08-20"]})  # run_date = 2025-08-15 (Friday)
+    run_date = pd.Timestamp("2025-08-15")
+    out = ops.relative_date_reassign(
+        df, "d", {"_run_date": run_date, "date_condition": "lt", "offset_days": 1}
+    )
+    assert out["d"].tolist() == ["2025-08-16", "2025-08-20"]  # only the past-due row rolls
+
+
+def test_relative_date_reassign_weekday_exception():
+    df = pd.DataFrame({"d": ["2025-08-10"]})
+    saturday_run_date = pd.Timestamp("2025-08-16")  # a Saturday
+    out = ops.relative_date_reassign(
+        df, "d",
+        {
+            "_run_date": saturday_run_date,
+            "date_condition": "lt",
+            "offset_days": 1,
+            "weekday_exception": {"on_weekday": "saturday", "offset_days": 2},
+        },
+    )
+    assert out["d"].iloc[0] == "2025-08-18"  # +2, not +1, because run_date is Saturday
+
+
+def test_relative_date_reassign_rejects_malformed_weekday_exception():
+    df = pd.DataFrame({"d": ["2025-08-10"]})
+    run_date = pd.Timestamp("2025-08-16")
+    with pytest.raises(ValueError, match="weekday_exception"):
+        ops.relative_date_reassign(
+            df, "d",
+            {
+                "_run_date": run_date,
+                "date_condition": "lt",
+                "offset_days": 1,
+                "weekday_exception": "saturday",  # not a dict — mid-edit JSON, or a bad LLM output
+            },
+        )
+
+
+def test_relative_date_reassign_passes_through_when_condition_false():
+    df = pd.DataFrame({"d": ["2025-08-20", None]}, dtype=object)
+    run_date = pd.Timestamp("2025-08-15")
+    out = ops.relative_date_reassign(
+        df, "d", {"_run_date": run_date, "date_condition": "lt", "offset_days": 1}
+    )
+    assert out["d"].iloc[0] == "2025-08-20"
+    assert pd.isna(out["d"].iloc[1])
+
+
+def test_aggregate_group_first_reducer_passes_through_a_representative_value():
+    df = pd.DataFrame({"k": ["x", "x", "y"], "note": ["first-note", "second-note", "only-note"]})
+    out = ops.aggregate_group(df, None, {"by": ["k"], "aggregations": [{"field": "note", "func": "first"}]})
+    by_k = dict(zip(out["k"], out["note"]))
+    assert by_k == {"x": "first-note", "y": "only-note"}
+
+
+def test_aggregate_group_multi_field_group_by_multi_measure():
+    # The monthly-bucket-by-product-plant-customer case: multiple `by`
+    # columns AND multiple measures (sum + average) in one call.
+    df = pd.DataFrame({
+        "product": ["A", "A", "A", "B"],
+        "plant": ["P1", "P1", "P2", "P1"],
+        "customer": ["C1", "C1", "C1", "C1"],
+        "qty": [10, 15, 5, 7],
+        "price": [2.0, 3.0, 4.0, 1.0],
+    })
+    out = ops.aggregate_group(
+        df, None,
+        {
+            "by": ["product", "plant", "customer"],
+            "aggregations": [
+                {"field": "qty", "func": "sum"},
+                {"field": "price", "func": "average"},
+            ],
+        },
+    )
+    result = {
+        (r.product, r.plant, r.customer): (r.qty, r.price) for r in out.itertuples()
+    }
+    assert result == {
+        ("A", "P1", "C1"): (25, 2.5),
+        ("A", "P2", "C1"): (5, 4.0),
+        ("B", "P1", "C1"): (7, 1.0),
+    }

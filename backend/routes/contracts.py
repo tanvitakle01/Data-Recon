@@ -19,6 +19,7 @@ from backend.recon_engine import service
 from backend.recon_engine.compiler import ContractCompilerError
 from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome
 from backend.recon_engine.interface_index import read_interface_index as _read_interface_index
+from backend.recon_engine.mapping_resolution import resolve_mapping as _resolve_mapping
 from backend.recon_engine.mapping_sheet_parser import parse_mapping_sheet as _parse_sheet
 from backend.recon_engine.sheet_identifier import identify_systems as _identify_systems
 from backend.recon_engine.models.contract import DraftContract
@@ -196,6 +197,31 @@ def identify_mapping_sheet(req: IdentifyRequest) -> dict[str, Any]:
     if catalog_warnings:
         result["warnings"] = [*result.get("warnings", []), *catalog_warnings]
     return result
+
+
+class MappingResolutionRequest(BaseModel):
+    # The parsed-sheet payload from /mapping-sheet/parse (dict), or plain rows.
+    mapping_sheet: dict[str, Any] | list[dict[str, Any]] = Field(default_factory=dict)
+    # Header bindings only — no data rows. Both must be populated (this step
+    # only runs once source AND target datasets are uploaded/fetched).
+    source_columns: list[str]
+    target_columns: list[str]
+
+
+@router.post("/mapping-resolution/resolve")
+def resolve_mapping_endpoint(req: MappingResolutionRequest) -> dict[str, Any]:
+    """Sequential AI mapping resolution: mapping sheet + real headers -> ops.
+
+    Four chained LLM calls (relevant fields -> enriched fields ->
+    transformation chain -> deterministic operations), run automatically with
+    no human-approval pause between steps — see ``recon_engine.mapping_resolution``.
+    The returned ``operations`` use the same ``{op, field, params}`` shape as
+    ``/contracts/compile``'s ``draft.operations``, ready to feed the Recipe
+    Editor. Never sets ``business_key``/``compare_fields`` — those stay
+    human-owned via the Mapping Editor, untouched by this endpoint.
+    """
+    reset_llm_outcome()
+    return _resolve_mapping(req.mapping_sheet, req.source_columns, req.target_columns)
 
 
 @router.post("/contracts/compile")

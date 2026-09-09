@@ -45,6 +45,13 @@
   border-bottom: 1px solid var(--border);
 }
 
+.wizard-step__header-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .wizard-step__eyebrow {
   margin: 0 0 6px;
   font-size: 11px;
@@ -52,6 +59,11 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--accent);
+}
+
+.wizard-step__start-over {
+  margin: 0 0 6px;
+  white-space: nowrap;
 }
 
 .wizard-step__title {
@@ -310,6 +322,27 @@
   gap: 10px;
   font-size: 13px;
   color: var(--ink-2);
+}
+
+.wizard-use-data {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.wizard-use-data input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--bcone-orange, currentColor);
+  cursor: pointer;
+}
+
+.wizard-use-data__label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
 }
 
 .wizard-pill {
@@ -2444,6 +2477,20 @@
 }
 .wizard-mapcard__fields--empty {
   opacity: 0.7;
+}
+.wizard-mapcard__resolution {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+.wizard-mapcard__ops {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--ink-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 /* ── Stored Runs tab: live "Running" indicator + batch-grouped View cards ── */

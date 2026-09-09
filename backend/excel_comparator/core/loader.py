@@ -72,6 +72,30 @@ def load_excel(file_obj: Any, sheet_name: str | None = None) -> dict[str, Any]:
     }
 
 
+def load_tabular_detailed(content: bytes, filename: str, sheet_name: str | None = None) -> dict[str, Any]:
+    """CSV or Excel, dispatched by extension, returning the same shape as
+    ``load_excel`` (df/sheets/active_sheet/row_count/col_count) so callers
+    that need sheet metadata — previews, reconcile uploads — work uniformly
+    across both formats. CSV has no sheet concept, so ``sheets`` is empty and
+    ``active_sheet`` is None."""
+    if filename.lower().endswith(".csv"):
+        df = pd.read_csv(BytesIO(content), dtype=object)
+        df.columns = [str(col).strip() for col in df.columns]
+
+        if df.empty:
+            raise ValueError("File appears to be empty.")
+
+        return {
+            "df": df,
+            "sheets": [],
+            "active_sheet": None,
+            "row_count": int(df.shape[0]),
+            "col_count": int(df.shape[1]),
+        }
+
+    return load_excel(BytesIO(content), sheet_name=sheet_name)
+
+
 def load_tabular(content: bytes, filename: str) -> pd.DataFrame:
     """CSV or Excel, dispatched by extension — the one place both the plain
     reconcile route and the chat/auto-pipeline routes decide how to read an

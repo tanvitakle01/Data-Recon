@@ -166,20 +166,26 @@ def test_streaming_run_all_records_has_real_field_values_not_blank():
 
 
 def test_streaming_run_mapping_details_sheet_is_populated():
+    # Auto-mode runs have no reloadable raw source snapshot (see the module
+    # docstring), so this exercises the value-pairing-only fallback
+    # (`_value_pairing_outcomes_from_contract_only`) — no per-operation rows,
+    # but the per-value drill-down must still be there, unregressed.
     run_id = _streaming_run()
     content = service.build_comparison_workbook(run_id)
     wb = openpyxl.load_workbook(BytesIO(content))
 
-    ws = wb["Mapping Details"]
+    ws = wb["Transformations Applied"]
     rows = list(ws.iter_rows(values_only=True))
-    data = rows[1:]
-    assert data, "Mapping Details must not be empty for an Auto-mode run"
+    # Columns: 7 op-summary columns, then _MAPPING_DETAIL_COLUMNS starting at
+    # index 7 with "Mapping" — only detail rows populate it.
+    detail_rows = [r for r in rows[1:] if r[7] is not None]
+    assert detail_rows, "Transformations Applied must carry per-value detail for an Auto-mode run"
 
-    by_source = {(r[0], r[1]): r for r in data}
+    by_source = {(r[7], r[8]): r for r in detail_rows}
     a = by_source[("Material → PRDID", "A")]
-    assert a[2] == "PA" and a[3] == "Paired" and a[4] == "Verified"
+    assert a[9] == "PA" and a[10] == "Paired" and a[11] == "Verified"
     p1 = by_source[("Plant → LOCID", "P1")]
-    assert p1[2] == "LOC1" and p1[3] == "Paired"
+    assert p1[9] == "LOC1" and p1[10] == "Paired"
 
 
 def test_streaming_run_insights_and_pdf_work_for_chatbot_view_insights():

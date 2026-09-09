@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
+import { getStepByKey } from "./stepConfig";
 import {
   appendDatasetSide,
   buildMappingSheetPayload,
@@ -15,12 +17,13 @@ import {
   sampleRows,
 } from "../lib/payload";
 import { detectFieldRole } from "../lib/fieldRoleAliases";
+import { createBothSnapshots, generateInsightsForRun, runContractReconciliation } from "../lib/reconRun";
 import StepShell from "../components/StepShell";
 import MappingEditor from "../components/MappingEditor";
 import RecipeEditor from "../components/RecipeEditor";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
 import MappingReviewDrawer from "../components/MappingReviewDrawer";
-import { serializeOperations } from "../lib/recipeModel";
+import { operationsToSteps, serializeOperations } from "../lib/recipeModel";
 import { Button, Alert } from "@bristlecone/canopy";
 
 // Distinct-VALUE summary of the AI-mapping (value-pairing) run, across every
@@ -87,12 +90,14 @@ function mergePrepassArray(prevMappings, freshMappings) {
 
 function TransformationSpecStep() {
   const { state, dispatch } = useWizard();
-  const { source, target, comparisonType, transformationSpec } = state;
+  const navigate = useNavigate();
+  const { source, target, comparisonType, useData, transformationSpec } = state;
   const {
     parsedMappingSheet,
     aggregationRules,
     recipe,
     mapping,
+    mappingResolution,
     valueMappings,
     contract,
     useScriptTransformations,
@@ -102,6 +107,8 @@ function TransformationSpecStep() {
   const targetColumns = useMemo(() => target.dataset?.columns ?? [], [target.dataset]);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState(null);
+  const [mappingResolutionLoading, setMappingResolutionLoading] = useState(false);
+  const [mappingResolutionError, setMappingResolutionError] = useState(null);
   // Non-blocking notice from the inference call: a provider-failover message
   // (served by OpenAI) or a degraded reason (no mapping could be generated).
   const [mapNotice, setMapNotice] = useState(null);
@@ -113,6 +120,10 @@ function TransformationSpecStep() {
   // when every AI provider was unavailable (spec points 5 & 6).
   const [providerNotice, setProviderNotice] = useState(null);
   const [approveLoading, setApproveLoading] = useState(false);
+  // Auto-mode: builds/approves the draft and runs reconciliation with no
+  // click, for the mapping-sheet-driven path only (see autoApproveAndRun).
+  const [autoRunLoading, setAutoRunLoading] = useState(false);
+  const [autoRunError, setAutoRunError] = useState(null);
   // Mapping Review: closed by default, opens as a right-side slide-out drawer
   // that overlays the Recipe Editor rather than replacing it in place.
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -240,16 +251,87 @@ function TransformationSpecStep() {
     return () => clearTimeout(id);
   }, [mapping, source, target, runInference]);
 
+  // ── Sequential AI mapping resolution (mapping-sheet-driven recipe) ───────
+  // Only runs when a mapping sheet was uploaded. Four chained LLM calls
+  // (relevant fields -> enriched fields -> transformation chain ->
+  // deterministic operations) run server-side, fully automatically (auto
+  // mode — no per-step approval), against ONLY the real source/target header
+  // bindings. Never touches business_key/compare_fields (Mapping Editor's job).
+  const resolvedMappingSignatureRef = useRef(null);
+
+  const runMappingResolution = useCallback(async () => {
+    if (!parsedMappingSheet || !source.dataset || !target.dataset) return;
+    setMappingResolutionLoading(true);
+    setMappingResolutionError(null);
+    try {
+      const res = await api.post("/api/recon/mapping-resolution/resolve", {
+        mapping_sheet: parsedMappingSheet,
+        source_columns: sourceColumns,
+        target_columns: targetColumns,
+      });
+      const result = res.data ?? null;
+      // Seed the Recipe Editor ONLY the first time — once it has any steps
+      // (AI-seeded or hand-built), a re-resolve (e.g. after a dataset change)
+      // must never silently overwrite a human's edits. RecipeEditor stays the
+      // editable override layer either way.
+      //
+      // Resolved BEFORE dispatching SET_MAPPING_RESOLUTION (and dispatched
+      // together with it, with no `await` in between) so a reader whose
+      // effect is gated on `mappingResolution` becoming truthy — e.g. the
+      // auto-approve-and-run effect below — never observes a render where
+      // resolution is "done" but the recipe hasn't been seeded yet.
+      let steps = null;
+      if ((recipe ?? []).length === 0 && (result?.operations ?? []).length > 0) {
+        const catalogueRes = await api.get("/api/recon/operations");
+        const catalogue = (catalogueRes.data?.operations ?? []).filter((o) => o.kind !== "compare");
+        steps = operationsToSteps(result.operations, catalogue);
+      }
+      if (steps && steps.length) dispatch({ type: WizardActions.SET_RECIPE, recipe: steps });
+      dispatch({ type: WizardActions.SET_MAPPING_RESOLUTION, mappingResolution: result });
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setMappingResolutionError(typeof detail === "string" ? detail : "Mapping resolution failed.");
+    } finally {
+      setMappingResolutionLoading(false);
+    }
+  }, [parsedMappingSheet, source, target, sourceColumns, targetColumns, recipe, dispatch]);
+
+  useEffect(() => {
+    if (mappingResolution) return;
+    if (!parsedMappingSheet || !source.dataset || !target.dataset) return;
+    // Keyed on the dataset pair AND the sheet itself — the reducer nulls
+    // `mappingResolution` on either a dataset change or a new/removed mapping
+    // sheet, but the dataset signature alone wouldn't change on a sheet swap,
+    // which would otherwise block re-firing for the new sheet's content.
+    const signature =
+      `${datasetSignature(source, target)}::` +
+      `${parsedMappingSheet.sheet_name ?? ""}::${parsedMappingSheet.row_count ?? ""}`;
+    if (resolvedMappingSignatureRef.current === signature) return;
+    resolvedMappingSignatureRef.current = signature;
+    const id = setTimeout(() => runMappingResolution(), 0);
+    return () => clearTimeout(id);
+  }, [mappingResolution, parsedMappingSheet, source, target, runMappingResolution]);
+
   // ── AI value pairing (every confirmed Key field pair) ─────────────────────
   const missingValueMappingReqs = useMemo(
     () => missingValueMappingRequirements(mapping?.display),
     [mapping],
   );
-  const canRunValueMapping =
+  // Eligibility on data/field-mapping grounds alone.
+  const hasKeyFieldPairsReady =
     Boolean(source.dataset && target.dataset) && missingValueMappingReqs.length === 0;
+  // "Use data" (Dataset Type step) gates every stage that sends actual row
+  // values to the backend — the AI value-pairing call below, AND the live,
+  // LLM-free pre-pass (it's deterministic-only and calls no AI endpoint, but
+  // it still ships full source/target rows over the wire, which is exactly
+  // what "Use data" unchecked promises not to do). Unchecked (default), no
+  // distinct-value extraction, live pre-pass, or AI value-pairing call is
+  // ever made, from either the manual button or either auto-trigger effect.
+  const canRunValueMapping = useData && hasKeyFieldPairsReady;
   const pairing = useMemo(() => summarizePairing(valueMappings), [valueMappings]);
 
   const runValueMapping = async () => {
+    if (!useData) return;
     const formData = buildValueMappingFormData(source, target, parsedMappingSheet, mapping?.display);
     if (!formData) {
       setValueMappingError(
@@ -275,6 +357,23 @@ function TransformationSpecStep() {
     }
   };
 
+  // Auto-run value pairing once it becomes eligible (mirrors the field-mapping
+  // and mapping-resolution auto-triggers above) — only when a mapping sheet
+  // drives this step; the no-sheet manual path still requires the "Run
+  // AI-mapping" button click, unchanged.
+  const autoValueMappingSignatureRef = useRef(null);
+  useEffect(() => {
+    if (!parsedMappingSheet) return;
+    if (valueMappings || valueMappingLoading) return;
+    if (!canRunValueMapping) return;
+    const signature = datasetSignature(source, target);
+    if (autoValueMappingSignatureRef.current === signature) return;
+    autoValueMappingSignatureRef.current = signature;
+    const id = setTimeout(() => runValueMapping(), 0);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedMappingSheet, canRunValueMapping, valueMappings, valueMappingLoading, source, target, useData]);
+
   // ── live, LLM-free pairing pre-pass ────────────────────────────────────────
   // Keeps Mapping Review current as the recipe changes, without ever
   // triggering an LLM call — only the "Run AI-mapping" button above does
@@ -283,6 +382,10 @@ function TransformationSpecStep() {
   // resolves values via library lookup + identity match only. A ref (not a
   // dependency) tracks the latest valueMappings so the merge always has the
   // current baseline without making this effect depend on its own output.
+  // Gated on "Use data" (via canRunValueMapping): everything upstream of this
+  // step (mapping resolution) works off the mapping sheet + header bindings
+  // alone, never touching actual row values — this pre-pass is the one place
+  // that does, so it must not fire while "Use data" is off.
   const liveSourceRows = useMemo(() => fullOrPreviewRows(source), [source]);
   const liveTargetRows = useMemo(() => fullOrPreviewRows(target), [target]);
   const valueMappingsRef = useRef(valueMappings);
@@ -484,6 +587,99 @@ function TransformationSpecStep() {
   // script-transformation flow is gated on its own approval.
   const canContinueStep = useScriptTransformations ? true : Boolean(contract);
 
+  // ── auto-mode: approve + run with no click (mapping-sheet path only) ─────
+  // Once field mapping, mapping resolution, and value pairing (when
+  // applicable) have all settled, deterministically build the shadow source
+  // from the AI-resolved recipe (in order) and reconcile it against target —
+  // "as usual", via the same validate -> approve -> snapshot -> run sequence
+  // the manual buttons use, just triggered automatically instead of on two
+  // clicks. Gate 1/2 validation is KEPT (deterministic, free, no LLM) as a
+  // safety net; a validation failure leaves the recipe editable and falls
+  // back to the manual "Approve Transformation Rules" button rather than
+  // approving something broken.
+  const autoRunSignatureRef = useRef(null);
+  // With "Use data" unchecked, value pairing never runs at all — it's
+  // trivially "settled" (nothing to wait for) so the chain-only recipe can
+  // still auto-run end to end. Checked: unchanged, waits for a real result.
+  const valueMappingSettled =
+    !useData || valueMappings != null || missingValueMappingReqs.length > 0;
+
+  // Plain function (not useCallback) — deliberately, like approveTransformations
+  // above, so it always reads the CURRENT recipe/aggregationRules/mapping/
+  // valueMappings on every call rather than a stale closure from whenever a
+  // memoized version was last created.
+  const autoApproveAndRun = async () => {
+    if (!source.dataset || !target.dataset) return;
+    setAutoRunLoading(true);
+    setAutoRunError(null);
+    setContractError(null);
+    try {
+      const draft = buildRecipeDraft();
+      dispatch({ type: WizardActions.SET_DRAFT_CONTRACT, draftContract: draft });
+      const report = await validateDraft(draft);
+      if (!report?.ok) {
+        const firstError =
+          report?.gate1?.errors?.[0] ||
+          report?.gate2?.errors?.[0] ||
+          "These transformation steps aren't valid yet — review the recipe and approve manually.";
+        setContractError(firstError);
+        return;
+      }
+      const approveRes = await api.post("/api/recon/contracts/approve", {
+        draft,
+        approved_by: "wizard-user",
+      });
+      const approvedContract = approveRes.data?.contract;
+      dispatch({ type: WizardActions.SET_APPROVED_CONTRACT, contract: approvedContract });
+
+      const { sourceSnapshot, targetSnapshot } = await createBothSnapshots(source, target, comparisonType);
+      const result = await runContractReconciliation({
+        contract: approvedContract,
+        sourceSnapshotId: sourceSnapshot.snapshot_id,
+        targetSnapshotId: targetSnapshot.snapshot_id,
+        expectedShadowFingerprint: null,
+      });
+      dispatch({
+        type: WizardActions.SET_RECONCILIATION_RESULT,
+        result: {
+          ...result,
+          source_snapshot: result.source_snapshot ?? sourceSnapshot,
+          target_snapshot: result.target_snapshot ?? targetSnapshot,
+        },
+      });
+      dispatch({ type: WizardActions.COMPLETE_STEP, step: "transformationSpec" });
+      dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
+      generateInsightsForRun(result.run_id);
+
+      const resultsStep = getStepByKey("reconciliation");
+      dispatch({ type: WizardActions.GO_TO_STEP, step: "reconciliation" });
+      navigate(`/reconciliation/${resultsStep.path}`);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setAutoRunError(typeof detail === "string" ? detail : "Automatic reconciliation failed.");
+    } finally {
+      setAutoRunLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!parsedMappingSheet) return; // scoped to the mapping-sheet-driven path only
+    if (contract) return; // already approved (this pass, or a resumed session)
+    if (!source.dataset || !target.dataset) return;
+    if ((mapping?.mapping?.key_fields?.length ?? 0) === 0) return;
+    if (!mappingResolution) return; // the 4-step chain hasn't finished yet
+    if (!valueMappingSettled) return;
+
+    const signature =
+      `${datasetSignature(source, target)}::${parsedMappingSheet.sheet_name ?? ""}::` +
+      `${parsedMappingSheet.row_count ?? ""}`;
+    if (autoRunSignatureRef.current === signature) return;
+    autoRunSignatureRef.current = signature;
+    const id = setTimeout(() => autoApproveAndRun(), 0);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedMappingSheet, contract, source, target, mapping, mappingResolution, valueMappingSettled]);
+
   return (
     <StepShell stepKey="transformationSpec" canContinue={canContinueStep}>
       <MappingEditor
@@ -544,11 +740,13 @@ function TransformationSpecStep() {
         </div>
         <div className="ct-card__body">
           <p className="wizard-field__help" style={{ marginTop: 0 }}>
-            {pairing
-              ? pairing.total > 0
-                ? `${pairing.matched} of ${pairing.total} distinct values paired (${Math.round((pairing.matched / pairing.total) * 100)}%). ${pairing.total - pairing.matched} value${pairing.total - pairing.matched === 1 ? "" : "s"} have no target and will be reported as mismatches.`
-                : "AI-mapping ran but found no distinct values to pair yet."
-              : "Run AI-mapping to pair distinct source values (e.g. Material, Plant) against the target — reflects the recipe's current output."}
+            {!useData
+              ? "\"Use data\" is off (Dataset Type step) — no distinct values are sent to AI. Enable it there to pair Key/Compare values."
+              : pairing
+                ? pairing.total > 0
+                  ? `${pairing.matched} of ${pairing.total} distinct values paired (${Math.round((pairing.matched / pairing.total) * 100)}%). ${pairing.total - pairing.matched} value${pairing.total - pairing.matched === 1 ? "" : "s"} have no target and will be reported as mismatches.`
+                  : "AI-mapping ran but found no distinct values to pair yet."
+                : "Run AI-mapping to pair distinct source values (e.g. Material, Plant) against the target — reflects the recipe's current output."}
           </p>
           <Button
             type="button"
@@ -556,12 +754,14 @@ function TransformationSpecStep() {
             onClick={runValueMapping}
             disabled={!canRunValueMapping || valueMappingLoading}
             title={
-              missingValueMappingReqs.length
-                ? "Tag a field mapping row as these Business Fields first: " +
-                  missingValueMappingReqs
-                    .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
-                    .join("; ")
-                : undefined
+              !useData
+                ? "Enable \"Use data\" on the Dataset Type step to run AI value pairing."
+                : missingValueMappingReqs.length
+                  ? "Tag a field mapping row as these Business Fields first: " +
+                    missingValueMappingReqs
+                      .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
+                      .join("; ")
+                  : undefined
             }
             style={{ width: "100%" }}
           >
@@ -595,6 +795,42 @@ function TransformationSpecStep() {
           the source before AI-mapping pairs the resulting values. Drag to reorder within a phase
           (Filters → Transforms → Aggregations).
         </p>
+        {mappingResolutionLoading && (
+          <p className="wizard-field__help">Resolving the mapping sheet into transformation steps…</p>
+        )}
+        {mappingResolutionError && <Alert variant="error">{mappingResolutionError}</Alert>}
+        {mappingResolution?.degraded && mappingResolution?.degraded_reason && (
+          <Alert variant="info">{mappingResolution.degraded_reason}</Alert>
+        )}
+        {(mappingResolution?.proposed_operations ?? []).length > 0 && (
+          <Alert variant="warning" style={{ marginBottom: 12 }}>
+            <strong>New operation(s) proposed for review — not yet added to the recipe:</strong>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+              {mappingResolution.proposed_operations.map((p, idx) => (
+                <li key={`${p.name}-${idx}`}>
+                  <code>{p.name}</code> ({p.kind}) — {p.contract}
+                </li>
+              ))}
+            </ul>
+          </Alert>
+        )}
+        {(mappingResolution?.requires_value_pairing ?? []).length > 0 && (
+          <Alert variant={useData ? "info" : "warning"} style={{ marginBottom: 12 }}>
+            <strong>
+              {useData
+                ? "These fields need value-level pairing — resolved via AI-mapping below:"
+                : "These fields need value-level pairing — enable \"Use data\" (Dataset Type step) to resolve:"}
+            </strong>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+              {mappingResolution.requires_value_pairing.map((f, idx) => (
+                <li key={`${f.source_column}-${idx}`}>
+                  <code>{f.source_column}</code>
+                  {f.description ? ` — ${f.description}` : ""}
+                </li>
+              ))}
+            </ul>
+          </Alert>
+        )}
         <RecipeEditor
           steps={recipe ?? []}
           onChange={(next) => {
@@ -612,13 +848,21 @@ function TransformationSpecStep() {
 
       {!useScriptTransformations && (
         <section className="wizard-section">
+          {autoRunLoading && (
+            <Alert variant="info" style={{ marginBottom: 12 }}>
+              Building and running the reconciliation automatically…
+            </Alert>
+          )}
+          {autoRunError && (
+            <Alert variant="error" style={{ marginBottom: 12 }}>{autoRunError}</Alert>
+          )}
           <div className="contract-actions">
             <Button
               type="button"
               variant="primary"
               size="lg"
               onClick={approveTransformations}
-              disabled={!canApprove || approveLoading || Boolean(contract)}
+              disabled={!canApprove || approveLoading || autoRunLoading || Boolean(contract)}
             >
               {approveLoading
                 ? "Approving…"

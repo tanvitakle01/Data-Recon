@@ -201,7 +201,7 @@ def from_run(run_id: str) -> NormalizedRecon:
 
 # ── from an uploaded results workbook ────────────────────────────────────────
 
-_REQUIRED_SHEETS = ("Summary", "All Records", "Mapping Details")
+_REQUIRED_SHEETS = ("Summary", "All Records", "Transformations Applied")
 
 
 class UnrecognizedWorkbookError(ValueError):
@@ -272,10 +272,16 @@ def from_workbook(xlsx_bytes: bytes) -> NormalizedRecon:
         )
 
     records_df = _read_sheet_df(wb, "All Records")
-    mapping_df = _read_sheet_df(wb, "Mapping Details")
+    # The "Transformations Applied" sheet interleaves operation-summary rows
+    # with per-value drill-down rows in one flat table — only the drill-down
+    # rows carry a "Mapping" label; summary rows leave it blank, which
+    # excludes them here without any special-casing needed (a plain column
+    # projection, same as the old dedicated "Mapping Details" sheet).
+    mapping_df = _read_sheet_df(wb, "Transformations Applied")
     for col in recon_service._MAPPING_DETAIL_COLUMNS:
         if col not in mapping_df.columns:
             mapping_df[col] = None
+    mapping_df = mapping_df[mapping_df["Mapping"].notna() & (mapping_df["Mapping"] != "")]
 
     columns = list(records_df.columns)
     key_cols, compare_pairs, delta_cols = _column_sections(columns)

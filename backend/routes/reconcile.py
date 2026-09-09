@@ -21,7 +21,7 @@ from starlette.datastructures import UploadFile
 from backend.excel_comparator.core.auto_mapper import auto_map_columns
 from backend.excel_comparator.core.comparator import ExcelComparator
 from backend.excel_comparator.core.date_alignment import build_alignment, filter_to_window
-from backend.excel_comparator.core.loader import load_excel
+from backend.excel_comparator.core.loader import load_tabular_detailed
 from backend.excel_comparator.core.mapper import ColumnMapper
 from backend.excel_comparator.core.writer import write_annotated_excel
 from backend.excel_comparator.utils.helpers import get_output_filename
@@ -140,22 +140,22 @@ def _parse_mapping(mapping_json: Optional[str]) -> dict[str, Any]:
 def _load_excel_from_upload(upload: UploadFile, sheet_name: str | None) -> dict[str, Any]:
     # Validate file extension early.
     filename_l = (upload.filename or "").lower()
-    if not (filename_l.endswith(".xlsx") or filename_l.endswith(".xls")):
-        raise HTTPException(status_code=400, detail="Unsupported file type. Upload .xlsx or .xls")
+    if not (filename_l.endswith(".xlsx") or filename_l.endswith(".xls") or filename_l.endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Unsupported file type. Upload .xlsx, .xls, or .csv")
 
     try:
         content = upload.file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-        loaded = load_excel(BytesIO(content), sheet_name=sheet_name)
+        loaded = load_tabular_detailed(content, upload.filename or "", sheet_name=sheet_name)
         loaded["name"] = upload.filename
         loaded["bytes"] = content
         return loaded
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Bad Excel file: {exc}")
+        raise HTTPException(status_code=400, detail=f"Bad file: {exc}")
 
 
 def _load_rows_from_json(rows_json: Optional[str], label: str) -> pd.DataFrame:

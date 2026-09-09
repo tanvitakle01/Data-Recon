@@ -35,6 +35,7 @@ _MEASURE_FUNC: dict[AggregationType, str] = {
     AggregationType.AVERAGE: "mean",
     AggregationType.MIN: "min",
     AggregationType.MAX: "max",
+    AggregationType.FIRST: "first",
 }
 # Numeric coercion is required for these before aggregating.
 _NUMERIC_FUNCS = {"sum", "mean", "min", "max"}
@@ -81,8 +82,21 @@ class ShadowBuildResult:
     # Rows dropped by the Value Mapping stage (MEDIUM/NONE/OUT_OF_SCOPE value
     # matches, missing key-field values, or values with no deterministic match
     # record), aggregated per distinct (field, source_value) — never a silent
-    # drop. Only VERY_HIGH/HIGH matches ever reach the shadow / join.
+    # drop. Only VERY_HIGH/HIGH matches ever reach the shadow / join. Each
+    # entry also carries "row_ids": the specific raw source row ids that
+    # reason covers (see ``_apply_value_mappings``).
     held_out: list[dict[str, Any]] = dc_field(default_factory=list)
+    # One entry per ENABLED operation in ``contract.operations`` order:
+    # {"op", "field", "params", "kind", "applied_row_ids"} — the raw source
+    # row ids (via POS_COL) that operation actually affected: for a FILTER,
+    # the rows it dropped; for a TRANSFORM, the rows whose tracked column
+    # value actually changed (so a conditional op like remove_leading_zeros
+    # only "applies to" the subset that had something to strip); for an
+    # AGGREGATE, every row that fed into any group it produced. Used to
+    # report "% of source rows this transformation applied to" without a
+    # second execution pass — never used to change which rows reach the
+    # shadow, purely observational bookkeeping alongside it.
+    operation_stats: list[dict[str, Any]] = dc_field(default_factory=list)
 
 
 def _is_blank(value: Any) -> bool:
@@ -188,6 +202,7 @@ def _apply_value_mappings(
                         "rule": "key_completeness",
                         "reason": f"Missing required key field '{source_field}'.",
                         "row_count": int(blank_mask.sum()),
+                        "row_ids": df.loc[blank_mask, POS_COL].astype(int).tolist(),
                     }
                 )
             keep_mask &= ~blank_mask
@@ -203,6 +218,7 @@ def _apply_value_mappings(
         expand_rows: dict[Any, list[tuple[str, str | None]]] = {}
 
         for idx, raw_val in col.items():
+            raw_id = int(df.at[idx, POS_COL])
             if _is_blank(raw_val):
                 bucket = hold_reasons.setdefault(
                     "__null__",
@@ -214,9 +230,11 @@ def _apply_value_mappings(
                         "rule": "key_completeness",
                         "reason": f"Missing required key field '{source_field}'.",
                         "row_count": 0,
+                        "row_ids": [],
                     },
                 )
                 bucket["row_count"] += 1
+                bucket["row_ids"].append(raw_id)
                 hold_mask.at[idx] = True
                 continue
 
@@ -236,9 +254,11 @@ def _apply_value_mappings(
                             "run Deterministic Mapping again to classify it."
                         ),
                         "row_count": 0,
+                        "row_ids": [],
                     },
                 )
                 bucket["row_count"] += 1
+                bucket["row_ids"].append(raw_id)
                 hold_mask.at[idx] = True
                 continue
 
@@ -258,9 +278,11 @@ def _apply_value_mappings(
                         "rule": m.rule,
                         "reason": m.evidence,
                         "row_count": 0,
+                        "row_ids": [],
                     },
                 )
                 bucket["row_count"] += 1
+                bucket["row_ids"].append(raw_id)
                 hold_mask.at[idx] = True
             elif len(accepted) == 1:
                 df.at[idx, source_field] = accepted[0].target_value
@@ -277,8 +299,48 @@ def _apply_value_mappings(
     return df, keep_mask, held_out
 
 
+def _changed_row_ids(before: pd.DataFrame, after: pd.DataFrame, column: str) -> list[int]:
+    """Raw row ids (via POS_COL) whose ``column`` value differs before -> after.
+
+    NaN-safe: two blanks are "unchanged". Assumes ``column`` and POS_COL exist
+    in both frames — only called when the tracked column already existed
+    before the op ran (a brand-new column is handled separately, as
+    "applied to every current row" — see the transform loop below). TRANSFORM
+    ops never change row count (that's the whole FILTER/AGGREGATE distinction),
+    so ``before``/``after`` always share the same POS_COL key set here.
+    """
+    before_map = dict(zip(before[POS_COL].astype(int), before[column]))
+    after_map = dict(zip(after[POS_COL].astype(int), after[column]))
+    changed: list[int] = []
+    for pos, after_val in after_map.items():
+        before_val = before_map.get(pos)
+        b_blank = before_val is None or (isinstance(before_val, float) and pd.isna(before_val))
+        a_blank = after_val is None or (isinstance(after_val, float) and pd.isna(after_val))
+        if b_blank and a_blank:
+            continue
+        if before_val != after_val:
+            changed.append(pos)
+    return changed
+
+
+def _params_for_execution(spec, params: dict[str, Any], run_date: pd.Timestamp) -> dict[str, Any]:
+    """Authored ``params`` as stored, plus ``_run_date`` for ops that need it.
+
+    ``_run_date`` is NEVER part of the persisted contract — it is injected
+    only here, right before execution, for operations the registry marks
+    ``needs_run_date`` (``date_window_filter``, ``relative_date_reassign``).
+    Gate 1 validates the contract's stored params, which never include it.
+    """
+    if spec.needs_run_date:
+        return {**params, "_run_date": run_date}
+    return params
+
+
 def build_shadow_source(
-    contract: TransformationContract, raw_source_df: pd.DataFrame
+    contract: TransformationContract,
+    raw_source_df: pd.DataFrame,
+    *,
+    run_date: pd.Timestamp | str | None = None,
 ) -> ShadowBuildResult:
     """Execute the contract to produce the Shadow_Source, in a fixed pipeline:
 
@@ -298,7 +360,18 @@ def build_shadow_source(
     transform step fixing a typo'd Plant code changes what value-pairing sees).
     Relative order within a stage is preserved. Compare ops are ignored here —
     the reconciler uses them. Raw_Source is never mutated.
+
+    ``run_date`` is the run-time anchor a handful of operations
+    (``date_window_filter``, ``relative_date_reassign``) evaluate against.
+    Defaults to today (normalized to midnight) when omitted; pass an explicit
+    value for reproducible tests or to replay against a past run date. A
+    Review-Changes preview built on one calendar day and a run executed on a
+    later one can therefore legitimately differ for a contract using either
+    op — the fingerprint mismatch this produces is the correct signal to
+    re-review, not a bug.
     """
+    anchor_date = pd.Timestamp(run_date).normalize() if run_date is not None else pd.Timestamp.now().normalize()
+
     df = raw_source_df.reset_index(drop=True).copy()
     df[POS_COL] = range(len(df))
     # pos value -> list of originating raw row ids
@@ -320,13 +393,37 @@ def build_shadow_source(
             aggregates.append((spec, op))
         # COMPARE ops: skipped (reconciler-only).
 
+    operation_stats: list[dict[str, Any]] = []
+
     # ── 0. Filters ──
     for spec, op in filters:
-        df = spec.func(df, op.field, op.params)
+        before_ids = set(df[POS_COL].astype(int))
+        df = spec.func(df, op.field, _params_for_execution(spec, op.params, anchor_date))
+        after_ids = set(df[POS_COL].astype(int))
+        operation_stats.append({
+            "op": op.op, "field": op.field, "params": dict(op.params), "kind": "filter",
+            "applied_row_ids": sorted(before_ids - after_ids),
+        })
 
     # ── 1. Transformations ──
     for spec, op in transforms:
-        df = spec.func(df, op.field, op.params)
+        target_col = op.params.get("into") or op.field
+        existed_before = bool(target_col) and target_col in df.columns
+        before_snapshot = df[[POS_COL, target_col]].copy() if existed_before else None
+        df = spec.func(df, op.field, _params_for_execution(spec, op.params, anchor_date))
+        if not target_col:
+            applied: list[int] = []
+        elif existed_before:
+            applied = _changed_row_ids(before_snapshot, df[[POS_COL, target_col]], target_col)
+        else:
+            # A brand-new column (e.g. concat_fields/calculated_column's
+            # "into") — every current row just got a value for the first
+            # time, so every current row counts as "applied to".
+            applied = df[POS_COL].astype(int).tolist()
+        operation_stats.append({
+            "op": op.op, "field": op.field, "params": dict(op.params), "kind": "transform",
+            "applied_row_ids": applied,
+        })
 
     # ── 2. Value Mapping + key completeness ──
     held_out: list[dict[str, Any]] = []
@@ -336,7 +433,11 @@ def build_shadow_source(
 
     # ── 3. Aggregations ──
     for spec, op in aggregates:
-        df, lineage = _apply_aggregate(spec.func, op, df, lineage)
+        df, lineage, agg_applied = _apply_aggregate(spec.func, op, df, lineage)
+        operation_stats.append({
+            "op": op.op, "field": op.field, "params": dict(op.params), "kind": "aggregate",
+            "applied_row_ids": sorted(agg_applied),
+        })
     df, lineage = _apply_aggregation_rules(contract, df, lineage)
 
     final = df.reset_index(drop=True)
@@ -345,7 +446,9 @@ def build_shadow_source(
 
     final = final.drop(columns=[POS_COL], errors="ignore")
     final[LINEAGE_COL] = [json.dumps(ids) for ids in lineage_rows]
-    return ShadowBuildResult(shadow_df=final, lineage=lineage_rows, held_out=held_out)
+    return ShadowBuildResult(
+        shadow_df=final, lineage=lineage_rows, held_out=held_out, operation_stats=operation_stats,
+    )
 
 
 def _bucket_period(series: pd.Series, agg: AggregationType) -> pd.Series:
@@ -433,13 +536,26 @@ def _apply_aggregation_rules(
 
 
 def _apply_aggregate(func, op, df: pd.DataFrame, lineage: dict[int, list[int]]):
-    """Run an aggregate op while collapsing lineage to the group level."""
+    """Run an aggregate op while collapsing lineage to the group level.
+
+    Every AGGREGATE-kind operation in the registry (``group_by``,
+    ``sum_aggregate``, ``deduplicate``, ``aggregate_group``, and any future
+    one) is routed through this one wrapper by ``build_shadow_source`` — there
+    is no way for an aggregate op to skip lineage collapse; it is a property
+    of the AGGREGATE stage itself, not something an individual op opts into.
+
+    Returns ``(result, new_lineage, applied_row_ids)`` — the third element is
+    the union of every raw row id fed into ANY group this step produced
+    (i.e. every row this aggregate "applied to"), for
+    ``ShadowBuildResult.operation_stats``.
+    """
     by = list(op.params["by"])
     grouped = df.groupby(by, dropna=False)[POS_COL].apply(list)
 
     result = func(df, op.field, op.params).reset_index(drop=True)
 
     new_lineage: dict[int, list[int]] = {}
+    applied_row_ids: set[int] = set()
     for new_i in range(len(result)):
         row = result.iloc[new_i]
         key = tuple(row[c] for c in by)
@@ -452,6 +568,7 @@ def _apply_aggregate(func, op, df: pd.DataFrame, lineage: dict[int, list[int]]):
         for p in group_positions:
             raw_ids.extend(lineage.get(int(p), []))
         new_lineage[new_i] = raw_ids
+        applied_row_ids.update(raw_ids)
 
     result[POS_COL] = range(len(result))
-    return result, new_lineage
+    return result, new_lineage, applied_row_ids

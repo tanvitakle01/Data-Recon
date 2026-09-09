@@ -94,7 +94,7 @@ def test_build_comparison_workbook_is_three_sheets():
     run_id = _completed_run()
     content = service.build_comparison_workbook(run_id)
     wb = openpyxl.load_workbook(BytesIO(content))
-    assert wb.sheetnames == ["Summary", "All Records", "Mapping Details"]
+    assert wb.sheetnames == ["Summary", "All Records", "Transformations Applied"]
 
     # ── All Records: column set computed per contract — same 9 columns/content
     # as before, generic names instead of the old fixed Original*/Date labels.
@@ -189,74 +189,77 @@ def test_build_comparison_workbook_is_three_sheets():
         assert removed_label not in flat
     assert "Exception" not in flat  # exception classification removed
 
-    # Chart-data mini tables (Material/Plant matched vs. unmatched) — Material
-    # A/B/C all resolve (3 matched, 0 unmatched); Plant P1 resolves (1 matched).
-    # Column E holds the label ("Material → PRDID Mapping" / "Matched" / ...),
-    # column F the count; indices below follow the two 3-row blocks written
-    # by build_comparison_workbook (header, Matched, Unmatched) per mapping.
-    chart_data_rows = [r for r in rows if r[4] is not None]
-    assert chart_data_rows[0][4] == "Material → PRDID Mapping"
-    assert chart_data_rows[1][4] == "Matched" and chart_data_rows[1][5] == 3
-    assert chart_data_rows[2][4] == "Unmatched" and chart_data_rows[2][5] == 0
-    assert chart_data_rows[4][4] == "Matched" and chart_data_rows[4][5] == 1
-    assert chart_data_rows[5][4] == "Unmatched" and chart_data_rows[5][5] == 0
+    # Structured "Transformations Applied" table (column E onward) replaces
+    # the old per-key-pair "Mapping Review" pie charts — one row per
+    # value-mapped business-key field (this fixture has no recipe
+    # operations, so both rows are synthesized "value_pairing" entries). All
+    # 3 raw source rows survive (no filters): row 0 (Material "A") matches,
+    # rows 1/2 ("B"/"C") don't — so both fields (they share the same
+    # per-record classification) read 100% applied, 33.3% match, 66.7%
+    # mismatch, 0% unresolved.
+    ta_rows = [r for r in rows if r[4] == "Transformation"]
+    assert ta_rows  # header row present
+    by_field = {r[5]: r for r in rows if r[4] == "value_pairing"}
+    assert by_field["Material"][6:10] == (100.0, 33.3, 66.7, 0.0)
+    assert by_field["Plant"][6:10] == (100.0, 33.3, 66.7, 0.0)
 
-    # Three native pie charts: overall results + one per mapped key pair.
-    # Titles use the contract's actual field names generically now (no more
-    # hardcoded "Product ID"/"Location ID" aliases tied to Material/Plant).
-    assert len(summ._charts) == 3
+    # One native pie chart: overall results only (the per-key-pair mapping
+    # pie charts were replaced by the structured table above).
+    assert len(summ._charts) == 1
     titles = [_chart_title(c) for c in summ._charts]
-    assert titles == [
-        "Overall Run Results",
-        "Material → PRDID Mapping Review",
-        "Plant → LOCID Mapping Review",
-    ]
+    assert titles == ["Overall Run Results"]
 
     assert summ.freeze_panes == "A2"
 
 
-def test_mapping_details_sheet_lists_both_field_pairs():
+def test_transformations_applied_sheet_lists_both_field_pairs():
     run_id = _completed_run()
     content = service.build_comparison_workbook(run_id)
     wb = openpyxl.load_workbook(BytesIO(content))
 
-    ws = wb["Mapping Details"]
+    ws = wb["Transformations Applied"]
     rows = list(ws.iter_rows(values_only=True))
     assert rows[0] == (
+        "Transformation", "Field(s)", "Rows Applied", "% Applied",
+        "% Match", "% Mismatch", "% Unresolved",
         "Mapping", "Source Value", "Target Value", "Status", "Confidence",
         "Corroboration", "Also Candidate For", "Row Count", "Reason", "Pair ID",
     )
 
+    # Detail (drill-down) rows carry a "Mapping" label at index 7; summary
+    # rows leave it blank.
     data = rows[1:]
-    by_source = {(r[0], r[1]): r for r in data}
+    detail = [r for r in data if r[7] is not None]
+    by_source = {(r[7], r[8]): r for r in detail}
 
     # Material -> PRDID: "A" value-mapped (HIGH -> "Verified"), "B"/"C" identity
     # (VERY_HIGH -> "Identity") — all Paired, no siblings so Corroboration blank.
     a = by_source[("Material → PRDID", "A")]
-    assert a[2] == "PA" and a[3] == "Paired" and a[4] == "Verified"
-    assert a[5] is None and a[6] is None  # no competing candidates
+    assert a[9] == "PA" and a[10] == "Paired" and a[11] == "Verified"
+    assert a[12] is None and a[13] is None  # no competing candidates
     # This Manual-mode contract's matches carry no pair_id (see
     # recon_engine.ids/models.value_mapping — set only by the Auto-mode
     # streaming wrapper).
-    assert a[9] is None
+    assert a[16] is None
 
     b = by_source[("Material → PRDID", "B")]
-    assert b[2] == "B" and b[3] == "Paired" and b[4] == "Identity"
+    assert b[9] == "B" and b[10] == "Paired" and b[11] == "Identity"
 
     c = by_source[("Material → PRDID", "C")]
-    assert c[2] == "C" and c[3] == "Paired" and c[4] == "Identity"
+    assert c[9] == "C" and c[10] == "Paired" and c[11] == "Identity"
 
     # Plant -> LOCID also present in the SAME sheet (task spec: both mappings
     # together, not two separate exports).
     p1 = by_source[("Plant → LOCID", "P1")]
-    assert p1[2] == "LOC1" and p1[3] == "Paired" and p1[4] == "Verified"
+    assert p1[9] == "LOC1" and p1[10] == "Paired" and p1[11] == "Verified"
 
-    # Paired rows are colour-filled green.
-    a_row = next(i for i, r in enumerate(data, start=2) if r[:2] == ("Material → PRDID", "A"))
-    assert ws.cell(row=a_row, column=1).fill.fgColor.rgb.endswith("C6EFCE")
+    # Paired detail rows are colour-filled green, and collapsed under their
+    # summary row via Excel's native row-group outline.
+    a_row = next(i for i, r in enumerate(data, start=2) if r[7:9] == ("Material → PRDID", "A"))
+    assert ws.cell(row=a_row, column=8).fill.fgColor.rgb.endswith("C6EFCE")
+    assert ws.row_dimensions[a_row].outlineLevel == 1
 
     assert ws.freeze_panes == "A2"
-    assert ws.auto_filter.ref == f"A1:J{len(data) + 1}"
 
 
 def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field():
@@ -336,13 +339,15 @@ def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field(
     assert data_row[4] == "R1" and data_row[5] == "R1"  # Region (Original) / RegionCode (Paired)
     assert data_row[10] == 0 and data_row[13] == 0  # both compare fields' Delta is 0 (10-10, 5-5)
 
-    # Overall + 3 mapped key pairs (Material/Plant/Region — Date has no value
-    # mapping, so no pie chart for it) = 4 pie charts, not capped at 2.
+    # Only the overall-results pie chart remains — the per-key-pair mapping
+    # pie charts were replaced by the "Transformations Applied" structured
+    # table (Summary sheet, column E onward).
     summ = wb["Summary"]
-    assert len(summ._charts) == 4
+    assert len(summ._charts) == 1
 
-    mapping_ws = wb["Mapping Details"]
-    labels = {r[0] for r in mapping_ws.iter_rows(values_only=True, min_row=2)}
+    mapping_ws = wb["Transformations Applied"]
+    # "Mapping" is column index 7 (0-based) — after the 7 op-summary columns.
+    labels = {r[7] for r in mapping_ws.iter_rows(values_only=True, min_row=2) if r[7] is not None}
     assert labels == {"Material → PRDID", "Plant → LOCID", "Region → RegionCode"}
 
 

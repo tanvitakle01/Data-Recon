@@ -62,11 +62,31 @@ const PARAM_META = {
   },
   keep: { type: "select", label: "Keep", options: ["first", "last"] },
   aggregations: { type: "aggregations", label: "Aggregations (field + function)" },
+  width: { type: "number", label: "Width" },
+  granularity: {
+    type: "select",
+    label: "Granularity",
+    options: ["day", "week", "month", "quarter", "year"],
+  },
+  anchor: { type: "select", label: "Anchor", options: ["start", "end"] },
+  lower_offset_days: { type: "number", label: "Lower offset (days from run date)" },
+  upper_offset_days: { type: "number", label: "Upper offset (days from run date)" },
+  offset_days: { type: "number", label: "Offset (days from run date)" },
+  // Named distinctly from `condition` above (a different value space:
+  // date comparisons here vs. non_empty/numeric/matches there) so the two
+  // ops never collide on the same dropdown options.
+  date_condition: { type: "select", label: "Date condition", options: ["lt", "gt", "eq"] },
+  compare_to: { type: "text", label: "Compare to", placeholder: "run_date or a column name" },
+  weekday_exception: {
+    type: "json",
+    label: "Weekday exception (JSON)",
+    placeholder: '{"on_weekday":"saturday","offset_days":2}',
+  },
 };
 
 // aggregate_group's per-row aggregation function choices — the same
 // sum/count/average/min/max vocabulary the backend's AggregationType enum uses.
-const AGG_FUNCS = ["sum", "count", "average", "min", "max"];
+const AGG_FUNCS = ["sum", "count", "average", "min", "max", "first"];
 
 function MultiColumnSelect({ columns, value, onChange }) {
   const selected = Array.isArray(value) ? value : [];
@@ -210,6 +230,31 @@ function ParamField({ name, value, columns, onChange }) {
             </option>
           ))}
         </select>
+      </div>
+    );
+  }
+  if (meta.type === "json") {
+    // Stateless round-trip: while the typed text is valid JSON, `value` is a
+    // real object/array (what the executor needs); mid-edit, an incomplete
+    // literal is kept as a plain string so the field stays editable rather
+    // than reverting on every keystroke.
+    const text = typeof value === "string" ? value : JSON.stringify(value ?? {});
+    return (
+      <div className={styles.field}>
+        <label className={styles.fieldLabel}>{meta.label}</label>
+        <input
+          className={styles.input}
+          value={text}
+          placeholder={meta.placeholder}
+          onChange={(e) => {
+            const raw = e.target.value;
+            try {
+              set(JSON.parse(raw));
+            } catch {
+              set(raw);
+            }
+          }}
+        />
       </div>
     );
   }

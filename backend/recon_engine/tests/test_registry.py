@@ -43,3 +43,55 @@ def test_validate_field_list_param_checks_membership():
     spec = get_operation("group_by")
     errors = spec.validate(None, {"by": ["a", "ghost"]}, columns=["a", "b"])
     assert any("ghost" in e for e in errors)
+
+
+def test_validate_sentinel_field_param_allows_sentinel_but_gates_other_values():
+    spec = get_operation("relative_date_reassign")
+    ok = spec.validate(
+        "d", {"date_condition": "lt", "offset_days": 1, "compare_to": "run_date"}, columns=["d"]
+    )
+    assert ok == []
+
+    real_column = spec.validate(
+        "d", {"date_condition": "lt", "offset_days": 1, "compare_to": "other_date"},
+        columns=["d", "other_date"],
+    )
+    assert real_column == []
+
+    hallucinated = spec.validate(
+        "d", {"date_condition": "lt", "offset_days": 1, "compare_to": "NotAColumn"}, columns=["d"]
+    )
+    assert any("NotAColumn" in e for e in hallucinated)
+
+
+def test_validate_enum_param_rejects_unknown_value():
+    spec = get_operation("relative_date_reassign")
+    errors = spec.validate("d", {"date_condition": "before", "offset_days": 1}, columns=["d"])
+    assert any("date_condition" in e and "before" in e for e in errors)
+
+    bucket = get_operation("date_bucket")
+    errors = bucket.validate("d", {"granularity": "annual"}, columns=["d"])
+    assert any("granularity" in e and "annual" in e for e in errors)
+
+
+def test_validate_rejects_measure_field_that_is_also_a_group_by_key():
+    spec = get_operation("aggregate_group")
+    errors = spec.validate(
+        None,
+        {"by": ["product", "month"], "aggregations": [{"field": "month", "func": "count"}]},
+        columns=["product", "month", "qty"],
+    )
+    assert any("month" in e and "group-by" in e for e in errors)
+
+
+def test_validate_allows_disjoint_group_by_and_measures():
+    spec = get_operation("aggregate_group")
+    errors = spec.validate(
+        None,
+        {
+            "by": ["product", "plant", "month"],
+            "aggregations": [{"field": "qty", "func": "sum"}, {"field": "price", "func": "average"}],
+        },
+        columns=["product", "plant", "month", "qty", "price"],
+    )
+    assert errors == []

@@ -456,6 +456,15 @@ function ComparisonTypeStep() {
       formData.append("file", file);
       formData.append("sheet_name", iface.sheet);
       const parseRes = await api.post("/api/recon/mapping-sheet/parse", formData);
+      // Also feeds Step 4 (Mapping): the Recipe Editor's "draft from
+      // description" context, and the sequential AI mapping-resolution chain
+      // (TransformationSpecStep) both read `transformationSpec.parsedMappingSheet`.
+      // Dispatched before identify (below) so it's available even if
+      // identification itself fails/degrades.
+      dispatch({
+        type: WizardActions.SET_PARSED_MAPPING_SHEET,
+        parsedMappingSheet: parseRes.data,
+      });
       // include_entities: the same identification call also returns which
       // entities to fetch per side and any implied join, gated against each
       // side's live entity list. Pre-populates the Join Builder canvas.
@@ -510,6 +519,14 @@ function ComparisonTypeStep() {
       // parse without asking for the workbook again.
       const index = { ...res.data, file };
       dispatch({ type: WizardActions.SET_INTERFACE_INDEX, interfaceIndex: index });
+      // Records the workbook itself (name/size) on transformationSpec — Step
+      // 4 (Results export, the Recipe Editor's AI context) reads this. Also
+      // resets parsedMappingSheet, which selectInterface below repopulates
+      // once the chosen interface's sheet is parsed.
+      dispatch({
+        type: WizardActions.SET_MAPPING_SHEET,
+        mappingSheet: { name: file.name, size: file.size, file },
+      });
 
       const list = res.data.interfaces ?? [];
       if (list.length === 1 && list[0].status === "ok") {
@@ -530,6 +547,7 @@ function ComparisonTypeStep() {
     dispatch({ type: WizardActions.CLEAR_INTERFACE_INDEX });
     dispatch({ type: WizardActions.SET_COMPARISON_TYPE, comparisonType: null });
     dispatch({ type: WizardActions.CLEAR_SHEET_IDENTIFICATION });
+    dispatch({ type: WizardActions.SET_MAPPING_SHEET, mappingSheet: null });
     dispatch({ type: WizardActions.CLEAR_ENTITY_JOIN, role: "source" });
     dispatch({ type: WizardActions.CLEAR_ENTITY_JOIN, role: "target" });
     setSheetError(null);
@@ -1150,6 +1168,26 @@ function ComparisonTypeStep() {
                     <span>{state.comparisonType.label}</span>
                   </div>
                 )}
+
+                {/* Run-level flag, unchecked by default: gates ONLY the
+                    data-level value-pairing stage on the Mapping step (never
+                    the header-binding-only chain compile, which always
+                    runs). See TransformationSpecStep's runValueMapping. */}
+                <label className="wizard-use-data">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(state.useData)}
+                    onChange={(e) =>
+                      dispatch({ type: WizardActions.SET_USE_DATA, useData: e.target.checked })
+                    }
+                  />
+                  <span className="wizard-use-data__label">Use data</span>
+                </label>
+                <p className="wizard-field__help" style={{ marginTop: 0 }}>
+                  {state.useData
+                    ? "AI value-pairing will send distinct source/target values to the AI provider to resolve value-level crosswalks."
+                    : "Only the mapping sheet's text and column headers are sent to AI — no data values. Fields needing a value-level crosswalk are flagged as pending on the Mapping step."}
+                </p>
               </div>
 
               {/* ── Run mode: segmented Manual/Automatic + single Start action ── */}
