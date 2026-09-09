@@ -105,12 +105,6 @@ function MappingEditor({
       </div>
 
       <div className="ct-card__body">
-        <p className="wizard-field__help" style={{ marginTop: 0 }}>
-          Confirm the source-to-target field mapping. Adjust the target column or role for any row,
-          or add a row for a missing pairing. "Business Field" is auto-detected from the column names
-          for Deterministic Mapping — retag it if a required field wasn't recognized.
-        </p>
-
         {error && <Alert variant="error">{error}</Alert>}
         {notice && !error && <Alert variant="info">{notice}</Alert>}
         {loading && !display.length && (

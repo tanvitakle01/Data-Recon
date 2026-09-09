@@ -5,7 +5,7 @@ import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import StepShell from "../components/StepShell";
 import { getVisibleSteps, getStepByKey } from "./stepConfig";
-import { liveKindForRole } from "../lib/connectorOptions";
+import Chevron from "../components/Chevron";
 import {
   describeEntitySource,
   effectiveEntityJoin,
@@ -173,7 +173,7 @@ function SideDetail({ title, side, spec, overridesSheet }) {
             <dd className="wizard-detail-warn">
               Matches {spec.ambiguous.length} entities equally (
               {spec.ambiguous.slice(0, 4).join(", ")}
-              {spec.ambiguous.length > 4 ? "…" : ""}) — name the planning area in Additional Instructions.
+              {spec.ambiguous.length > 4 ? "…" : ""}) — not resolved automatically.
             </dd>
           </>
         )}
@@ -382,7 +382,7 @@ function buildPreflightRows({
     name: "Entities resolve",
     detail:
       unresolvedCount || ambiguousCount
-        ? `${unresolvedCount} unresolved, ${ambiguousCount} ambiguous — resolve in Additional Instructions.`
+        ? `${unresolvedCount} unresolved, ${ambiguousCount} ambiguous — not resolved automatically.`
         : "All named entities exist on their connector.",
   });
 
@@ -405,6 +405,12 @@ function ComparisonTypeStep() {
   const identification = state.sheetIdentification;
   const interfaceIndex = state.interfaceIndex;
 
+  // Detection details and Pre-flight checks are both collapsed by default —
+  // their content is derived/secondary to the mapping-sheet summary above,
+  // so hiding them behind a dropdown keeps the column from feeling crowded.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [preflightOpen, setPreflightOpen] = useState(false);
+
   const interfaces = interfaceIndex?.interfaces ?? [];
   const selectedInterface = interfaces.find((i) => i.id === selectedId) ?? null;
   // A workbook whose index lists exactly one interface (or a single-sheet
@@ -423,9 +429,6 @@ function ComparisonTypeStep() {
   // sheetLoading (the workbook index read) because they are separate phases:
   // the index read only ever yields the interface list.
   const [sliceLoading, setSliceLoading] = useState(false);
-
-  const [instrBusy, setInstrBusy] = useState(false);
-  const [instrError, setInstrError] = useState(null);
 
   // Slice ONE interface out of the workbook and interpret only that slice:
   // parse (deterministic, scoped to that worksheet) → identify (LLM,
@@ -572,63 +575,6 @@ function ComparisonTypeStep() {
     hasIdentification &&
     Boolean(identification?.source?.kind) &&
     Boolean(identification?.target?.kind);
-
-  // Each side's entity/join input is resolved against ITS OWN connector kind:
-  // the one the sheet identified for that side, else that role's sole live
-  // connector. Resolving the two sides separately is what keeps a source
-  // instruction from ever resolving to a target entity.
-  const sourceKind = liveKindForRole("source", identification?.source);
-  const targetKind = liveKindForRole("target", identification?.target);
-
-  // ── Additional Instructions: ONE box, fired at BOTH sides ───────────────
-  // The same text is sent to /entity-join/parse once scoped to sourceKind and
-  // once to targetKind. Each call is independently existence-gated against
-  // that connector's own live entities, so a sentence naming an S/4 entity
-  // and an IBP planning area resolves correctly on both sides without this
-  // box ever needing to know which words belong to which side.
-  const instructionsText = state.entityJoin?.source?.text ?? "";
-
-  const setInstructions = (text) => {
-    dispatch({ type: WizardActions.SET_ENTITY_JOIN_TEXT, role: "source", text });
-    dispatch({ type: WizardActions.SET_ENTITY_JOIN_TEXT, role: "target", text });
-  };
-
-  const resolveInstructions = async () => {
-    if (!instructionsText.trim()) return;
-    // Planning area is never set separately here — the same free text carries
-    // it (e.g. "use IBP planning area ZOBP2508"), and each call below is
-    // gated/extracted by the backend exactly like every other instruction.
-    const targets = [
-      { role: "source", kind: sourceKind },
-      { role: "target", kind: targetKind },
-    ].filter((t) => t.kind);
-    if (targets.length === 0) return;
-
-    setInstrBusy(true);
-    setInstrError(null);
-    try {
-      await Promise.all(
-        targets.map(async ({ role, kind }) => {
-          const res = await api.post("/api/recon/entity-join/parse", {
-            kind,
-            text: instructionsText,
-          });
-          dispatch({ type: WizardActions.SET_ENTITY_JOIN_PARSED, role, parsed: res.data ?? null });
-        })
-      );
-    } catch (err) {
-      const detail = err?.response?.data?.detail;
-      setInstrError(typeof detail === "string" ? detail : "Could not read that instruction.");
-    } finally {
-      setInstrBusy(false);
-    }
-  };
-
-  const clearInstructions = () => {
-    dispatch({ type: WizardActions.CLEAR_ENTITY_JOIN, role: "source" });
-    dispatch({ type: WizardActions.CLEAR_ENTITY_JOIN, role: "target" });
-    setInstrError(null);
-  };
 
   // ── Auto/Manual: replaces the shell's generic Continue button ───────────
   const navigate = useNavigate();
@@ -1065,28 +1011,60 @@ function ComparisonTypeStep() {
             </div>
           </section>
 
-          {/* Detection details: its own always-visible card — no click needed
-              to see confidence/evidence/join reasoning. */}
+          {/* Detection details: collapsed behind a dropdown — the compact
+              summary above already covers the common case. */}
           {hasIdentification && (
             <section className="ct-card">
-              <div className="ct-card__head">
+              <div
+                className="ct-card__head ct-card__head--toggle"
+                role="button"
+                tabIndex={0}
+                aria-expanded={detailsOpen}
+                onClick={() => setDetailsOpen((open) => !open)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setDetailsOpen((open) => !open);
+                  }
+                }}
+              >
                 <h3 className="ct-card__title">Detection details</h3>
+                <span className="ct-card__spacer" />
+                <Chevron open={detailsOpen} />
               </div>
-              <div className="ct-card__body">
-                <DetectionDetails state={state} identification={identification} />
-              </div>
+              {detailsOpen && (
+                <div className="ct-card__body">
+                  <DetectionDetails state={state} identification={identification} />
+                </div>
+              )}
             </section>
           )}
 
           <section className="ct-card ct-card--tint-yellow">
-            <div className="ct-card__head">
+            <div
+              className="ct-card__head ct-card__head--toggle"
+              role="button"
+              tabIndex={0}
+              aria-expanded={preflightOpen}
+              onClick={() => setPreflightOpen((open) => !open)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setPreflightOpen((open) => !open);
+                }
+              }}
+            >
               <h3 className="ct-card__title">Pre-flight checks</h3>
+              <span className="ct-card__spacer" />
+              <Chevron open={preflightOpen} />
             </div>
-            <div className="ct-card__body ct-card__body--flush">
-              {preflightRows.map((row) => (
-                <PreflightRow key={row.name} {...row} />
-              ))}
-            </div>
+            {preflightOpen && (
+              <div className="ct-card__body ct-card__body--flush">
+                {preflightRows.map((row) => (
+                  <PreflightRow key={row.name} {...row} />
+                ))}
+              </div>
+            )}
           </section>
 
           {/* The interface-scoping contract, stated plainly: exactly one
@@ -1183,11 +1161,6 @@ function ComparisonTypeStep() {
                   />
                   <span className="wizard-use-data__label">Use data</span>
                 </label>
-                <p className="wizard-field__help" style={{ marginTop: 0 }}>
-                  {state.useData
-                    ? "AI value-pairing will send distinct source/target values to the AI provider to resolve value-level crosswalks."
-                    : "Only the mapping sheet's text and column headers are sent to AI — no data values. Fields needing a value-level crosswalk are flagged as pending on the Mapping step."}
-                </p>
               </div>
 
               {/* ── Run mode: segmented Manual/Automatic + single Start action ── */}
@@ -1311,51 +1284,6 @@ function ComparisonTypeStep() {
                     </div>
                   </Alert>
                 )}
-              </div>
-            </div>
-          </section>
-
-          {/* Additional instructions: its own always-visible card, not hidden
-              behind a click — optional, but never out of sight. */}
-          <section className="ct-card">
-            <div className="ct-card__head">
-              <h3 className="ct-card__title">Additional instructions</h3>
-              <span className="ct-hint-badge--optional">Optional</span>
-              <span className="ct-card__spacer" />
-              {instructionsText && <Badge variant="teal">Set</Badge>}
-            </div>
-            <div className="ct-card__body">
-              <div className="wizard-instructions">
-                <p className="wizard-field__help" style={{ marginTop: 0 }}>
-                  Describe S/4 entities, the IBP planning area, joins, or mapping overrides in plain
-                  language.
-                </p>
-                <textarea
-                  id="additional-instructions"
-                  aria-label="Additional Instructions"
-                  className="wizard-instructions__textarea"
-                  rows={2}
-                  placeholder='e.g. "Join SalesOrder and ScheduleLine with a left join on SalesOrder; use IBP planning area ZOBP2508"'
-                  value={instructionsText}
-                  onChange={(e) => setInstructions(e.target.value)}
-                />
-                <div className="wizard-instructions__actions">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={resolveInstructions}
-                    loading={instrBusy}
-                    disabled={instrBusy || !instructionsText.trim()}
-                  >
-                    {instrBusy ? "Applying…" : "Apply"}
-                  </Button>
-                  {instructionsText && (
-                    <button type="button" className="wizard-link" onClick={clearInstructions}>
-                      Clear
-                    </button>
-                  )}
-                </div>
-                {instrError && <Alert variant="error">{instrError}</Alert>}
               </div>
             </div>
           </section>

@@ -23,6 +23,7 @@ import MappingEditor from "../components/MappingEditor";
 import RecipeEditor from "../components/RecipeEditor";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
 import MappingReviewDrawer from "../components/MappingReviewDrawer";
+import Chevron from "../components/Chevron";
 import { operationsToSteps, serializeOperations } from "../lib/recipeModel";
 import { Button, Alert } from "@bristlecone/canopy";
 
@@ -113,8 +114,6 @@ function TransformationSpecStep() {
   // (served by OpenAI) or a degraded reason (no mapping could be generated).
   const [mapNotice, setMapNotice] = useState(null);
   const [valueMappingLoading, setValueMappingLoading] = useState(false);
-  const [valueMappingError, setValueMappingError] = useState(null);
-  const [valueMappingSuccess, setValueMappingSuccess] = useState(false);
   const [contractError, setContractError] = useState(null);
   // Non-blocking notice when an LLM provider failover occurred (Groq→OpenAI) or
   // when every AI provider was unavailable (spec points 5 & 6).
@@ -127,6 +126,9 @@ function TransformationSpecStep() {
   // Mapping Review: closed by default, opens as a right-side slide-out drawer
   // that overlays the Recipe Editor rather than replacing it in place.
   const [reviewOpen, setReviewOpen] = useState(false);
+  // Transformation Recipe: collapsed by default behind a dropdown, matching
+  // the rest of the mapping card.
+  const [recipeOpen, setRecipeOpen] = useState(false);
   // Signature of the (source, target) datasets we last auto-mapped. When the
   // user re-uploads or re-fetches, the dataset id changes and the reducer
   // clears the stale mapping, so a new signature re-triggers auto-mapping
@@ -333,25 +335,16 @@ function TransformationSpecStep() {
   const runValueMapping = async () => {
     if (!useData) return;
     const formData = buildValueMappingFormData(source, target, parsedMappingSheet, mapping?.display);
-    if (!formData) {
-      setValueMappingError(
-        "Source or target data is no longer available. Go back and re-fetch or re-upload it.",
-      );
-      return;
-    }
+    if (!formData) return;
     setValueMappingLoading(true);
-    setValueMappingError(null);
-    setValueMappingSuccess(false);
     try {
       const res = await api.post("/api/recon/value-mapping/run", formData);
       dispatch({
         type: WizardActions.SET_VALUE_MAPPINGS,
         valueMappings: res.data?.pairs ?? [],
       });
-      setValueMappingSuccess(true);
-    } catch (err) {
-      const detail = err?.response?.data?.detail;
-      setValueMappingError(typeof detail === "string" ? detail : "AI-mapping failed.");
+    } catch {
+      // Best-effort — Mapping Review reflects whatever the last successful run produced.
     } finally {
       setValueMappingLoading(false);
     }
@@ -734,48 +727,6 @@ function TransformationSpecStep() {
         )}
       </div>
 
-      <section className="ct-card">
-        <div className="ct-card__head">
-          <h3 className="ct-card__title">Value pairing</h3>
-        </div>
-        <div className="ct-card__body">
-          <p className="wizard-field__help" style={{ marginTop: 0 }}>
-            {!useData
-              ? "\"Use data\" is off (Dataset Type step) — no distinct values are sent to AI. Enable it there to pair Key/Compare values."
-              : pairing
-                ? pairing.total > 0
-                  ? `${pairing.matched} of ${pairing.total} distinct values paired (${Math.round((pairing.matched / pairing.total) * 100)}%). ${pairing.total - pairing.matched} value${pairing.total - pairing.matched === 1 ? "" : "s"} have no target and will be reported as mismatches.`
-                  : "AI-mapping ran but found no distinct values to pair yet."
-                : "Run AI-mapping to pair distinct source values (e.g. Material, Plant) against the target — reflects the recipe's current output."}
-          </p>
-          <Button
-            type="button"
-            variant="primary"
-            onClick={runValueMapping}
-            disabled={!canRunValueMapping || valueMappingLoading}
-            title={
-              !useData
-                ? "Enable \"Use data\" on the Dataset Type step to run AI value pairing."
-                : missingValueMappingReqs.length
-                  ? "Tag a field mapping row as these Business Fields first: " +
-                    missingValueMappingReqs
-                      .map((r) => `${r.label} (${r.requiredRowRole === "key" ? "Key" : "Compare"})`)
-                      .join("; ")
-                  : undefined
-            }
-            style={{ width: "100%" }}
-          >
-            {valueMappingLoading ? "Matching…" : valueMappings ? "Re-run AI-mapping" : "Run AI-mapping"}
-          </Button>
-          {valueMappingError && <Alert variant="error">{valueMappingError}</Alert>}
-          {valueMappingSuccess && !valueMappingError && (
-            <Alert variant="success">
-              AI-mapping complete. Expand Mapping Review below to inspect the tiers.
-            </Alert>
-          )}
-        </div>
-      </section>
-
       <button
         type="button"
         className="ct-mapping-review-fab"
@@ -789,57 +740,76 @@ function TransformationSpecStep() {
       </button>
 
       <section className="wizard-section">
-        <h3 className="wizard-section__title">Transformation Recipe</h3>
-        <p className="wizard-field__help">
-          Build an ordered list of transformation steps — each step is one operation applied to
-          the source before AI-mapping pairs the resulting values. Drag to reorder within a phase
-          (Filters → Transforms → Aggregations).
-        </p>
-        {mappingResolutionLoading && (
-          <p className="wizard-field__help">Resolving the mapping sheet into transformation steps…</p>
-        )}
-        {mappingResolutionError && <Alert variant="error">{mappingResolutionError}</Alert>}
-        {mappingResolution?.degraded && mappingResolution?.degraded_reason && (
-          <Alert variant="info">{mappingResolution.degraded_reason}</Alert>
-        )}
-        {(mappingResolution?.proposed_operations ?? []).length > 0 && (
-          <Alert variant="warning" style={{ marginBottom: 12 }}>
-            <strong>New operation(s) proposed for review — not yet added to the recipe:</strong>
-            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-              {mappingResolution.proposed_operations.map((p, idx) => (
-                <li key={`${p.name}-${idx}`}>
-                  <code>{p.name}</code> ({p.kind}) — {p.contract}
-                </li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-        {(mappingResolution?.requires_value_pairing ?? []).length > 0 && (
-          <Alert variant={useData ? "info" : "warning"} style={{ marginBottom: 12 }}>
-            <strong>
-              {useData
-                ? "These fields need value-level pairing — resolved via AI-mapping below:"
-                : "These fields need value-level pairing — enable \"Use data\" (Dataset Type step) to resolve:"}
-            </strong>
-            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-              {mappingResolution.requires_value_pairing.map((f, idx) => (
-                <li key={`${f.source_column}-${idx}`}>
-                  <code>{f.source_column}</code>
-                  {f.description ? ` — ${f.description}` : ""}
-                </li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-        <RecipeEditor
-          steps={recipe ?? []}
-          onChange={(next) => {
-            dispatch({ type: WizardActions.SET_RECIPE, recipe: next });
-            invalidateApproval();
+        <div
+          className="wizard-section__head wizard-section__head--toggle"
+          role="button"
+          tabIndex={0}
+          aria-expanded={recipeOpen}
+          onClick={() => setRecipeOpen((open) => !open)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setRecipeOpen((open) => !open);
+            }
           }}
-          sourceColumns={sourceColumns}
-          onDraftSteps={draftStepsFromDescription}
-        />
+        >
+          <h3 className="wizard-section__title">Transformation Recipe</h3>
+          <Chevron open={recipeOpen} />
+        </div>
+        {recipeOpen && (
+          <>
+            <p className="wizard-field__help">
+              Build an ordered list of transformation steps — each step is one operation applied to
+              the source before AI-mapping pairs the resulting values. Drag to reorder within a phase
+              (Filters → Transforms → Aggregations).
+            </p>
+            {mappingResolutionLoading && (
+              <p className="wizard-field__help">Resolving the mapping sheet into transformation steps…</p>
+            )}
+            {mappingResolutionError && <Alert variant="error">{mappingResolutionError}</Alert>}
+            {mappingResolution?.degraded && mappingResolution?.degraded_reason && (
+              <Alert variant="info">{mappingResolution.degraded_reason}</Alert>
+            )}
+            {(mappingResolution?.proposed_operations ?? []).length > 0 && (
+              <Alert variant="warning" style={{ marginBottom: 12 }}>
+                <strong>New operation(s) proposed for review — not yet added to the recipe:</strong>
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                  {mappingResolution.proposed_operations.map((p, idx) => (
+                    <li key={`${p.name}-${idx}`}>
+                      <code>{p.name}</code> ({p.kind}) — {p.contract}
+                    </li>
+                  ))}
+                </ul>
+              </Alert>
+            )}
+            {(mappingResolution?.requires_value_pairing ?? []).length > 0 && (
+              <Alert variant={useData ? "info" : "warning"} style={{ marginBottom: 12 }}>
+                <strong>
+                  {useData
+                    ? "These fields need value-level pairing — resolved via AI-mapping below:"
+                    : "These fields need value-level pairing — enable \"Use data\" (Dataset Type step) to resolve:"}
+                </strong>
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                  {mappingResolution.requires_value_pairing.map((f, idx) => (
+                    <li key={`${f.source_column}-${idx}`}>
+                      <code>{f.source_column}</code>
+                      {f.description ? ` — ${f.description}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </Alert>
+            )}
+            <RecipeEditor
+              steps={recipe ?? []}
+              onChange={(next) => {
+                dispatch({ type: WizardActions.SET_RECIPE, recipe: next });
+                invalidateApproval();
+              }}
+              sourceColumns={sourceColumns}
+              onDraftSteps={draftStepsFromDescription}
+            />
+          </>
+        )}
       </section>
 
       <MappingReviewDrawer open={reviewOpen} onClose={() => setReviewOpen(false)} />
