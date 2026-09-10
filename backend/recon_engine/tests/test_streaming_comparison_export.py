@@ -136,56 +136,58 @@ def test_streaming_run_all_records_has_real_field_values_not_blank():
 
     ws = wb["All Records"]
     header = next(ws.iter_rows(values_only=True))
-    # The run-scoped accumulated value mappings make this an Original/Paired
-    # split, exactly like a Manual-mode run whose contract carries the
-    # mapping directly — not the flat "Material"/"Plant" single columns a
-    # missing/empty contract.value_mappings would produce.
-    assert header[:4] == ("Material (Original)", "PRDID (Paired)", "Plant (Original)", "LOCID (Paired)")
+    # The run-scoped accumulated value mappings make this a Source/Target
+    # split (headed with the contract's own field names, since Material !=
+    # PRDID and Plant != LOCID) with a Pair ID after each mapped key, exactly
+    # like a Manual-mode run whose contract carries the mapping directly —
+    # not the flat "Material"/"Plant" single columns a missing/empty
+    # contract.value_mappings would produce.
+    assert header[:6] == (
+        "Material", "PRDID", "Material Pair ID",
+        "Plant", "LOCID", "Plant Pair ID",
+    )
 
-    rows = {r[1]: r for r in ws.iter_rows(values_only=True, min_row=2)}  # keyed by PRDID (Paired)
+    prdid_col = header.index("PRDID")
+    rows = {r[prdid_col]: r for r in ws.iter_rows(values_only=True, min_row=2)}
 
-    match = rows["PA"]
-    assert match[0] == "A"  # Material (Original)
-    assert match[2] == "P1" and match[3] == "LOC1"
+    material_col = header.index("Material")
+    plant_col = header.index("Plant")
+    locid_col = header.index("LOCID")
     qty_col = header.index("ReqQty")
     tgt_col = header.index("SalesOrderRequest")
     delta_col = header.index("Delta")
+
+    match = rows["PA"]
+    assert match[material_col] == "A"
+    assert match[plant_col] == "P1" and match[locid_col] == "LOC1"
     assert match[qty_col] == 10 and match[tgt_col] == 10 and match[delta_col] == 0
 
     mismatch = rows["B"]
-    assert mismatch[0] == "B"
-    assert mismatch[qty_col] == 20 and mismatch[tgt_col] == 25 and mismatch[delta_col] == -5
-
-    # Traceability columns carry the batch's real ids (Auto mode, unlike
-    # Manual mode's always-blank Batch ID/Record ID).
-    batch_col = header.index("Batch ID")
-    record_col = header.index("Record ID")
-    for row in rows.values():
-        assert row[batch_col] == "batch_1"
-        assert row[record_col] is not None
+    assert mismatch[material_col] == "B"
+    assert mismatch[qty_col] == 20 and mismatch[tgt_col] == 25 and mismatch[delta_col] == 5
 
 
-def test_streaming_run_mapping_details_sheet_is_populated():
+def test_streaming_run_mapping_summary_rows_present():
     # Auto-mode runs have no reloadable raw source snapshot (see the module
     # docstring), so this exercises the value-pairing-only fallback
-    # (`_value_pairing_outcomes_from_contract_only`) — no per-operation rows,
-    # but the per-value drill-down must still be there, unregressed.
+    # (`_value_pairing_outcomes_from_contract_only`) — a summary row per
+    # value-mapped field, unregressed even without a raw source snapshot to
+    # replay. No per-value drill-down rows (task spec).
     run_id = _streaming_run()
     content = service.build_comparison_workbook(run_id)
     wb = openpyxl.load_workbook(BytesIO(content))
 
     ws = wb["Transformations Applied"]
     rows = list(ws.iter_rows(values_only=True))
-    # Columns: 7 op-summary columns, then _MAPPING_DETAIL_COLUMNS starting at
-    # index 7 with "Mapping" — only detail rows populate it.
-    detail_rows = [r for r in rows[1:] if r[7] is not None]
-    assert detail_rows, "Transformations Applied must carry per-value detail for an Auto-mode run"
+    assert rows[0] == ("Transformation", "Field(s)", "Rows Applied", "% Applied", "% Match", "% Mismatch")
 
-    by_source = {(r[7], r[8]): r for r in detail_rows}
-    a = by_source[("Material → PRDID", "A")]
-    assert a[9] == "PA" and a[10] == "Paired" and a[11] == "Verified"
-    p1 = by_source[("Plant → LOCID", "P1")]
-    assert p1[9] == "LOC1" and p1[10] == "Paired"
+    by_field = {r[1]: r for r in rows[1:] if r[0] == "value_pairing"}
+    assert set(by_field) == {"Material", "Plant"}
+    # Both source values matched a target value (A->PA, B->B, P1->LOC1) — no
+    # % Applied without a raw snapshot to compute it against (see
+    # `_value_pairing_outcomes_from_contract_only`).
+    assert by_field["Material"][2:6] == (2, None, 100.0, 0.0)
+    assert by_field["Plant"][2:6] == (2, None, 100.0, 0.0)
 
 
 def test_streaming_run_insights_and_pdf_work_for_chatbot_view_insights():

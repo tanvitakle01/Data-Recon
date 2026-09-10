@@ -62,9 +62,9 @@ def _break_rate_summary(df: pd.DataFrame, abs_variance: pd.Series, delta_columns
 
 def _representative(df: pd.DataFrame, cols: list[str]) -> pd.Series:
     """One value per row across a dimension's candidate columns (e.g. a
-    value-mapped key's "X (Original)" + "Y (Paired)" pair) — the first
-    non-null column wins, same source-preferred-over-target convention as
-    `service._unified`."""
+    key's "X (Source)" + "Y (Target)" pair) — the first non-null column
+    wins, so a one-sided row (blank on whichever side has no record) still
+    shows its dimension value via the other side."""
     if len(cols) == 1:
         return df[cols[0]]
     return df[cols].bfill(axis=1).iloc[:, 0]

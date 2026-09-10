@@ -4,19 +4,19 @@ needs to know which of the two it came from.
 
 Both paths converge on the exact column layout `service.
 _export_columns_for_contract` already defines for the "All Records" sheet of
-the downloadable comparison workbook: business-key column(s), "Status", then
-one (source, target, delta) triplet per compare field, then traceability
-columns. That layout is this codebase's own export schema — the single
-source of truth for what a record "looks like" — never re-invented here,
-only read back.
+the downloadable comparison workbook: a Source + Target column per
+business-key pair (plus a trailing Pair ID for any value-mapped key), then
+"Status", then one (source, target, delta) triplet per compare field. That
+layout is this codebase's own export schema — the single source of truth for
+what a record "looks like" — never re-invented here, only read back.
 
-The exported "Status" column collapses two raw classifications
-(`missing_in_target` / `missing_in_source`) into one "MISMATCH" bucket (see
-`service._STATUS_BY_CLASS`). A live run still has the precise
-`classification` column to recover that split exactly; an uploaded workbook
-does not, so it infers the split from which side's raw column is blank for a
-mismatch row (see `_infer_status`) — the same blank-cell signal
-`service._unified`/`_original_raw_value` produce by construction.
+The exported "Status" column carries `missing_in_target` / `missing_in_source`
+as distinct statuses (see `service._STATUS_BY_CLASS`), so both a live run and
+a freshly-uploaded workbook read the split directly. `_infer_status`'s
+blank-cell inference only matters for a workbook exported before that split
+existed, whose "Status" column still reads the old unified "MISMATCH" —
+inferred from which side's raw column is blank (the same blank-cell signal
+`service._side_value`/`_original_raw_value` produce by construction).
 """
 
 from __future__ import annotations
@@ -58,15 +58,19 @@ _DIMENSION_PATTERNS: dict[str, tuple[str, ...]] = {
     "Material": ("material", "matnr", "product", "item", "sku"),
     "Date": ("date", "deliverydate", "postingdate", "documentdate", "reqdeliverydate"),
 }
+# Current key-column suffixes; "(Original)"/"(Paired)" are the pre-rewire
+# names, still matched below for a workbook exported before this rewire.
+_SOURCE_SUFFIX = " (Source)"
+_TARGET_SUFFIX = " (Target)"
 _ORIGINAL_SUFFIX = " (Original)"
 _PAIRED_SUFFIX = " (Paired)"
+_KEY_COLUMN_SUFFIXES = (_SOURCE_SUFFIX, _TARGET_SUFFIX, _ORIGINAL_SUFFIX, _PAIRED_SUFFIX)
 
 
 def _bare_label(column: str) -> str:
-    if column.endswith(_ORIGINAL_SUFFIX):
-        return column[: -len(_ORIGINAL_SUFFIX)]
-    if column.endswith(_PAIRED_SUFFIX):
-        return column[: -len(_PAIRED_SUFFIX)]
+    for suffix in _KEY_COLUMN_SUFFIXES:
+        if column.endswith(suffix):
+            return column[: -len(suffix)]
     return column
 
 
@@ -90,11 +94,14 @@ def _dimension_columns(columns: list[str]) -> dict[str, list[str]]:
 
 def _column_sections(columns: list[str]) -> tuple[list[str], list[tuple[str, str]], list[str]]:
     """Split an All-Records-shaped column list into (key columns, compare
-    field (source, target) pairs, delta column names) using the fixed layout
-    `service._export_columns_for_contract` always writes: key columns, then
-    "Status", then repeating (source, target, delta) triplets per compare
-    field, then traceability. Works identically whether `columns` came from
-    a live contract or was read back off an uploaded workbook's header row.
+    field (source, target) pairs, delta column names) using the layout
+    `service._export_columns_for_contract` writes: key columns (each
+    value-mapped key's Pair ID excluded here — it's an id, not a business-key
+    column), then "Status", then repeating (source, target, delta) triplets
+    per compare field. A workbook exported before Run ID/Batch ID/Record ID
+    were removed still carries them trailing the compare triplets, so those
+    are excluded the same way whether `columns` came from a live contract or
+    an uploaded workbook's header row.
     """
     try:
         status_idx = columns.index("Status")
@@ -104,7 +111,7 @@ def _column_sections(columns: list[str]) -> tuple[list[str], list[tuple[str, str
         traceability_idx = columns.index("Run ID")
     except ValueError:
         traceability_idx = len(columns)
-    key_cols = columns[:status_idx]
+    key_cols = [c for c in columns[:status_idx] if not c.endswith(" Pair ID")]
     compare_section = columns[status_idx + 1 : traceability_idx]
     n_triplets = len(compare_section) // 3
     compare_pairs = [(compare_section[i * 3], compare_section[i * 3 + 1]) for i in range(n_triplets)]
@@ -239,10 +246,15 @@ def _infer_status(row: pd.Series, compare_pairs: list[tuple[str, str]], original
         return STATUS_MATCH
     if status == "QUANTITY MISMATCH":
         return STATUS_QTY_MISMATCH
-    # "MISMATCH": infer which side is missing via the blank-cell signal — a
-    # compare field's raw source/target column, or a value-mapped key's
-    # "(Original)" column, is blank exactly on the side with no row (see
-    # service._unified / _original_raw_value).
+    if status == "MISSING IN TARGET":
+        return STATUS_MISSING_IN_TARGET
+    if status == "EXTRA IN TARGET":
+        return STATUS_MISSING_IN_SOURCE
+    # Legacy "MISMATCH" — a workbook exported before Missing/Extra in Target
+    # were split into distinct statuses. Infer which side is missing via the
+    # blank-cell signal — a compare field's raw source/target column, or a
+    # value-mapped key's "(Original)" column, is blank exactly on the side
+    # with no row (see service._side_value / _original_raw_value).
     for sf, tf in compare_pairs:
         s_blank, t_blank = _is_blank(row.get(sf)), _is_blank(row.get(tf))
         if s_blank and not t_blank:

@@ -1226,31 +1226,32 @@ _CLASS_REMARKS: dict[str, str] = {
 _CLASS_ORDER = ["match", "mismatch", "missing_in_source", "missing_in_target"]
 
 # ── Export presentation: Status label + row fill per classification ──────────
-# The export collapses the four per-record classifications into the same
-# three user-facing statuses as `_CLASS_LABELS` and colour-codes each row (and
-# the Summary legend) by status.
+# The export maps each per-record classification onto its own user-facing
+# status and colour-codes each row (and the Summary legend) by status.
 _STATUS_BY_CLASS: dict[str, str] = {
     "match": "MATCH",
     "mismatch": "QUANTITY MISMATCH",
-    "missing_in_target": "MISMATCH",
-    "missing_in_source": "MISMATCH",
+    "missing_in_target": "MISSING IN TARGET",
+    "missing_in_source": "EXTRA IN TARGET",
 }
 _STATUS_FILL: dict[str, str] = {
     "MATCH": "C6EFCE",           # green
     "QUANTITY MISMATCH": "FFEB9C",  # amber
-    "MISMATCH": "FFC7CE",  # red
+    "MISSING IN TARGET": "FFC7CE",  # red
+    "EXTRA IN TARGET": "BDD7EE",  # blue
 }
 # Summary "Results" block (task spec): one row per ReconciliationSummary field,
 # matches first, then issues.
-_SUMMARY_ORDER = ["match", "quantity_mismatch", "mismatch"]
+_SUMMARY_ORDER = ["match", "quantity_mismatch", "missing_in_target", "extra_in_target"]
 # Summary field -> (display label, status key, per-record classifications it rolls up).
 _SUMMARY_BUCKETS: dict[str, tuple[str, str, list[str]]] = {
     "match": ("Match", "MATCH", ["match"]),
     "quantity_mismatch": ("Quantity Mismatch", "QUANTITY MISMATCH", ["mismatch"]),
-    "mismatch": ("Mismatch", "MISMATCH", ["missing_in_target", "missing_in_source"]),
+    "missing_in_target": ("Missing in Target", "MISSING IN TARGET", ["missing_in_target"]),
+    "extra_in_target": ("Extra in Target", "EXTRA IN TARGET", ["missing_in_source"]),
 }
 # "All Records" sheet sort order (task spec): issues first, matches last.
-_ALL_RECORDS_ORDER = ["quantity_mismatch", "mismatch", "match"]
+_ALL_RECORDS_ORDER = ["quantity_mismatch", "missing_in_target", "extra_in_target", "match"]
 _HEADER_FILL = "1F4E78"  # dark blue for the All Records header row
 
 _FieldPair = tuple[str, str]
@@ -1260,15 +1261,16 @@ def _business_key_export_specs(contract: Any) -> list[tuple[str, str, Any | None
     """``(source_field, target_field, value_mapping_or_None)`` per
     ``contract.business_key``, in contract order.
 
-    Whether a key pair "went through value-pairing" (shown in the export as
-    two columns: the raw pre-mapping original + the paired target value) vs.
-    is a plain key with no value mapping — typically the date key, shown as
-    one merged column — is decided STRUCTURALLY: does ``contract.value_mappings``
-    have an entry for this pair's target field (see :func:`_find_value_mapping`,
-    which itself matches by target-field name, not a literal string like
-    ``"PRDID"``)? This also means a date key needs no special-casing at all —
-    it simply has no value mapping and falls into the single-column branch on
-    its own. Works for any number of key pairs, not just two.
+    Every key pair is exported as a Source + Target column pair; whether it
+    "went through value-pairing" only changes what the Source column holds
+    (the raw pre-mapping value, resolved via lineage, for a value-mapped key;
+    the row's own value for a plain key — typically the date key) and whether
+    a trailing Pair ID column is added. This is decided STRUCTURALLY: does
+    ``contract.value_mappings`` have an entry for this pair's target field
+    (see :func:`_find_value_mapping`, which itself matches by target-field
+    name, not a literal string like ``"PRDID"``)? This also means a date key
+    needs no special-casing at all — it simply has no value mapping. Works
+    for any number of key pairs, not just two.
     """
     if contract is None:
         return []
@@ -1295,41 +1297,60 @@ def _delta_column_name(source_field: str, target_field: str, compare_specs: list
     return f"{source_field} → {target_field} Delta"
 
 
-def _export_columns_for_contract(contract: Any) -> list[str]:
-    """The "All Records" sheet's column order for this contract: two columns
-    per value-mapped business-key pair (raw original + paired target), one
-    column per plain business-key pair (e.g. the date key), "Status", then
-    per compare field its raw source column, raw target column, and a signed
-    Delta column. Computed fresh per run instead of a fixed list, so it scales
-    to however many key/compare pairs the contract actually has.
+def _first_present(mapping: dict[str, Any], *keys: str) -> Any:
+    """The value of the first key that's actually IN ``mapping`` (not merely
+    falsy) — lets a persisted ``field_values`` dict from an older export
+    naming scheme still resolve to its real value (including a genuine
+    blank), rather than always falling through past a present-but-None key."""
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
 
-    Traceability columns (Run ID/Batch ID/Record ID, then one Pair ID per
-    value-mapped key pair — see ``recon_engine.ids``) are appended LAST so a
-    consumer indexing by position over the pre-existing columns is unaffected.
-    They resolve to a real value for Auto-mode runs (which stamp them; see
-    ``auto_pipeline.nodes._do_run_batches``) and blank for Manual-mode runs,
-    which have no per-row batch/pair identity to report.
+
+def _key_header_names(source_field: str, target_field: str) -> tuple[str, str]:
+    """The two export column headers for one business-key pair — the actual
+    source/target field names from the contract, data-driven rather than a
+    generic hardcoded label. The one exception: when a plain (non-value-mapped)
+    key's source and target field share the same name (typically the date
+    key), a bare name would produce two identically-headed columns holding
+    DIFFERENT values (the row is keyed by name internally, so the second
+    write would silently clobber the first) — ``" (Source)"``/``" (Target)"``
+    is added only in that specific collision case, never otherwise."""
+    if source_field == target_field:
+        return f"{source_field} (Source)", f"{target_field} (Target)"
+    return source_field, target_field
+
+
+def _export_columns_for_contract(contract: Any) -> list[str]:
+    """The "All Records" sheet's column order for this contract: a Source +
+    Target column per business-key pair (every key pair, value-mapped or
+    plain — e.g. the date key — gets both sides so a reader can see exactly
+    which side is blank on a one-sided record; header text is the contract's
+    own field names, see :func:`_key_header_names`), a Pair ID immediately
+    after any value-mapped key's pair (see ``recon_engine.ids``; blank for
+    Manual-mode runs, which have no per-row pair identity to report), then
+    "Status", then per compare field its raw source column, raw target
+    column, and a Delta column (always non-negative — see :func:`_delta`) —
+    always LAST, after every key column, so the comparison fields stay in a
+    fixed trailing position regardless of how many key pairs the contract
+    has. Computed fresh per run instead of a fixed list, so it scales to
+    however many key/compare pairs the contract actually has.
     """
     key_specs = _business_key_export_specs(contract)
     compare_specs = _compare_field_export_specs(contract)
     columns: list[str] = []
     for sf, tf, vm in key_specs:
+        source_header, target_header = _key_header_names(sf, tf)
+        columns.append(source_header)
+        columns.append(target_header)
         if vm is not None:
-            columns.append(f"{sf} (Original)")
-            columns.append(f"{tf} (Paired)")
-        else:
-            columns.append(sf)
+            columns.append(f"{sf} Pair ID")
     columns.append("Status")
     for sf, tf in compare_specs:
         columns.append(sf)
         columns.append(tf)
         columns.append(_delta_column_name(sf, tf, compare_specs))
-    columns.append("Run ID")
-    columns.append("Batch ID")
-    columns.append("Record ID")
-    for sf, tf, vm in key_specs:
-        if vm is not None:
-            columns.append(f"{sf} Pair ID")
     return columns
 
 
@@ -1354,6 +1375,14 @@ def _to_number(value: Any) -> float | None:
 
 def _signed_delta(source_value: Any, target_value: Any) -> float | None:
     """``source_value - target_value``, signed, for one compare field's row.
+
+    Kept signed here because Insights' netDelta (facts.py's
+    ``_break_rate_summary``) sums this across every row to show whether
+    source is running net-higher or net-lower than target overall — that
+    cancellation needs the sign. The "All Records" sheet's own Delta column
+    instead shows ``abs()`` of this value at render time (see
+    ``build_comparison_workbook``), since a mismatch's size there should read
+    the same regardless of which side is larger.
 
     Convention for the one-sided Missing/Extra cases (the app's five
     reconciliation record classes, none of which will ever populate both
@@ -1391,13 +1420,13 @@ def _vals(row: pd.Series | None, fields: list[str]) -> str:
     return "; ".join(f"{f}={_jsonable(row[f])}" for f in fields if f in row.index)
 
 
-def _unified(s_row: pd.Series | None, t_row: pd.Series | None, sf: str, tf: str) -> Any:
-    if s_row is not None and sf in s_row.index:
-        val = _jsonable(s_row[sf])
-        if val is not None:
-            return val
-    if t_row is not None and tf in t_row.index:
-        return _jsonable(t_row[tf])
+def _side_value(row: pd.Series | None, field: str) -> Any:
+    """Raw value for ``field`` off one side's row, or ``None`` when that side
+    has no row at all (a one-sided Missing-in-Target/Extra-in-Target record)
+    — left blank rather than borrowed from the other side, since the Source
+    and Target export columns are now shown separately."""
+    if row is not None and field in row.index:
+        return _jsonable(row[field])
     return None
 
 
@@ -1473,11 +1502,12 @@ def attach_field_values(
             "target_values": _vals(t_row, [*bk_tgt, *cf_tgt]),
         }
         for sf, tf, vm in key_specs:
+            source_header, target_header = _key_header_names(sf, tf)
             if vm is not None:
-                rec[f"{sf} (Original)"] = _original_raw_value(s_row, sf, raw_source_df)
-                rec[f"{tf} (Paired)"] = _unified(s_row, t_row, sf, tf)
+                rec[source_header] = _original_raw_value(s_row, sf, raw_source_df)
             else:
-                rec[sf] = _unified(s_row, t_row, sf, tf)
+                rec[source_header] = _side_value(s_row, sf)
+            rec[target_header] = _side_value(t_row, tf)
         for sf, tf in compare_specs:
             source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
             target_val = t_row[tf] if t_row is not None and tf in t_row.index else None
@@ -1526,14 +1556,14 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     value), ``classification_label`` / ``remark`` (business-friendly),
     ``detail``, ``field_diffs`` (list), ``source_values`` / ``target_values``
     (joined ``field=value`` strings), plus a column set computed per contract
-    (see :func:`_export_columns_for_contract`) — two columns per value-mapped
-    business-key pair (the RAW pre-value-mapping source value, resolved via
-    the shadow row's lineage back to Raw_Source, and the paired target-side
-    value actually used for the join), one column per plain business-key pair
-    (e.g. a date key), ``Status``, and per compare field its raw source
-    value, raw target value, and a signed Delta (see :func:`_signed_delta`).
-    Scales to however many key/compare pairs the contract has — not fixed to
-    two keys and one compare field.
+    (see :func:`_export_columns_for_contract`) — a Source + Target column per
+    business-key pair (for a value-mapped key, Source is the RAW
+    pre-value-mapping value resolved via the shadow row's lineage back to
+    Raw_Source; either side is blank when that side has no row for this
+    record), ``Status``, and per compare field its raw source value, raw
+    target value, and a signed Delta (see :func:`_signed_delta`). Scales to
+    however many key/compare pairs the contract has — not fixed to two keys
+    and one compare field.
     """
     init_storage()
     run = run_store.get_run(run_id)
@@ -1620,11 +1650,27 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             record["source_values"] = persisted_values.get("source_values", "")
             record["target_values"] = persisted_values.get("target_values", "")
             for sf, tf, vm in key_specs:
+                source_header, target_header = _key_header_names(sf, tf)
+                # Fall back through older export naming schemes (first the
+                # always-suffixed "(Source)"/"(Target)" an earlier version of
+                # this rewire used, then the original "(Original)"/"(Paired)",
+                # or the single merged ``sf`` column for a plain key) so a run
+                # whose ``field_values`` was persisted before still renders
+                # instead of showing blanks.
                 if vm is not None:
-                    record[f"{sf} (Original)"] = persisted_values.get(f"{sf} (Original)")
-                    record[f"{tf} (Paired)"] = persisted_values.get(f"{tf} (Paired)")
+                    record[source_header] = _first_present(
+                        persisted_values, source_header, f"{sf} (Source)", f"{sf} (Original)"
+                    )
+                    record[target_header] = _first_present(
+                        persisted_values, target_header, f"{tf} (Target)", f"{tf} (Paired)"
+                    )
                 else:
-                    record[sf] = persisted_values.get(sf)
+                    record[source_header] = _first_present(
+                        persisted_values, source_header, f"{sf} (Source)", sf
+                    )
+                    record[target_header] = _first_present(
+                        persisted_values, target_header, f"{tf} (Target)", sf
+                    )
             record["Status"] = _STATUS_BY_CLASS.get(cls, cls.upper())
             for sf, tf in compare_specs:
                 record[sf] = persisted_values.get(sf)
@@ -1642,11 +1688,12 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             record["source_values"] = _legacy_vals(s_row, [*bk_src, *cf_src])
             record["target_values"] = _legacy_vals(t_row, [*bk_tgt, *cf_tgt])
             for sf, tf, vm in key_specs:
+                source_header, target_header = _key_header_names(sf, tf)
                 if vm is not None:
-                    record[f"{sf} (Original)"] = _original_raw_value(s_row, sf, raw_source_df)
-                    record[f"{tf} (Paired)"] = _unified(s_row, t_row, sf, tf)
+                    record[source_header] = _original_raw_value(s_row, sf, raw_source_df)
                 else:
-                    record[sf] = _unified(s_row, t_row, sf, tf)
+                    record[source_header] = _side_value(s_row, sf)
+                record[target_header] = _side_value(t_row, tf)
             record["Status"] = _STATUS_BY_CLASS.get(cls, cls.upper())
             for sf, tf in compare_specs:
                 source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
@@ -1654,13 +1701,8 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
                 record[sf] = _jsonable(source_val)
                 record[tf] = _jsonable(target_val)
                 record[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
-        # Traceability (see recon_engine.ids): Run ID is always known (this
-        # function's own run_id) even for Manual-mode rows, which carry no
-        # per-row run_id of their own; Batch ID/Record ID/Pair ID are blank
-        # for Manual mode (no batch/pair identity exists there).
-        record["Run ID"] = d.get("run_id") or run_id
-        record["Batch ID"] = d.get("batch_id")
-        record["Record ID"] = d.get("record_id")
+        # Pair ID (see recon_engine.ids) is blank for Manual-mode rows, which
+        # have no per-row pair identity to report.
         for sf, tf, vm in key_specs:
             if vm is not None:
                 record[f"{sf} Pair ID"] = pair_ids.get(sf)
@@ -1946,19 +1988,17 @@ def build_comparison_workbook(run_id: str) -> bytes:
        chart for the overall run results plus one more pie chart per
        value-mapped business-key pair (however many the contract has),
        showing that pair's matched/unmatched distribution.
-    2. ``All Records`` — matches, quantity mismatches, and mismatches (a
-       business key present on only one side) stacked into one flat,
-       field-level table, sorted issues-first and colour-coded by status.
-       Bold white header on dark blue, frozen, with AutoFilter; widths
-       auto-fit. Column set is computed per contract (see
-       :func:`_export_columns_for_contract`) — scales to however many
-       key/compare pairs the contract has.
+    2. ``All Records`` — matches, quantity mismatches, missing-in-target, and
+       extra-in-target records (a business key present on only one side,
+       split by which side) stacked into one flat, field-level table, sorted
+       issues-first and colour-coded by status. Bold white header on dark
+       blue, frozen, with AutoFilter; widths auto-fit. Column set is computed
+       per contract (see :func:`_export_columns_for_contract`) — scales to
+       however many key/compare pairs the contract has.
     3. ``Transformations Applied`` — one summary row per DISTINCT recipe
-       operation that actually ran (name, field(s), % of source rows it
-       applied to, and how those specific rows resolved: % Match / %
-       Mismatch / % Unresolved), with the per-value pairing detail for any
-       value-mapped business-key field nested underneath as a collapsible
-       Excel row group (native outline +/- control) rather than removed.
+       operation that actually ran: Transformation, Field(s), Rows Applied,
+       % Applied, % Match, % Mismatch. No per-value pairing drill-down —
+       that detail lives in the Mapping Review page, not this export.
     """
     from openpyxl import Workbook
     from openpyxl.chart import PieChart, Reference
@@ -2134,6 +2174,14 @@ def build_comparison_workbook(run_id: str) -> bytes:
     # ── Sheet 2: All Records ─────────────────────────────────────────────────
     ws2 = wb.create_sheet("All Records")
     columns = _export_columns_for_contract(contract)
+    # Delta columns are stored signed (source - target; see _signed_delta,
+    # shared with the Insights netDelta calculation, which needs the sign to
+    # net positive/negative breaks against each other) — the export itself
+    # always shows the non-negative magnitude of the mismatch.
+    all_records_compare_specs = _compare_field_export_specs(contract)
+    delta_col_names = {
+        _delta_column_name(sf, tf, all_records_compare_specs) for sf, tf in all_records_compare_specs
+    }
     header_fill = PatternFill("solid", fgColor=_HEADER_FILL)
     header_font = Font(bold=True, color="FFFFFF")
     for col, name in enumerate(columns, start=1):
@@ -2149,7 +2197,10 @@ def build_comparison_workbook(run_id: str) -> bytes:
             status = rec.get("Status") or bucket_status
             fill = PatternFill("solid", fgColor=_STATUS_FILL.get(status, "FFFFFF"))
             for col, name in enumerate(columns, start=1):
-                cell = ws2.cell(row=row_idx, column=col, value=rec.get(name))
+                value = rec.get(name)
+                if name in delta_col_names and isinstance(value, (int, float)) and not isinstance(value, bool):
+                    value = abs(value)
+                cell = ws2.cell(row=row_idx, column=col, value=value)
                 cell.fill = fill
             row_idx += 1
 
@@ -2158,68 +2209,32 @@ def build_comparison_workbook(run_id: str) -> bytes:
     _autofit(ws2)
 
     # ── Sheet 3: Transformations Applied ─────────────────────────────────────
+    # One row per DISTINCT recipe operation (plus one synthesized row per
+    # value-mapped business-key field) — just the op-level summary; no
+    # "% Unresolved" and no per-value drill-down columns/rows (task spec).
     ws3 = wb.create_sheet("Transformations Applied")
-    ws3.sheet_properties.outlinePr.summaryBelow = False  # summary row sits ABOVE its detail group
 
-    _OP_SUMMARY_COLUMNS = [
-        "Transformation", "Field(s)", "Rows Applied", "% Applied",
-        "% Match", "% Mismatch", "% Unresolved",
-    ]
-    all_columns = _OP_SUMMARY_COLUMNS + _MAPPING_DETAIL_COLUMNS
-    for col, name in enumerate(all_columns, start=1):
+    _OP_SUMMARY_COLUMNS = ["Transformation", "Field(s)", "Rows Applied", "% Applied", "% Match", "% Mismatch"]
+    for col, name in enumerate(_OP_SUMMARY_COLUMNS, start=1):
         c = ws3.cell(row=1, column=col, value=name)
         c.font = header_font
         c.fill = header_fill
 
     # `operation_outcomes` was already computed above (shared with the
     # Summary sheet's structured table).
-    unresolved_fill = PatternFill("solid", fgColor="FFA500")  # distinct from the paired/unpaired green/red
     row_idx = 2
     for outcome in operation_outcomes:
-        summary_row = row_idx
         summary_values = [
             outcome["op"], outcome["field_label"], outcome["rows_applied"],
             outcome["pct_applied"], outcome["pct_match"], outcome["pct_mismatch"],
-            outcome["pct_unresolved"],
         ]
         for col, value in enumerate(summary_values, start=1):
-            cell = ws3.cell(row=summary_row, column=col, value=value)
+            cell = ws3.cell(row=row_idx, column=col, value=value)
             cell.font = bold
-        if outcome["pct_unresolved"] > 0:
-            ws3.cell(row=summary_row, column=7).fill = unresolved_fill
         row_idx += 1
 
-        for m in outcome["detail_rows"]:
-            paired = m.target_value is not None
-            status = "Paired" if paired else "Unpaired"
-            siblings = [c for c in (m.candidates or []) if c != m.target_value]
-            corroboration = ""
-            if siblings:
-                corroboration = (
-                    "Dates overlap" if m.corroboration is True
-                    else "No date overlap" if m.corroboration is False
-                    else "No signal"
-                )
-            detail_values = [
-                outcome.get("mapping_label"), m.source_value, m.target_value, status,
-                _CONFIDENCE_LABELS.get(m.confidence.value, m.confidence.value),
-                corroboration, ", ".join(siblings), m.row_count, m.evidence,
-                m.pair_id,
-            ]
-            fill = PatternFill("solid", fgColor="C6EFCE" if paired else "FFC7CE")
-            for offset, value in enumerate(detail_values, start=1):
-                cell = ws3.cell(row=row_idx, column=len(_OP_SUMMARY_COLUMNS) + offset, value=value)
-                cell.fill = fill
-            # Collapsible under its summary row — Excel's native row-group
-            # +/- gutter control, so the per-value detail is still there to
-            # diagnose exactly which values failed, without cluttering the
-            # default (collapsed) view.
-            ws3.row_dimensions[row_idx].outlineLevel = 1
-            ws3.row_dimensions[row_idx].hidden = True
-            row_idx += 1
-
     ws3.freeze_panes = "A2"
-    ws3.auto_filter.ref = f"A1:{get_column_letter(len(all_columns))}{max(1, row_idx - 1)}"
+    ws3.auto_filter.ref = f"A1:{get_column_letter(len(_OP_SUMMARY_COLUMNS))}{max(1, row_idx - 1)}"
     _autofit(ws3)
 
     buf = BytesIO()

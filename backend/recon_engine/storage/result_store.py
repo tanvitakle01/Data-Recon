@@ -115,6 +115,8 @@ def append_batch_result(
         total=result.summary.total + batch_summary.total,
         match=result.summary.match + batch_summary.match,
         quantity_mismatch=result.summary.quantity_mismatch + batch_summary.quantity_mismatch,
+        missing_in_target=result.summary.missing_in_target + batch_summary.missing_in_target,
+        extra_in_target=result.summary.extra_in_target + batch_summary.extra_in_target,
         mismatch=result.summary.mismatch + batch_summary.mismatch,
         excluded_unmapped={
             field: (

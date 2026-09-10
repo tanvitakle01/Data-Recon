@@ -96,74 +96,79 @@ def test_build_comparison_workbook_is_three_sheets():
     wb = openpyxl.load_workbook(BytesIO(content))
     assert wb.sheetnames == ["Summary", "All Records", "Transformations Applied"]
 
-    # ── All Records: column set computed per contract — same 9 columns/content
-    # as before, generic names instead of the old fixed Original*/Date labels.
+    # ── All Records: a Source + Target column per business-key pair (every
+    # key pair, not just value-mapped ones), headed with the contract's own
+    # field names — bare (no suffix) whenever source/target are named
+    # differently, "(Source)"/"(Target)" only for a plain key whose source
+    # and target field share one name (here, Date) since a bare header would
+    # otherwise collide. A Pair ID sits right after each value-mapped key
+    # pair, then "Status", then the compare fields (source, target, Delta —
+    # always non-negative) always last. No more Run ID/Batch ID/Record ID.
     ws = wb["All Records"]
     rows = list(ws.iter_rows(values_only=True))
     assert rows[0] == (
-        "Material (Original)", "PRDID (Paired)", "Plant (Original)", "LOCID (Paired)",
-        "Date", "Status", "ReqQty", "SalesOrderRequest", "Delta",
-        "Run ID", "Batch ID", "Record ID", "Material Pair ID", "Plant Pair ID",
+        "Material", "PRDID", "Material Pair ID",
+        "Plant", "LOCID", "Plant Pair ID",
+        "Date (Source)", "Date (Target)",
+        "Status", "ReqQty", "SalesOrderRequest", "Delta",
     )
 
     data = rows[1:]
-    statuses = [r[5] for r in data]
-    # Dataset -> A match, B quantity mismatch, C missing-in-target and D
-    # missing_in_source both collapse onto the single "Mismatch" category.
-    # Sort order: quantity mismatch, mismatch (C then D), match.
-    assert statuses == ["QUANTITY MISMATCH", "MISMATCH", "MISMATCH", "MATCH"]
+    statuses = [r[8] for r in data]
+    # Dataset -> A match, B quantity mismatch, C missing-in-target (source
+    # only), D extra-in-target (target only) — each its own Status now.
+    # Sort order: quantity mismatch, missing in target, extra in target, match.
+    assert statuses == ["QUANTITY MISMATCH", "MISSING IN TARGET", "EXTRA IN TARGET", "MATCH"]
 
-    # Two rows now share the "MISMATCH" status, so key off OriginalPRDID
-    # (col 1) instead, which is unique across all four rows in this fixture.
-    by_prdid = {r[1]: r for r in data}
+    by_prdid_or_material = {(r[0], r[1]): r for r in data}
 
     # Match (A): raw Material differs from the paired PRDID — both sides
     # visible side by side — Delta is 0 (10 - 10).
-    match = by_prdid["PA"]
-    assert match[0] == "A" and match[1] == "PA"
-    assert match[2] == "P1" and match[3] == "LOC1"
-    assert match[6] == 10 and match[7] == 10 and match[8] == 0
+    match = by_prdid_or_material[("A", "PA")]
+    assert match[3] == "P1" and match[4] == "LOC1"
+    assert match[6] == "2024-01-01" and match[7] == "2024-01-01"
+    assert match[9] == 10 and match[10] == 10 and match[11] == 0
 
-    # Quantity Mismatch (B): identity-mapped Material/Plant, Delta signed (20 - 25).
-    mm = by_prdid["B"]
-    assert mm[0] == "B" and mm[1] == "B"
-    assert mm[6] == 20 and mm[7] == 25 and mm[8] == -5
+    # Quantity Mismatch (B): identity-mapped Material/Plant, Delta is the
+    # non-negative magnitude of 20 - 25.
+    mm = by_prdid_or_material[("B", "B")]
+    assert mm[9] == 20 and mm[10] == 25 and mm[11] == 5
 
-    # Mismatch (C, missing in target/source only): target-side quantity is
-    # null, Delta convention treats the absent target side as 0 -> Delta == ReqQty.
-    missing = by_prdid["C"]
-    assert missing[0] == "C" and missing[1] == "C"
-    assert missing[6] == 30 and missing[7] is None and missing[8] == 30
+    # Missing in Target (C, source only): no target row exists at all, so
+    # every Target-side column is blank; Delta convention treats the absent
+    # target side as 0 -> Delta == ReqQty.
+    missing = by_prdid_or_material[("C", None)]
+    assert missing[3] == "P1" and missing[4] is None
+    assert missing[6] == "2024-01-03" and missing[7] is None
+    assert missing[9] == 30 and missing[10] is None and missing[11] == 30
 
-    # Mismatch (D, extra in target/missing in source): source-side quantity is
-    # null, no raw source row exists so OriginalMaterial is null but
-    # OriginalPRDID falls back to the target's own PRDID value; Delta ==
-    # -SalesOrderRequest.
-    extra = by_prdid["D"]
-    assert extra[0] is None and extra[1] == "D"
-    assert extra[6] is None and extra[7] == 40 and extra[8] == -40
+    # Extra in Target (D, target only): no source row exists at all, so
+    # every Source-side column is blank; Delta == SalesOrderRequest (always
+    # non-negative, so the absent source side doesn't make it negative).
+    extra = by_prdid_or_material[(None, "D")]
+    assert extra[3] is None and extra[4] == "LOC1"
+    assert extra[6] is None and extra[7] == "2024-01-04"
+    assert extra[9] is None and extra[10] == 40 and extra[11] == 40
 
-    # Traceability columns (see recon_engine.ids): Run ID is always known,
-    # even for this Manual-mode run, which has no per-row batch/pair identity
-    # of its own — Batch ID/Record ID/Pair ID all stay blank.
+    # Pair ID (see recon_engine.ids) stays blank for this Manual-mode run,
+    # which has no per-row pair identity of its own.
     for r in data:
-        assert r[9] == run_id
-        assert r[10] is None and r[11] is None
-        assert r[12] is None and r[13] is None
+        assert r[2] is None and r[5] is None
 
-    # Whole row filled with the status colour (amber for quantity mismatch,
-    # red for the unified mismatch bucket).
+    # Whole row filled with the status colour (amber/red/blue).
     qty_row = statuses.index("QUANTITY MISMATCH") + 2  # +1 header, +1 to 1-index
     assert ws.cell(row=qty_row, column=1).fill.fgColor.rgb.endswith("FFEB9C")
     assert ws.cell(row=qty_row, column=9).fill.fgColor.rgb.endswith("FFEB9C")
-    mismatch_row = statuses.index("MISMATCH") + 2
-    assert ws.cell(row=mismatch_row, column=1).fill.fgColor.rgb.endswith("FFC7CE")
+    missing_row = statuses.index("MISSING IN TARGET") + 2
+    assert ws.cell(row=missing_row, column=1).fill.fgColor.rgb.endswith("FFC7CE")
+    extra_row = statuses.index("EXTRA IN TARGET") + 2
+    assert ws.cell(row=extra_row, column=1).fill.fgColor.rgb.endswith("BDD7EE")
 
     # Header: bold white on dark blue, frozen, with AutoFilter.
     hdr = ws.cell(row=1, column=1)
     assert hdr.font.bold and hdr.fill.fgColor.rgb.endswith("1F4E78")
     assert ws.freeze_panes == "A2"
-    assert ws.auto_filter.ref == "A1:N5"
+    assert ws.auto_filter.ref == "A1:L5"
 
     # ── Summary: Results table FIRST, trimmed Run Information, three charts ──
     summ = wb["Summary"]
@@ -174,8 +179,9 @@ def test_build_comparison_workbook_is_three_sheets():
     assert rows[1][:3] == ("Category", "Count", "% of Total")
     assert rows[2][:3] == ("Match", 1, "25.0%")
     assert rows[3][:3] == ("Quantity Mismatch", 1, "25.0%")
-    assert rows[4][:3] == ("Mismatch", 2, "50.0%")
-    assert rows[5][:3] == ("Total", 4, "100.0%")
+    assert rows[4][:3] == ("Missing in Target", 1, "25.0%")
+    assert rows[5][:3] == ("Extra in Target", 1, "25.0%")
+    assert rows[6][:3] == ("Total", 4, "100.0%")
     # Category rows colour-filled by status.
     assert summ.cell(row=3, column=1).fill.fgColor.rgb.endswith("C6EFCE")  # Match: green
 
@@ -219,45 +225,21 @@ def test_transformations_applied_sheet_lists_both_field_pairs():
 
     ws = wb["Transformations Applied"]
     rows = list(ws.iter_rows(values_only=True))
-    assert rows[0] == (
-        "Transformation", "Field(s)", "Rows Applied", "% Applied",
-        "% Match", "% Mismatch", "% Unresolved",
-        "Mapping", "Source Value", "Target Value", "Status", "Confidence",
-        "Corroboration", "Also Candidate For", "Row Count", "Reason", "Pair ID",
-    )
+    # Just the op-level summary (task spec): no "% Unresolved" column and no
+    # per-value drill-down columns/rows.
+    assert rows[0] == ("Transformation", "Field(s)", "Rows Applied", "% Applied", "% Match", "% Mismatch")
 
-    # Detail (drill-down) rows carry a "Mapping" label at index 7; summary
-    # rows leave it blank.
-    data = rows[1:]
-    detail = [r for r in data if r[7] is not None]
-    by_source = {(r[7], r[8]): r for r in detail}
-
-    # Material -> PRDID: "A" value-mapped (HIGH -> "Verified"), "B"/"C" identity
-    # (VERY_HIGH -> "Identity") — all Paired, no siblings so Corroboration blank.
-    a = by_source[("Material → PRDID", "A")]
-    assert a[9] == "PA" and a[10] == "Paired" and a[11] == "Verified"
-    assert a[12] is None and a[13] is None  # no competing candidates
-    # This Manual-mode contract's matches carry no pair_id (see
-    # recon_engine.ids/models.value_mapping — set only by the Auto-mode
-    # streaming wrapper).
-    assert a[16] is None
-
-    b = by_source[("Material → PRDID", "B")]
-    assert b[9] == "B" and b[10] == "Paired" and b[11] == "Identity"
-
-    c = by_source[("Material → PRDID", "C")]
-    assert c[9] == "C" and c[10] == "Paired" and c[11] == "Identity"
-
-    # Plant -> LOCID also present in the SAME sheet (task spec: both mappings
-    # together, not two separate exports).
-    p1 = by_source[("Plant → LOCID", "P1")]
-    assert p1[9] == "LOC1" and p1[10] == "Paired" and p1[11] == "Verified"
-
-    # Paired detail rows are colour-filled green, and collapsed under their
-    # summary row via Excel's native row-group outline.
-    a_row = next(i for i, r in enumerate(data, start=2) if r[7:9] == ("Material → PRDID", "A"))
-    assert ws.cell(row=a_row, column=8).fill.fgColor.rgb.endswith("C6EFCE")
-    assert ws.row_dimensions[a_row].outlineLevel == 1
+    # One summary row per value-mapped business-key field (this fixture has
+    # no recipe operations) — both Material -> PRDID and Plant -> LOCID
+    # appear in the same sheet (task spec: both mappings together, not two
+    # separate exports). All 3 raw source rows survive (no filters): row 0
+    # (Material "A") matches, rows 1/2 ("B"/"C") don't — so both fields
+    # (they share the same per-record classification) read 100% applied,
+    # 33.3% match, 66.7% mismatch.
+    by_field = {r[1]: r for r in rows[1:] if r[0] == "value_pairing"}
+    assert set(by_field) == {"Material", "Plant"}
+    assert by_field["Material"][2:6] == (3, 100.0, 33.3, 66.7)
+    assert by_field["Plant"][2:6] == (3, 100.0, 33.3, 66.7)
 
     assert ws.freeze_panes == "A2"
 
@@ -326,18 +308,17 @@ def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field(
     ws = wb["All Records"]
     header = next(ws.iter_rows(values_only=True))
     assert header == (
-        "Material (Original)", "PRDID (Paired)",
-        "Plant (Original)", "LOCID (Paired)",
-        "Region (Original)", "RegionCode (Paired)",
-        "Date", "Status",
+        "Material", "PRDID", "Material Pair ID",
+        "Plant", "LOCID", "Plant Pair ID",
+        "Region", "RegionCode", "Region Pair ID",
+        "Date (Source)", "Date (Target)",
+        "Status",
         "ReqQty", "SalesOrderRequest", "ReqQty → SalesOrderRequest Delta",
         "ReqQty2", "SalesOrderRequest2", "ReqQty2 → SalesOrderRequest2 Delta",
-        "Run ID", "Batch ID", "Record ID",
-        "Material Pair ID", "Plant Pair ID", "Region Pair ID",
     )
     data_row = next(ws.iter_rows(values_only=True, min_row=2))
-    assert data_row[4] == "R1" and data_row[5] == "R1"  # Region (Original) / RegionCode (Paired)
-    assert data_row[10] == 0 and data_row[13] == 0  # both compare fields' Delta is 0 (10-10, 5-5)
+    assert data_row[6] == "R1" and data_row[7] == "R1"  # Region / RegionCode
+    assert data_row[14] == 0 and data_row[17] == 0  # both compare fields' Delta is 0 (10-10, 5-5)
 
     # Only the overall-results pie chart remains — the per-key-pair mapping
     # pie charts were replaced by the "Transformations Applied" structured
@@ -346,9 +327,10 @@ def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field(
     assert len(summ._charts) == 1
 
     mapping_ws = wb["Transformations Applied"]
-    # "Mapping" is column index 7 (0-based) — after the 7 op-summary columns.
-    labels = {r[7] for r in mapping_ws.iter_rows(values_only=True, min_row=2) if r[7] is not None}
-    assert labels == {"Material → PRDID", "Plant → LOCID", "Region → RegionCode"}
+    # "Field(s)" is column index 1 (0-based) — one summary row per
+    # value-mapped business-key field, no per-value drill-down rows.
+    labels = {r[1] for r in mapping_ws.iter_rows(values_only=True, min_row=2)}
+    assert labels == {"Material", "Plant", "Region"}
 
 
 def test_download_route_returns_xlsx():

@@ -7,13 +7,14 @@ import ShortId from "../../components/ShortId";
 import { Button } from "@bristlecone/canopy";
 
 // Outcome -> Canopy semantic color (matches the Badge outcome language:
-// match=success/green, quantity_mismatch=error/red). "mismatch" is the
-// unified bucket for a business key present on only one side (source-only or
-// target-only) — there's no separate Missing/Extra category anymore.
+// match=success/green, quantity_mismatch=error/red). A business key present
+// on only one side is split by which side: missing_in_target (source-only)
+// vs extra_in_target (target-only) — same split InsightsView/charts.jsx use.
 const CLASS_LABELS = [
   { key: "match", label: "Matches", color: "var(--bcone-green)" },
   { key: "quantity_mismatch", label: "Qty Mismatches", color: "var(--bcone-red)" },
-  { key: "mismatch", label: "Mismatches", color: "var(--bcone-orange)" },
+  { key: "missing_in_target", label: "Missing in Target", color: "var(--bcone-orange)" },
+  { key: "extra_in_target", label: "Extra in Target", color: "var(--bcone-cyan)" },
 ];
 
 function ContractRunResults({ result }) {
@@ -76,7 +77,12 @@ function ContractRunResults({ result }) {
             <span
               style={{ width: `${pct(summary.quantity_mismatch)}%`, background: "var(--bcone-red)" }}
             />
-            <span style={{ width: `${pct(summary.mismatch)}%`, background: "var(--bcone-orange)" }} />
+            <span
+              style={{ width: `${pct(summary.missing_in_target)}%`, background: "var(--bcone-orange)" }}
+            />
+            <span
+              style={{ width: `${pct(summary.extra_in_target)}%`, background: "var(--bcone-cyan)" }}
+            />
           </div>
         )}
       </div>

@@ -40,6 +40,49 @@ def test_summary_excluded_fields_default_to_zero_and_are_additive():
     assert summary.total == 2  # unaffected by setting excluded counts afterward
 
 
+def test_summary_from_counts_splits_missing_and_extra_in_target():
+    summary = ReconciliationSummary.from_counts({
+        RecordClass.MATCH.value: 1,
+        RecordClass.MISMATCH.value: 1,
+        RecordClass.MISSING_IN_TARGET.value: 2,
+        RecordClass.MISSING_IN_SOURCE.value: 3,
+    })
+    assert summary.missing_in_target == 2
+    assert summary.extra_in_target == 3
+    assert summary.mismatch == 5  # kept as the sum, for backward compatibility
+    assert summary.total == 7
+
+
+def test_summary_migrates_unified_mismatch_with_no_split_info():
+    # A summary persisted while missing_in_target/extra_in_target were
+    # unified into one `mismatch` bucket has no way to recover the split —
+    # best effort puts the whole total under missing_in_target.
+    summary = ReconciliationSummary.model_validate(
+        {"total": 4, "match": 1, "quantity_mismatch": 1, "mismatch": 2}
+    )
+    assert summary.missing_in_target == 2
+    assert summary.extra_in_target == 0
+    assert summary.mismatch == 2
+
+
+def test_summary_migrates_oldest_split_format():
+    # The oldest persisted format already had the one-sided split, named
+    # missing_in_source (target-only)/missing_in_target (source-only).
+    summary = ReconciliationSummary.model_validate(
+        {
+            "total": 4,
+            "match": 1,
+            "mismatch": 1,  # old field-level name for today's quantity_mismatch
+            "missing_in_target": 1,
+            "missing_in_source": 1,
+        }
+    )
+    assert summary.quantity_mismatch == 1
+    assert summary.missing_in_target == 1
+    assert summary.extra_in_target == 1
+    assert summary.mismatch == 2
+
+
 def test_summary_migrates_legacy_excluded_material_plant_fields():
     # Summaries persisted before excluded_unmapped became a generic dict
     # carried two fixed named counters — old data must still load.

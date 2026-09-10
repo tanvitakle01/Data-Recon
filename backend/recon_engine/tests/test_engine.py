@@ -584,7 +584,9 @@ def test_reconciler_classifies_all_buckets():
     s = result.summary
     assert s.match == 1  # A
     assert s.quantity_mismatch == 1  # B (20 vs 25)
-    assert s.mismatch == 2  # C (missing in target) + D (extra in target)
+    assert s.missing_in_target == 1  # C (source only)
+    assert s.extra_in_target == 1  # D (target only)
+    assert s.mismatch == 2  # C + D combined, kept for backward compatibility
     assert s.total == 4
 
 

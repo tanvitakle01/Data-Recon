@@ -30,10 +30,14 @@ class ReconciliationSummary(BaseModel):
     # Field-level compare failure on a key present on both sides (was called
     # ``mismatch`` before the bucket below was introduced).
     quantity_mismatch: int = 0
-    # Everything that is not a match and not a quantity mismatch — i.e. every
-    # record whose business key exists on only one side. Not a sum of two
-    # named sub-categories; it is simply ``total - match - quantity_mismatch``.
-    # There is no user-facing "missing in target" / "extra in target" split.
+    # Business key present in source only (absent from target) vs. present in
+    # target only (absent from source) — the two one-sided cases, shown to
+    # users as "Missing in Target" / "Extra in Target" respectively.
+    missing_in_target: int = 0
+    extra_in_target: int = 0
+    # Kept for backward compatibility with older persisted summaries and any
+    # code still reading the umbrella count; always
+    # ``missing_in_target + extra_in_target`` going forward.
     mismatch: int = 0
     # Rows the Value Mapping stage held out before the join ever ran (a
     # business-key field landed on a MEDIUM/NONE/OUT_OF_SCOPE match, or had no
@@ -49,21 +53,39 @@ class ReconciliationSummary(BaseModel):
         # Summaries persisted before the EXCEPTION classification was removed
         # still carry an ``exception`` count; ``extra="forbid"`` would reject
         # them, so strip the retired key when loading historical results.
-        # Summaries persisted before missing_in_source/missing_in_target were
-        # unified into one ``mismatch`` bucket (and the old field-level
-        # ``mismatch`` was renamed ``quantity_mismatch``) are migrated the same
-        # way on load.
+        #
+        # Two older summary shapes to migrate on load, oldest first below:
+        # the original one-sided split (``missing_in_source``/
+        # ``missing_in_target``), and the later unified single ``mismatch``
+        # bucket that had no split at all (best effort then puts the whole
+        # total under ``missing_in_target`` rather than inventing a 50/50
+        # guess). A dict from a fresh ``from_counts()`` call always supplies
+        # ``missing_in_target``/``extra_in_target`` explicitly and matches
+        # neither branch.
         if not isinstance(data, dict):
             return data
         data = {k: v for k, v in data.items() if k != "exception"}
-        if "missing_in_source" in data or "missing_in_target" in data:
-            data.pop("missing_in_source", None)
-            data.pop("missing_in_target", None)
-            match = data.get("match", 0) or 0
+        if "missing_in_source" in data:
+            # Oldest format: had the one-sided split already, named
+            # ``missing_in_source``/``missing_in_target`` directly —
+            # ``missing_in_source`` (target-only) is today's ``extra_in_target``.
+            # (``missing_in_source`` never appears in the current schema, so
+            # its presence alone is what identifies this format — unlike
+            # ``missing_in_target``, which is also today's live field name.)
+            extra_in_target = data.pop("missing_in_source", 0) or 0
+            missing_in_target = data.get("missing_in_target", 0) or 0
             quantity_mismatch = data.pop("mismatch", 0) or 0
-            total = data.get("total", 0) or 0
             data["quantity_mismatch"] = quantity_mismatch
-            data["mismatch"] = total - match - quantity_mismatch
+            data["missing_in_target"] = missing_in_target
+            data["extra_in_target"] = extra_in_target
+            data["mismatch"] = missing_in_target + extra_in_target
+        elif "mismatch" in data and "extra_in_target" not in data and "missing_in_target" not in data:
+            # Unified format: only the combined count survived, with no
+            # ``missing_in_target``/``extra_in_target`` fields at all (unlike
+            # a fresh ``from_counts()`` construction, which always supplies
+            # both).
+            data["missing_in_target"] = data.get("mismatch", 0) or 0
+            data["extra_in_target"] = 0
         # Summaries persisted before excluded_unmapped became a generic
         # per-field dict carried two fixed named counters (Material/Plant
         # only) — migrated into the dict form on load.
@@ -83,10 +105,14 @@ class ReconciliationSummary(BaseModel):
         total = sum(counts.values())
         match = counts.get(RecordClass.MATCH.value, 0)
         quantity_mismatch = counts.get(RecordClass.MISMATCH.value, 0)
+        missing_in_target = counts.get(RecordClass.MISSING_IN_TARGET.value, 0)
+        extra_in_target = counts.get(RecordClass.MISSING_IN_SOURCE.value, 0)
         return cls(
             match=match,
             quantity_mismatch=quantity_mismatch,
-            mismatch=total - match - quantity_mismatch,
+            missing_in_target=missing_in_target,
+            extra_in_target=extra_in_target,
+            mismatch=missing_in_target + extra_in_target,
             total=total,
         )
 
