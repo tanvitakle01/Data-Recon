@@ -6,6 +6,7 @@ from io import BytesIO
 
 import openpyxl
 import pandas as pd
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -98,23 +99,24 @@ def test_build_comparison_workbook_is_three_sheets():
 
     # ── All Records: a Source + Target column per business-key pair (every
     # key pair, not just value-mapped ones), headed with the contract's own
-    # field names — bare (no suffix) whenever source/target are named
-    # differently, "(Source)"/"(Target)" only for a plain key whose source
-    # and target field share one name (here, Date) since a bare header would
-    # otherwise collide. A Pair ID sits right after each value-mapped key
-    # pair, then "Status", then the compare fields (source, target, Delta —
-    # always non-negative) always last. No more Run ID/Batch ID/Record ID.
+    # field names — never suffixed with "(Source)"/"(Target)" even when the
+    # two sides share one name (here, Date): column order alone conveys which
+    # side is which, so a colliding pair renders as two plainly, identically
+    # headed columns holding their own distinct values. A Pair ID sits right
+    # after each value-mapped key pair, then the compare fields (source,
+    # target, Delta — always non-negative), then "Status" always last. No
+    # more Run ID/Batch ID/Record ID.
     ws = wb["All Records"]
     rows = list(ws.iter_rows(values_only=True))
     assert rows[0] == (
         "Material", "PRDID", "Material Pair ID",
         "Plant", "LOCID", "Plant Pair ID",
-        "Date (Source)", "Date (Target)",
-        "Status", "ReqQty", "SalesOrderRequest", "Delta",
+        "Date", "Date",
+        "ReqQty", "SalesOrderRequest", "Delta", "Status",
     )
 
     data = rows[1:]
-    statuses = [r[8] for r in data]
+    statuses = [r[11] for r in data]
     # Dataset -> A match, B quantity mismatch, C missing-in-target (source
     # only), D extra-in-target (target only) — each its own Status now.
     # Sort order: quantity mismatch, missing in target, extra in target, match.
@@ -127,12 +129,12 @@ def test_build_comparison_workbook_is_three_sheets():
     match = by_prdid_or_material[("A", "PA")]
     assert match[3] == "P1" and match[4] == "LOC1"
     assert match[6] == "2024-01-01" and match[7] == "2024-01-01"
-    assert match[9] == 10 and match[10] == 10 and match[11] == 0
+    assert match[8] == 10 and match[9] == 10 and match[10] == 0
 
     # Quantity Mismatch (B): identity-mapped Material/Plant, Delta is the
     # non-negative magnitude of 20 - 25.
     mm = by_prdid_or_material[("B", "B")]
-    assert mm[9] == 20 and mm[10] == 25 and mm[11] == 5
+    assert mm[8] == 20 and mm[9] == 25 and mm[10] == 5
 
     # Missing in Target (C, source only): no target row exists at all, so
     # every Target-side column is blank; Delta convention treats the absent
@@ -140,7 +142,7 @@ def test_build_comparison_workbook_is_three_sheets():
     missing = by_prdid_or_material[("C", None)]
     assert missing[3] == "P1" and missing[4] is None
     assert missing[6] == "2024-01-03" and missing[7] is None
-    assert missing[9] == 30 and missing[10] is None and missing[11] == 30
+    assert missing[8] == 30 and missing[9] is None and missing[10] == 30
 
     # Extra in Target (D, target only): no source row exists at all, so
     # every Source-side column is blank; Delta == SalesOrderRequest (always
@@ -148,7 +150,7 @@ def test_build_comparison_workbook_is_three_sheets():
     extra = by_prdid_or_material[(None, "D")]
     assert extra[3] is None and extra[4] == "LOC1"
     assert extra[6] is None and extra[7] == "2024-01-04"
-    assert extra[9] is None and extra[10] == 40 and extra[11] == 40
+    assert extra[8] is None and extra[9] == 40 and extra[10] == 40
 
     # Pair ID (see recon_engine.ids) stays blank for this Manual-mode run,
     # which has no per-row pair identity of its own.
@@ -311,14 +313,14 @@ def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field(
         "Material", "PRDID", "Material Pair ID",
         "Plant", "LOCID", "Plant Pair ID",
         "Region", "RegionCode", "Region Pair ID",
-        "Date (Source)", "Date (Target)",
-        "Status",
+        "Date", "Date",
         "ReqQty", "SalesOrderRequest", "ReqQty → SalesOrderRequest Delta",
         "ReqQty2", "SalesOrderRequest2", "ReqQty2 → SalesOrderRequest2 Delta",
+        "Status",
     )
     data_row = next(ws.iter_rows(values_only=True, min_row=2))
     assert data_row[6] == "R1" and data_row[7] == "R1"  # Region / RegionCode
-    assert data_row[14] == 0 and data_row[17] == 0  # both compare fields' Delta is 0 (10-10, 5-5)
+    assert data_row[13] == 0 and data_row[16] == 0  # both compare fields' Delta is 0 (10-10, 5-5)
 
     # Only the overall-results pie chart remains — the per-key-pair mapping
     # pie charts were replaced by the "Transformations Applied" structured
@@ -331,6 +333,67 @@ def test_build_comparison_workbook_scales_beyond_two_keys_and_one_compare_field(
     # value-mapped business-key field, no per-value drill-down rows.
     labels = {r[1] for r in mapping_ws.iter_rows(values_only=True, min_row=2)}
     assert labels == {"Material", "Plant", "Region"}
+
+
+def test_all_records_keeps_distinct_values_when_compare_field_shares_a_name():
+    """Regression: a compare field named identically on both sides (e.g. both
+    "QUANTITY", the common shape for a like-for-like recon) used to have no
+    Source/Target disambiguation at all, so writing the Target value into the
+    per-row dict silently clobbered the Source value already written under
+    the same key — both columns rendered the Target's number even though
+    Delta was computed correctly from the real (un-clobbered) values. Source
+    and Target must now render their own distinct numbers."""
+    source_df = pd.DataFrame({
+        "PRDID": ["16613"], "LOCID": ["US01"], "DATE": ["20260105"], "QUANTITY": [3090.311],
+    })
+    target_df = pd.DataFrame({
+        "PRDID": ["16613"], "LOCID": ["US01"], "DATE": ["20260105"], "QUANTITY": [2935.828],
+    })
+    src = service.ingest_snapshot(source_df, layer=RawLayer.SOURCE, source_type="excel")
+    tgt = service.ingest_snapshot(target_df, layer=RawLayer.TARGET, source_type="excel")
+    draft, _ = service.compile_draft(
+        mapping_sheet=[
+            {"source_col": "PRDID", "target_col": "PRDID", "role": "key"},
+            {"source_col": "LOCID", "target_col": "LOCID", "role": "key"},
+            {"source_col": "DATE", "target_col": "DATE", "role": "key"},
+            {"source_col": "QUANTITY", "target_col": "QUANTITY", "role": "compare"},
+        ],
+        rules="",
+        business_key=[
+            {"source_field": "PRDID", "target_field": "PRDID"},
+            {"source_field": "LOCID", "target_field": "LOCID"},
+            {"source_field": "DATE", "target_field": "DATE"},
+        ],
+        compare_fields=[{"source_field": "QUANTITY", "target_field": "QUANTITY"}],
+        value_mappings=[],
+        source_schema=["PRDID", "LOCID", "DATE", "QUANTITY"],
+        target_schema=["PRDID", "LOCID", "DATE", "QUANTITY"],
+        comparison_type="c", source_type="excel", target_type="excel",
+        compiler=StubContractCompiler(),
+    )
+    contract = service.approve_contract(draft, approved_by="alice")
+    out = service.run_reconciliation(
+        contract_id=contract.contract_id,
+        source_snapshot_id=src.snapshot_id,
+        target_snapshot_id=tgt.snapshot_id,
+    )
+
+    content = service.build_comparison_workbook(out["run_id"])
+    wb = openpyxl.load_workbook(BytesIO(content))
+    ws = wb["All Records"]
+    rows = list(ws.iter_rows(values_only=True))
+
+    # Every key/compare column headed with the bare field name, never
+    # "(Source)"/"(Target)" — and "Status" trails everything.
+    assert rows[0] == (
+        "PRDID", "PRDID", "LOCID", "LOCID", "DATE", "DATE",
+        "QUANTITY", "QUANTITY", "Delta", "Status",
+    )
+    data = rows[1][:]
+    assert data[6] == 3090.311  # Source QUANTITY - the real source value
+    assert data[7] == 2935.828  # Target QUANTITY - the real target value, not a copy of Source
+    assert data[8] == pytest.approx(154.483, abs=1e-6)  # abs(3090.311 - 2935.828)
+    assert data[9] == "QUANTITY MISMATCH"
 
 
 def test_download_route_returns_xlsx():

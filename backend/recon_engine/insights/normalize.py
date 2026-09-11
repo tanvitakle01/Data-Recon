@@ -5,10 +5,14 @@ needs to know which of the two it came from.
 Both paths converge on the exact column layout `service.
 _export_columns_for_contract` already defines for the "All Records" sheet of
 the downloadable comparison workbook: a Source + Target column per
-business-key pair (plus a trailing Pair ID for any value-mapped key), then
-"Status", then one (source, target, delta) triplet per compare field. That
+business-key pair (plus a trailing Pair ID for any value-mapped key), one
+(source, target, delta) triplet per compare field, then "Status" last. That
 layout is this codebase's own export schema — the single source of truth for
 what a record "looks like" — never re-invented here, only read back.
+`_column_sections` locates the compare triplets by name (ending in "Delta")
+rather than by position relative to "Status", so it stays correct whether
+"Status" trails everything (current layout) or sits between the key and
+compare columns (an older exported workbook).
 
 The exported "Status" column carries `missing_in_target` / `missing_in_source`
 as distinct statuses (see `service._STATUS_BY_CLASS`), so both a live run and
@@ -97,25 +101,41 @@ def _column_sections(columns: list[str]) -> tuple[list[str], list[tuple[str, str
     field (source, target) pairs, delta column names) using the layout
     `service._export_columns_for_contract` writes: key columns (each
     value-mapped key's Pair ID excluded here — it's an id, not a business-key
-    column), then "Status", then repeating (source, target, delta) triplets
-    per compare field. A workbook exported before Run ID/Batch ID/Record ID
+    column), repeating (source, target, delta) triplets per compare field,
+    then "Status" LAST. A workbook exported before Run ID/Batch ID/Record ID
     were removed still carries them trailing the compare triplets, so those
     are excluded the same way whether `columns` came from a live contract or
     an uploaded workbook's header row.
+
+    Compare triplets are located by NAME (a run of 3 columns whose 3rd is
+    "Delta" or ends with " Delta") rather than by position relative to
+    "Status" — "Status" used to sit between the key columns and the compare
+    triplets in an older export and now trails everything, and this stays
+    correct either way, including for an older uploaded workbook.
     """
-    try:
-        status_idx = columns.index("Status")
-    except ValueError:
+    if "Status" not in columns:
         return columns, [], []
+    body = [c for c in columns if c != "Status"]
     try:
-        traceability_idx = columns.index("Run ID")
+        traceability_idx = body.index("Run ID")
     except ValueError:
-        traceability_idx = len(columns)
-    key_cols = [c for c in columns[:status_idx] if not c.endswith(" Pair ID")]
-    compare_section = columns[status_idx + 1 : traceability_idx]
-    n_triplets = len(compare_section) // 3
-    compare_pairs = [(compare_section[i * 3], compare_section[i * 3 + 1]) for i in range(n_triplets)]
-    delta_cols = [compare_section[i * 3 + 2] for i in range(n_triplets)]
+        traceability_idx = len(body)
+    body = body[:traceability_idx]
+
+    compare_pairs: list[tuple[str, str]] = []
+    delta_cols: list[str] = []
+    compare_names: set[str] = set()
+    i = 0
+    while i <= len(body) - 3:
+        c1, c2, c3 = body[i], body[i + 1], body[i + 2]
+        if c3 == "Delta" or c3.endswith(" Delta"):
+            compare_pairs.append((c1, c2))
+            delta_cols.append(c3)
+            compare_names.update((c1, c2, c3))
+            i += 3
+        else:
+            i += 1
+    key_cols = [c for c in body if c not in compare_names and not c.endswith(" Pair ID")]
     return key_cols, compare_pairs, delta_cols
 
 

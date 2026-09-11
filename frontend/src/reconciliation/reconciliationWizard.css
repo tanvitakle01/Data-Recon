@@ -2013,6 +2013,13 @@
   white-space: nowrap;
 }
 
+.ct-resolve-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 /* ── Interface scoping note: one line stating which single worksheet reaches
    the interpretation step. Icon + text on a row, no card header of its own. ── */
 .ct-scope-note {

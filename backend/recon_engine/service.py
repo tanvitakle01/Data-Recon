@@ -1309,17 +1309,45 @@ def _first_present(mapping: dict[str, Any], *keys: str) -> Any:
 
 
 def _key_header_names(source_field: str, target_field: str) -> tuple[str, str]:
-    """The two export column headers for one business-key pair — the actual
-    source/target field names from the contract, data-driven rather than a
-    generic hardcoded label. The one exception: when a plain (non-value-mapped)
-    key's source and target field share the same name (typically the date
-    key), a bare name would produce two identically-headed columns holding
-    DIFFERENT values (the row is keyed by name internally, so the second
-    write would silently clobber the first) — ``" (Source)"``/``" (Target)"``
-    is added only in that specific collision case, never otherwise."""
+    """The two INTERNAL lookup keys for one business-key pair's Source/Target
+    columns — the actual source/target field names from the contract,
+    data-driven rather than a generic hardcoded label. The one exception:
+    when a plain (non-value-mapped) key's source and target field share the
+    same name (typically the date key), a bare name would produce two
+    identically-keyed entries holding DIFFERENT values (the row is keyed by
+    name internally, so the second write would silently clobber the first)
+    — ``" (Source)"``/``" (Target)"`` is added only in that specific
+    collision case, never otherwise, to keep the two values apart.
+
+    This is a STORAGE key, not display text: the "All Records" sheet's
+    actual header cell always shows the bare field name (see
+    :func:`_display_header`) since column order already tells a reader
+    which side is which — the suffix only exists so the source and target
+    values never collide while they're being assembled.
+    """
     if source_field == target_field:
         return f"{source_field} (Source)", f"{target_field} (Target)"
     return source_field, target_field
+
+
+# Compare fields need the exact same Source/Target disambiguation as business
+# keys (see _key_header_names above) — reused directly, since compare fields
+# even more commonly share one name on both sides (e.g. "QUANTITY"), which is
+# exactly the collision that, unfixed, made both the Source and Target
+# columns silently render the Target's value.
+_compare_header_names = _key_header_names
+
+
+def _display_header(name: str) -> str:
+    """Strip the internal Source/Target disambiguation suffix (see
+    :func:`_key_header_names`) for presentation. The exported sheet never
+    shows "(Source)"/"(Target)" — column order alone conveys which side is
+    which — so a colliding key/compare-field pair renders as two plainly,
+    identically headed columns holding their own distinct values."""
+    for suffix in (" (Source)", " (Target)"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 def _export_columns_for_contract(contract: Any) -> list[str]:
@@ -1330,12 +1358,13 @@ def _export_columns_for_contract(contract: Any) -> list[str]:
     own field names, see :func:`_key_header_names`), a Pair ID immediately
     after any value-mapped key's pair (see ``recon_engine.ids``; blank for
     Manual-mode runs, which have no per-row pair identity to report), then
-    "Status", then per compare field its raw source column, raw target
-    column, and a Delta column (always non-negative — see :func:`_delta`) —
-    always LAST, after every key column, so the comparison fields stay in a
-    fixed trailing position regardless of how many key pairs the contract
-    has. Computed fresh per run instead of a fixed list, so it scales to
-    however many key/compare pairs the contract actually has.
+    per compare field its raw source column, raw target column (disambiguated
+    the same way as key columns when the two share a name — see
+    :func:`_compare_header_names` — since a shared name like "QUANTITY" is
+    the common case for compare fields), and a Delta column (always
+    non-negative — see :func:`_delta`), then "Status" LAST, after every key
+    and comparison column. Computed fresh per run instead of a fixed list, so
+    it scales to however many key/compare pairs the contract actually has.
     """
     key_specs = _business_key_export_specs(contract)
     compare_specs = _compare_field_export_specs(contract)
@@ -1346,11 +1375,12 @@ def _export_columns_for_contract(contract: Any) -> list[str]:
         columns.append(target_header)
         if vm is not None:
             columns.append(f"{sf} Pair ID")
-    columns.append("Status")
     for sf, tf in compare_specs:
-        columns.append(sf)
-        columns.append(tf)
+        source_header, target_header = _compare_header_names(sf, tf)
+        columns.append(source_header)
+        columns.append(target_header)
         columns.append(_delta_column_name(sf, tf, compare_specs))
+    columns.append("Status")
     return columns
 
 
@@ -1511,8 +1541,9 @@ def attach_field_values(
         for sf, tf in compare_specs:
             source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
             target_val = t_row[tf] if t_row is not None and tf in t_row.index else None
-            rec[sf] = _jsonable(source_val)
-            rec[tf] = _jsonable(target_val)
+            source_header, target_header = _compare_header_names(sf, tf)
+            rec[source_header] = _jsonable(source_val)
+            rec[target_header] = _jsonable(target_val)
             rec[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
         values_col.append(rec)
 
@@ -1673,8 +1704,13 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
                     )
             record["Status"] = _STATUS_BY_CLASS.get(cls, cls.upper())
             for sf, tf in compare_specs:
-                record[sf] = persisted_values.get(sf)
-                record[tf] = persisted_values.get(tf)
+                source_header, target_header = _compare_header_names(sf, tf)
+                # Fall back to the pre-disambiguation naming (a bare ``sf``/
+                # ``tf`` key, which collided when the two shared a name) so a
+                # run persisted before this fix still renders its one
+                # surviving value instead of a blank.
+                record[source_header] = _first_present(persisted_values, source_header, sf)
+                record[target_header] = _first_present(persisted_values, target_header, tf)
                 record[_delta_column_name(sf, tf, compare_specs)] = persisted_values.get(
                     _delta_column_name(sf, tf, compare_specs)
                 )
@@ -1698,8 +1734,9 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
             for sf, tf in compare_specs:
                 source_val = s_row[sf] if s_row is not None and sf in s_row.index else None
                 target_val = t_row[tf] if t_row is not None and tf in t_row.index else None
-                record[sf] = _jsonable(source_val)
-                record[tf] = _jsonable(target_val)
+                source_header, target_header = _compare_header_names(sf, tf)
+                record[source_header] = _jsonable(source_val)
+                record[target_header] = _jsonable(target_val)
                 record[_delta_column_name(sf, tf, compare_specs)] = _signed_delta(source_val, target_val)
         # Pair ID (see recon_engine.ids) is blank for Manual-mode rows, which
         # have no per-row pair identity to report.
@@ -2185,7 +2222,10 @@ def build_comparison_workbook(run_id: str) -> bytes:
     header_fill = PatternFill("solid", fgColor=_HEADER_FILL)
     header_font = Font(bold=True, color="FFFFFF")
     for col, name in enumerate(columns, start=1):
-        c = ws2.cell(row=1, column=col, value=name)
+        # Header cell shows the bare field name — no "(Source)"/"(Target)" —
+        # even though `name` (the lookup key) may carry that suffix to keep
+        # a colliding pair's two values apart; see _display_header.
+        c = ws2.cell(row=1, column=col, value=_display_header(name))
         c.font = header_font
         c.fill = header_fill
 

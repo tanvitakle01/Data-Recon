@@ -404,6 +404,7 @@ function ComparisonTypeStep() {
   const selectedId = state.comparisonType?.id ?? "";
   const identification = state.sheetIdentification;
   const interfaceIndex = state.interfaceIndex;
+  const parsedMappingSheet = state.transformationSpec?.parsedMappingSheet;
 
   // Detection details and Pre-flight checks are both collapsed by default —
   // their content is derived/secondary to the mapping-sheet summary above,
@@ -425,19 +426,23 @@ function ComparisonTypeStep() {
   const sheetInputRef = useRef(null);
   const [sheetLoading, setSheetLoading] = useState(false);
   const [sheetError, setSheetError] = useState(null);
-  // The chosen interface's own sheet being read + identified. Separate from
-  // sheetLoading (the workbook index read) because they are separate phases:
-  // the index read only ever yields the interface list.
+  // The chosen interface's own sheet being read. Separate from sheetLoading
+  // (the workbook index read) because they are separate phases: the index
+  // read only ever yields the interface list.
   const [sliceLoading, setSliceLoading] = useState(false);
+  // Connector/entity/field identification (/mapping-sheet/identify) is a
+  // SEPARATE, optional step — it never fires automatically. The parsed sheet
+  // is stored and forwarded to Step 4 (mapping resolution) regardless of
+  // whether this ever runs; only "Resolve data connections" below issues it.
+  const [resolveLoading, setResolveLoading] = useState(false);
+  const [resolveError, setResolveError] = useState(null);
 
-  // Slice ONE interface out of the workbook and interpret only that slice:
-  // parse (deterministic, scoped to that worksheet) → identify (LLM,
-  // allow-listed). The interpretation step itself is unchanged — only its
-  // input scope is, from "the whole workbook" to "this interface's sheet".
-  // Identification degrades gracefully, so a failure here never blocks the
-  // wizard: the user just selects connectors manually on Steps 2/3.
+  // Slice ONE interface out of the workbook and parse only that slice
+  // (deterministic, scoped to that worksheet). Interpretation (identify) is
+  // no longer chained here — see resolveConnections.
   const selectInterface = async (iface, index = interfaceIndex) => {
     dispatch({ type: WizardActions.CLEAR_SHEET_IDENTIFICATION });
+    setResolveError(null);
     if (!iface) {
       dispatch({ type: WizardActions.SET_COMPARISON_TYPE, comparisonType: null });
       return;
@@ -462,39 +467,65 @@ function ComparisonTypeStep() {
       // Also feeds Step 4 (Mapping): the Recipe Editor's "draft from
       // description" context, and the sequential AI mapping-resolution chain
       // (TransformationSpecStep) both read `transformationSpec.parsedMappingSheet`.
-      // Dispatched before identify (below) so it's available even if
-      // identification itself fails/degrades.
+      // This is the ONLY thing selecting a sheet does automatically now —
+      // the mapping sheet is considered "uploaded" from here on regardless of
+      // whether connectors ever get resolved.
       dispatch({
         type: WizardActions.SET_PARSED_MAPPING_SHEET,
         parsedMappingSheet: parseRes.data,
-      });
-      // include_entities: the same identification call also returns which
-      // entities to fetch per side and any implied join, gated against each
-      // side's live entity list. Pre-populates the Join Builder canvas.
-      const idRes = await api.post("/api/recon/mapping-sheet/identify", {
-        mapping_sheet: parseRes.data,
-        include_entities: true,
-      });
-      dispatch({
-        type: WizardActions.SET_SHEET_IDENTIFICATION,
-        identification: {
-          ...idRes.data,
-          sheet: { name: file.name, size: file.size },
-          // Which interface this identification came from — the rest of the
-          // workbook played no part in it.
-          interface: { id: iface.id, record: iface.record, sheet: iface.sheet },
-          parsed: parseRes.data,
-        },
       });
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setSheetError(
         typeof detail === "string"
           ? detail
-          : `Could not read/identify the "${iface.record}" interface.`
+          : `Could not read the "${iface.record}" interface.`
       );
     } finally {
       setSliceLoading(false);
+    }
+  };
+
+  // "Resolve data connections" button: the ONLY trigger for
+  // /mapping-sheet/identify. include_entities: the same identification call
+  // also returns which entities to fetch per side and any implied join,
+  // gated against each side's live entity list — pre-populates the Join
+  // Builder canvas. Degrades gracefully, so a failure here never blocks the
+  // wizard: the user just selects connectors manually on Steps 2/3, and
+  // whatever was already parsed keeps flowing to Step 4 either way.
+  const resolveConnections = async () => {
+    if (!parsedMappingSheet || !selectedInterface) return;
+    setResolveError(null);
+    setResolveLoading(true);
+    try {
+      const idRes = await api.post("/api/recon/mapping-sheet/identify", {
+        mapping_sheet: parsedMappingSheet,
+        include_entities: true,
+      });
+      dispatch({
+        type: WizardActions.SET_SHEET_IDENTIFICATION,
+        identification: {
+          ...idRes.data,
+          sheet: { name: interfaceIndex?.filename, size: interfaceIndex?.file?.size },
+          // Which interface this identification came from — the rest of the
+          // workbook played no part in it.
+          interface: {
+            id: selectedInterface.id,
+            record: selectedInterface.record,
+            sheet: selectedInterface.sheet,
+          },
+          parsed: parsedMappingSheet,
+        },
+      });
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setResolveError(
+        typeof detail === "string"
+          ? detail
+          : `Could not resolve data connections for "${selectedInterface.record}".`
+      );
+    } finally {
+      setResolveLoading(false);
     }
   };
 
@@ -938,6 +969,34 @@ function ComparisonTypeStep() {
                       Remove
                     </Button>
                   </div>
+
+                  {/* Optional, explicit trigger for /mapping-sheet/identify.
+                      The sheet above is already parsed and stored (feeding
+                      Step 4) whether or not this is ever clicked. */}
+                  <div className="ct-resolve-row">
+                    <Button
+                      variant={hasIdentification ? "outline" : "primary"}
+                      size="sm"
+                      onClick={resolveConnections}
+                      disabled={!parsedMappingSheet || sliceLoading || resolveLoading}
+                    >
+                      {resolveLoading ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" aria-hidden /> Resolving…
+                        </>
+                      ) : hasIdentification ? (
+                        "Re-resolve data connections"
+                      ) : (
+                        "Resolve data connections"
+                      )}
+                    </Button>
+                    {!parsedMappingSheet && !sliceLoading && (
+                      <span className="wizard-field__help">
+                        Select a dataset type above to enable.
+                      </span>
+                    )}
+                  </div>
+                  {resolveError && <Alert variant="error">{resolveError}</Alert>}
 
                   {hasIdentification && (
                     <table className="ct-table">
