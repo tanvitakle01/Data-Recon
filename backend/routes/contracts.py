@@ -212,9 +212,10 @@ class MappingResolutionRequest(BaseModel):
 def resolve_mapping_endpoint(req: MappingResolutionRequest) -> dict[str, Any]:
     """Sequential AI mapping resolution: mapping sheet + real headers -> ops.
 
-    Four chained LLM calls (relevant fields -> enriched fields ->
-    transformation chain -> deterministic operations), run automatically with
-    no human-approval pause between steps — see ``recon_engine.mapping_resolution``.
+    Five chained LLM calls (header-level filter extraction -> relevant
+    fields -> enriched fields -> transformation chain -> deterministic
+    operations), run automatically with no human-approval pause between
+    steps — see ``recon_engine.mapping_resolution``.
     The returned ``operations`` use the same ``{op, field, params}`` shape as
     ``/contracts/compile``'s ``draft.operations``, ready to feed the Recipe
     Editor. Never sets ``business_key``/``compare_fields`` — those stay

@@ -60,6 +60,13 @@ class OperationSpec:
     # aggregating it is a degenerate no-op that signals the compiler confused
     # a dimension with a measure). None for operations with no group-by param.
     group_by_param: str | None = None
+    # Params whose value, when present, MUST be a JSON object carrying every
+    # listed key (e.g. relative_date_reassign's "weekday_exception" ->
+    # ("on_weekday", "offset_days")) — never a string/bool/number. Caught here
+    # (Gate 1) rather than only surfacing as a cryptic "executor raised"
+    # failure once ops.py's own runtime shape check trips at Gate 2 replay.
+    # Scalar required_params/optional_params are unaffected by this.
+    object_params: dict[str, tuple[str, ...]] = dc_field(default_factory=dict)
 
     def validate(self, field: str | None, params: dict[str, Any], columns: list[str]) -> list[str]:
         """Return a list of human-readable validation errors (empty == valid)."""
@@ -151,6 +158,22 @@ class OperationSpec:
                 errors.append(
                     f"operation '{self.name}' param '{ep}'='{val}' must be one of "
                     f"{sorted(allowed_values)}."
+                )
+
+        for op, required_keys in self.object_params.items():
+            val = params.get(op)
+            if val is None:
+                continue
+            if not isinstance(val, dict):
+                errors.append(
+                    f"operation '{self.name}' param '{op}' must be a JSON object with "
+                    f"keys {list(required_keys)}, not a {type(val).__name__}."
+                )
+                continue
+            missing = [k for k in required_keys if k not in val]
+            if missing:
+                errors.append(
+                    f"operation '{self.name}' param '{op}' is missing key(s) {missing}."
                 )
         return errors
 
@@ -302,6 +325,7 @@ _SPECS: list[OperationSpec] = [
         needs_run_date=True,
         sentinel_field_params={"compare_to": "run_date"},
         enum_params={"date_condition": frozenset({"lt", "gt", "eq"})},
+        object_params={"weekday_exception": ("on_weekday", "offset_days")},
     ),
     OperationSpec(
         "split_field", OperationKind.TRANSFORM, ops.split_field,
@@ -418,6 +442,7 @@ def list_operations() -> list[dict[str, Any]]:
             "requires_field": s.requires_field,
             "required_params": list(s.required_params),
             "optional_params": list(s.optional_params),
+            "object_params": {k: list(v) for k, v in s.object_params.items()},
         }
         for s in _SPECS
     ]

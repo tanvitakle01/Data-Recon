@@ -777,6 +777,7 @@ function TransformationSpecStep() {
                   {mappingResolution.proposed_operations.map((p, idx) => (
                     <li key={`${p.name}-${idx}`}>
                       <code>{p.name}</code> ({p.kind}) — {p.contract}
+                      {p.flagged_for_shadow_test ? " — flagged for a shadow-mode test before promotion" : ""}
                     </li>
                   ))}
                 </ul>

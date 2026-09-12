@@ -670,8 +670,14 @@ def build_recipe_preview(
     phase and preserves within-phase order (Decision B), the previewed prefix is
     exactly the subset a run of that prefix would execute.
 
-    Provide the source as either a persisted ``source_snapshot_id`` (a sample is
-    taken) or inline ``source_rows`` (already a sample). Raw source is never
+    Provide the source as either a persisted ``source_snapshot_id`` or inline
+    ``source_rows``. Either way the FULL frame is run through the executor —
+    ``preview_rows`` only bounds how many source/shadow rows come back for
+    display (and how many diffs are computed), exactly like
+    :func:`build_shadow_preview`. Truncating the *input* before an AGGREGATE
+    op runs would silently drop rows out of their group and understate the
+    aggregated total (e.g. a 3-row monthly sum missing whichever row fell
+    past the cut), so the executor always sees every row. Raw source is never
     mutated (the executor copies).
     """
     init_storage()
@@ -681,13 +687,11 @@ def build_recipe_preview(
     else:
         parsed = DraftContract.model_validate(draft)
 
-    # Resolve the source sample.
+    # Resolve the full source — never truncated before the executor runs.
     if source_snapshot_id:
-        raw_source = snapshot_store.load_snapshot_frame(source_snapshot_id).head(
-            max(1, preview_rows)
-        )
+        raw_source = snapshot_store.load_snapshot_frame(source_snapshot_id)
     elif source_rows is not None:
-        raw_source = pd.DataFrame(source_rows).head(max(1, preview_rows))
+        raw_source = pd.DataFrame(source_rows)
     else:
         raise ValueError("Provide either source_snapshot_id or source_rows.")
 
