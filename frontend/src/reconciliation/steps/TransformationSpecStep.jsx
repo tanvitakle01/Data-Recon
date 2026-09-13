@@ -10,11 +10,11 @@ import {
   buildValueMappingFormData,
   cleanAggregationRules,
   fullOrPreviewRows,
+  gate2SampleRows,
   keyFieldPairs,
   mergeGeneratedMapping,
   missingValueMappingRequirements,
   rebuildMapping,
-  sampleRows,
 } from "../lib/payload";
 import { detectFieldRole } from "../lib/fieldRoleAliases";
 import { createBothSnapshots, generateInsightsForRun, runContractReconciliation } from "../lib/reconRun";
@@ -439,12 +439,19 @@ function TransformationSpecStep() {
   // ── contract lifecycle: compile → validate → approve ──────────────────────
   const validateDraft = useCallback(
     async (draft) => {
+      // A properly-sized sample (not the small upload-preview array) so Gate 2
+      // sees enough rows for a genuinely selective filter/business rule to have
+      // a realistic chance of matching something — see gate2SampleRows.
+      const [sourceSample, targetSample] = await Promise.all([
+        gate2SampleRows(source),
+        gate2SampleRows(target),
+      ]);
       const res = await api.post("/api/recon/contracts/validate", {
         draft,
         source_columns: source.dataset?.columns ?? [],
         target_columns: target.dataset?.columns ?? [],
-        source_sample: sampleRows(source),
-        target_sample: sampleRows(target),
+        source_sample: sourceSample,
+        target_sample: targetSample,
         actor: "wizard-user",
       });
       dispatch({ type: WizardActions.SET_CONTRACT_VALIDATION, validation: res.data });

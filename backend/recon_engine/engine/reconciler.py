@@ -23,6 +23,7 @@ from typing import Any
 import pandas as pd
 
 from backend.recon_engine.engine.executor import LINEAGE_COL, pair_id_col
+from backend.recon_engine.engine.key_normalization import canonicalize_key_column
 from backend.recon_engine.models.contract import MatchType, TransformationContract
 from backend.recon_engine.models.results import RecordClass, ReconciliationSummary
 from backend.recon_engine.operations import get_operation
@@ -59,9 +60,22 @@ def _normalise_scalar(value: Any, options: dict[str, Any]) -> str:
 
 
 def _build_key(df: pd.DataFrame, fields: list[str], options: dict[str, Any]) -> pd.Series:
+    """Build the composite join key for ``fields``.
+
+    Each field is first passed through :func:`canonicalize_key_column`,
+    which reshapes a date or numeric-identifier column (independently, from
+    its own values — see that function's docstring) onto one fixed internal
+    representation before the usual trim/casefold string comparison. Without
+    this, a source/target pair that serializes the SAME date or ID
+    differently (ISO vs "M/D/YYYY", "786293.0" vs "786293") would never
+    join, however correct the rest of the contract is.
+    """
     if df.empty:
         return pd.Series([], dtype=str)
-    parts = [df[f].map(lambda v: _normalise_scalar(v, options)) for f in fields]
+    parts = [
+        canonicalize_key_column(df[f]).map(lambda v: _normalise_scalar(v, options))
+        for f in fields
+    ]
     key = parts[0]
     for p in parts[1:]:
         key = key.str.cat(p, sep="|")

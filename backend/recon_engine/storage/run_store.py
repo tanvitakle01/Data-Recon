@@ -17,12 +17,14 @@ def save_run(run: ReconciliationRun) -> ReconciliationRun:
         conn.execute(
             """INSERT INTO runs
                (run_id, contract_id, contract_version, source_snapshot_id,
-                target_snapshot_id, shadow_id, status, created_at, created_by, error)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                target_snapshot_id, shadow_id, status, created_at, created_by, error,
+                anchor_date, anchor_resolver)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 run.run_id, run.contract_id, run.contract_version, run.source_snapshot_id,
                 run.target_snapshot_id, run.shadow_id, run.status.value,
                 run.created_at.isoformat(), run.created_by, run.error,
+                run.anchor_date.isoformat() if run.anchor_date else None, run.anchor_resolver,
             ),
         )
     return run
@@ -31,13 +33,18 @@ def save_run(run: ReconciliationRun) -> ReconciliationRun:
 def update_run(run: ReconciliationRun) -> ReconciliationRun:
     with main_db() as conn:
         conn.execute(
-            "UPDATE runs SET shadow_id=?, status=?, error=? WHERE run_id=?",
-            (run.shadow_id, run.status.value, run.error, run.run_id),
+            "UPDATE runs SET shadow_id=?, status=?, error=?, anchor_date=?, anchor_resolver=? WHERE run_id=?",
+            (
+                run.shadow_id, run.status.value, run.error,
+                run.anchor_date.isoformat() if run.anchor_date else None, run.anchor_resolver,
+                run.run_id,
+            ),
         )
     return run
 
 
 def _row_to_run(row) -> ReconciliationRun:
+    keys = row.keys()
     return ReconciliationRun(
         run_id=row["run_id"],
         contract_id=row["contract_id"],
@@ -49,6 +56,12 @@ def _row_to_run(row) -> ReconciliationRun:
         created_at=row["created_at"],
         created_by=row["created_by"],
         error=row["error"],
+        # Pre-migration rows (or a DB that hasn't picked up the migration's
+        # NOT NULL default) may carry NULL/absent anchor_resolver — treat
+        # that the same as "wall_clock", the only behavior that existed
+        # before this column did.
+        anchor_date=row["anchor_date"] if "anchor_date" in keys else None,
+        anchor_resolver=(row["anchor_resolver"] if "anchor_resolver" in keys else None) or "wall_clock",
     )
 
 

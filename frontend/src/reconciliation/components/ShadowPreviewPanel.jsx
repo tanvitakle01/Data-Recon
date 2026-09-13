@@ -21,7 +21,28 @@ import {
   runContractReconciliation,
 } from "../lib/reconRun";
 import BeforeAfterCurtain from "./BeforeAfterCurtain";
-import { Button, Badge, Alert, Skeleton } from "@bristlecone/canopy";
+import { Button, Badge, Alert, Skeleton, Input } from "@bristlecone/canopy";
+
+// Human-readable label for how the run-time anchor was resolved, from a
+// shadow-preview/run response's own anchor_date/anchor_resolver/
+// anchor_inference — never re-derived client-side, only displayed.
+function anchorSummary({ anchor_date, anchor_resolver, anchor_inference }) {
+  if (!anchor_date) return null;
+  if (anchor_resolver === "explicit") {
+    return `Anchor date: ${anchor_date} (set below)`;
+  }
+  if (anchor_resolver === "inferred_from_target") {
+    const pct = anchor_inference?.confidence != null
+      ? `${Math.round(anchor_inference.confidence * 100)}%`
+      : null;
+    const support = anchor_inference?.support != null && anchor_inference?.total != null
+      ? ` — ${anchor_inference.support}/${anchor_inference.total} target rows`
+      : "";
+    return `Anchor date: ${anchor_date} (inferred from target${support}${pct ? `, ${pct} confidence` : ""})`;
+  }
+  const reason = anchor_inference?.reason ? ` — ${anchor_inference.reason}` : "";
+  return `Anchor date: ${anchor_date} (today's date; no anchor could be inferred${reason})`;
+}
 
 function dedupe(list) {
   return Array.from(new Set(list.filter(Boolean)));
@@ -98,7 +119,7 @@ function ShadowPreviewPanel() {
   const { state, dispatch } = useWizard();
   const navigate = useNavigate();
   const { source, target, comparisonType, transformationSpec } = state;
-  const { contract, sourceSnapshotId, targetSnapshotId, shadowPreview, shadowApproved } =
+  const { contract, sourceSnapshotId, targetSnapshotId, anchorDate, shadowPreview, shadowApproved } =
     transformationSpec;
 
   const [loading, setLoading] = useState(false);
@@ -136,6 +157,7 @@ function ShadowPreviewPanel() {
           contract_version: contract.contract_version,
           source_snapshot_id: srcId,
           target_snapshot_id: tgtId,
+          anchor_date: anchorDate || null,
           actor: "wizard-user",
         });
         return res.data;
@@ -189,7 +211,7 @@ function ShadowPreviewPanel() {
         setPhase(null);
       }
     },
-    [contract, source, target, comparisonType, sourceSnapshotId, targetSnapshotId, dispatch],
+    [contract, source, target, comparisonType, sourceSnapshotId, targetSnapshotId, anchorDate, dispatch],
   );
 
   // Auto-build the shadow once per approved contract build when none exists yet.
@@ -228,6 +250,7 @@ function ShadowPreviewPanel() {
         sourceSnapshotId,
         targetSnapshotId,
         expectedShadowFingerprint: shadowApproved,
+        anchorDate,
       });
       dispatch({
         type: WizardActions.SET_RECONCILIATION_RESULT,
@@ -268,6 +291,24 @@ function ShadowPreviewPanel() {
         before reconciliation runs against it. Approval is required.
       </p>
 
+      <div className="wizard-field" style={{ maxWidth: 280, marginTop: 8 }}>
+        <Input
+          label="Anchor date (optional)"
+          type="date"
+          value={anchorDate ?? ""}
+          onChange={(e) =>
+            dispatch({ type: WizardActions.SET_ANCHOR_DATE, anchorDate: e.target.value || null })
+          }
+          hint={
+            "Day date_window_filter/relative_date_reassign run against. Leave blank to let the " +
+            "backend work it out — inferred from the target extract's own dates when the " +
+            "transformation rules have a rollforward rule, otherwise today. Set this only to " +
+            "override that, e.g. replaying against a historical extract. Changing it requires " +
+            "clicking Regenerate Shadow below."
+          }
+        />
+      </div>
+
       <div className="review-meta">
         <Badge variant="default">
           Transformation Rules: {contract.contract_id} v{contract.contract_version}
@@ -285,6 +326,9 @@ function ShadowPreviewPanel() {
               <Badge variant="default">
                 Target rows: {shadowPreview.target?.total_rows ?? 0}
               </Badge>
+            )}
+            {anchorSummary(shadowPreview) && (
+              <Badge variant="default">{anchorSummary(shadowPreview)}</Badge>
             )}
           </>
         )}

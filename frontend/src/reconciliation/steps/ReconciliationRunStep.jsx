@@ -70,6 +70,7 @@ function ReconciliationRunStep() {
       sourceSnapshotId: srcId,
       targetSnapshotId: tgtId,
       expectedShadowFingerprint: null,
+      anchorDate: transformationSpec.anchorDate,
     });
 
     dispatch({
@@ -256,6 +257,15 @@ function ReconciliationRunStep() {
             : scriptApproval
               ? ` · Approved transformation (${scriptApproval.approval_id})`
               : " · no transformation rules (direct comparison)"}
+          {reconciliation?.anchor_date
+            ? ` · Anchor ${reconciliation.anchor_date} (${
+                reconciliation.anchor_resolver === "inferred_from_target"
+                  ? "inferred from target"
+                  : reconciliation.anchor_resolver === "explicit"
+                    ? "set by you"
+                    : "today"
+              })`
+            : ""}
         </span>
       </div>
 

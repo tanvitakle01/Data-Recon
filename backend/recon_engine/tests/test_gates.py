@@ -175,3 +175,29 @@ def test_gate2_flags_bad_date_parse():
     report = replay_sample(draft, _sample(), _sample())
     assert not report.ok
     assert any("date_parse" in e for e in report.errors)
+
+
+def test_gate2_warns_not_blocks_when_a_filter_empties_an_adequate_sample():
+    """No sample size can prove a FILTER is buggy rather than legitimately
+    selective — a rule that (correctly) keeps only a sliver of real rows will
+    empty out even a properly-sized sample most of the time, purely by which
+    rows happened to be sampled. This must warn, never hard-block approval,
+    regardless of sample size, whenever the contract has an enabled filter."""
+    draft = _valid_draft().model_dump()
+    draft["operations"] = [{"op": "include_value", "field": "id", "params": {"values": ["does-not-exist"]}}]
+    report = replay_sample(draft, _sample(60), _sample(60))
+    assert report.ok, report.errors
+    assert any("row_count" in w for w in report.warnings)
+
+
+def test_gate2_warns_on_empty_shadow_from_a_too_thin_sample_even_without_a_filter():
+    """Independently of the filter case above: a sample below the gate's own
+    documented minimum isn't enough evidence to block on, even when nothing
+    in the (contrived) sample is a real filter op."""
+    draft = _valid_draft().model_dump()
+    draft["operations"] = [{"op": "include_value", "field": "id", "params": {"values": ["K59"]}}]
+    report = replay_sample(draft, _sample(5), _sample(5))
+    assert report.ok, report.errors
+    assert any("row_count" in w for w in report.warnings)
+
+

@@ -63,3 +63,15 @@ class ReconciliationRun(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
     created_by: str = "system"
     error: str | None = None
+
+    # The run-time anchor `date_window_filter`/`relative_date_reassign`
+    # evaluated against (see `engine.executor.build_shadow_source`'s
+    # `run_date`) — recorded for every run, not just an explicit-anchor one,
+    # so it's always possible to see after the fact exactly what "now" meant
+    # for this run's date-dependent operations. `anchor_resolver` is
+    # "wall_clock" (the anchor was resolved to real now/created_at, the only
+    # behavior before this field existed) or "explicit" (the caller pinned a
+    # specific date — e.g. replaying/validating against a historical target
+    # snapshot captured on a different calendar day than today).
+    anchor_date: datetime | None = None
+    anchor_resolver: str = "wall_clock"

@@ -32,6 +32,7 @@ export const WizardActions = {
   SET_APPROVED_CONTRACT: "SET_APPROVED_CONTRACT",
   SET_DETERMINISTIC_CONTRACT: "SET_DETERMINISTIC_CONTRACT",
   SET_SHADOW_SNAPSHOTS: "SET_SHADOW_SNAPSHOTS",
+  SET_ANCHOR_DATE: "SET_ANCHOR_DATE",
   SET_SHADOW_PREVIEW: "SET_SHADOW_PREVIEW",
   SET_SHADOW_APPROVAL: "SET_SHADOW_APPROVAL",
   SET_SCRIPT_TRANSFORMATIONS_MODE: "SET_SCRIPT_TRANSFORMATIONS_MODE",
@@ -108,7 +109,17 @@ function createInitialTransformationSpec() {
     // here and reused by the run so the reviewed shadow == the reconciled one.
     sourceSnapshotId: null,
     targetSnapshotId: null,
-    shadowPreview: null, // /api/recon/shadow-preview response (original/shadow/diffs/target)
+    // Optional explicit override ("YYYY-MM-DD" | null) for the run-time
+    // anchor `date_window_filter`/`relative_date_reassign` evaluate against.
+    // Left null so the backend resolves it itself — inferring it from the
+    // target snapshot's own data when the contract has a relative-date rule
+    // (see engine.anchor_inference), else wall-clock "now" — never guessed or
+    // hardcoded here. Set this only to override that default (e.g. replaying
+    // against a historical target extract the auto-inference couldn't read
+    // confidently). Authored intent, like `recipe`/business rules — survives
+    // a dataset change; only clearing shadowPreview/shadowApproved below.
+    anchorDate: null,
+    shadowPreview: null, // /api/recon/shadow-preview response (original/shadow/diffs/target/anchor_*)
     shadowApproved: null, // fingerprint the user approved; gates the run
     // Script-transformation flow (USE_SCRIPT_TRANSFORMATIONS): the user
     // approves transformed DATA, not code. See TransformationPreviewPanel.
@@ -555,6 +566,22 @@ export function wizardReducer(state, action) {
           ...state.transformationSpec,
           sourceSnapshotId: action.sourceSnapshotId,
           targetSnapshotId: action.targetSnapshotId,
+        },
+      };
+
+    case WizardActions.SET_ANCHOR_DATE:
+      // Changing the anchor changes what date_window_filter/
+      // relative_date_reassign evaluate against, so any previously built
+      // shadow/approval is stale — same reasoning SET_MAPPING_SHEET already
+      // applies to a changed input.
+      return {
+        ...state,
+        stepStatus: { ...state.stepStatus, reconciliation: "locked" },
+        transformationSpec: {
+          ...state.transformationSpec,
+          anchorDate: action.anchorDate,
+          shadowPreview: null,
+          shadowApproved: null,
         },
       };
 

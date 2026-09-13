@@ -1,3 +1,5 @@
+import api from "../../services/api";
+
 // Appends one reconciliation side (source or target) to a FormData in the
 // shape /automap and /reconcile expect: an uploaded Excel file
 // (`<role>_file` + optional `sheet_name_<role>`) for Excel datasets, or a
@@ -87,6 +89,39 @@ export function sampleRows(roleState, limit = 100) {
   if (Array.isArray(dataset.rows) && dataset.rows.length > 0) return dataset.rows.slice(0, limit);
   if (Array.isArray(dataset.preview)) return dataset.preview;
   return [];
+}
+
+// A properly-sized, REPRESENTATIVE sample for Gate 2 sample replay — distinct
+// from sampleRows()'s small upload-preview array. That array exists for the
+// Dataset Preview card's own display (backend-capped to a handful of rows,
+// see routes/preview.py) and can, by pure bad luck, contain zero rows a
+// legitimately selective filter/business rule would keep — Gate 2 would then
+// wrongly conclude the whole pipeline drops everything, when only this thin
+// sample happened not to match. When the raw file is still held in memory
+// (`dataset.file` — true for a fresh Excel/CSV upload, not after a page
+// refresh), re-request the SAME file from /preview with a much larger `rows`
+// count instead of reusing the cached small array. `limit` mirrors the
+// backend's own REPLAY_SAMPLE_MAX (backend/recon_engine/config.py) — Gate 2
+// never looks at more rows than that anyway. SAP-fetched datasets already
+// keep their full rows in memory (no re-fetch needed); anything without a
+// live file handle falls back to whatever sampleRows() already has.
+export async function gate2SampleRows(roleState, limit = 100) {
+  const dataset = roleState?.dataset;
+  if (!dataset) return [];
+  if (Array.isArray(dataset.rows) && dataset.rows.length > 0) return dataset.rows.slice(0, limit);
+  if (dataset.file) {
+    try {
+      const formData = new FormData();
+      formData.append("file", dataset.file);
+      if (dataset.sheet) formData.append("sheet_name", dataset.sheet);
+      formData.append("rows", String(limit));
+      const res = await api.post("/preview", formData);
+      if (Array.isArray(res.data?.preview)) return res.data.preview;
+    } catch {
+      // Fall through to whatever sample is already cached client-side.
+    }
+  }
+  return sampleRows(roleState, limit);
 }
 
 // Like sampleRows, but NEVER caps a SAP/IBP-fetched dataset's full in-memory

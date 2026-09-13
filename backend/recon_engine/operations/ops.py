@@ -447,7 +447,12 @@ _WEEKDAY_NAMES: dict[str, int] = {
 }
 
 
-def _resolve_weekday(value: Any) -> int:
+def resolve_weekday(value: Any) -> int:
+    """A weekday name (any case, e.g. ``"Saturday"``) or an already-numeric
+    0-6 (Mon-Sun) value -> its 0-6 index. Public: shared with
+    ``engine.anchor_inference``, which has to interpret a
+    ``relative_date_reassign`` operation's own ``weekday_exception`` param the
+    SAME way this operation does, to invert it back to a run_date."""
     if isinstance(value, int):
         return value
     return _WEEKDAY_NAMES[str(value).strip().lower()]
@@ -497,7 +502,7 @@ def relative_date_reassign(df: pd.DataFrame, field: str, params: dict[str, Any])
                 "'on_weekday' and 'offset_days', e.g. "
                 '{"on_weekday": "saturday", "offset_days": 2}.'
             )
-        if run_date.weekday() == _resolve_weekday(weekday_exception["on_weekday"]):
+        if run_date.weekday() == resolve_weekday(weekday_exception["on_weekday"]):
             effective_offset = int(weekday_exception["offset_days"])
 
     replacement = (run_date + pd.Timedelta(days=effective_offset)).strftime("%Y-%m-%d")

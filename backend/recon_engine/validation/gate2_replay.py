@@ -23,6 +23,7 @@ from backend.recon_engine.config import get_settings
 from backend.recon_engine.engine.executor import LINEAGE_COL, build_shadow_source
 from backend.recon_engine.engine.reconciler import _build_key
 from backend.recon_engine.models.contract import DraftContract, TransformationContract
+from backend.recon_engine.operations import OperationKind, get_operation
 from backend.recon_engine.operations.ops import format_to_strftime
 
 _PARSE_RATE_MIN = 0.5
@@ -109,10 +110,32 @@ def replay_sample(
     shadow = built.shadow_df
 
     # ── row count sanity ─────────────────────────────────────────────────────
+    # An empty shadow from a nonempty sample is downgraded to a WARNING
+    # (rather than blocking approval outright) whenever either is true:
+    #
+    #   * the sample itself is smaller than this gate's own documented
+    #     minimum (`replay_sample_min`) — a handful of rows can, by pure bad
+    #     luck, contain none that survive an otherwise-correct rule; or
+    #   * the contract has an enabled FILTER-kind operation at all (checked
+    #     generically against the operations registry's own `kind` — never a
+    #     specific op name or field/value) — no sample size can prove a
+    #     selective filter is BUGGY rather than legitimately selective, since
+    #     a rule that (correctly) keeps only 0.1% of real rows will empty out
+    #     even a large sample most of the time. Only TRANSFORM/AGGREGATE
+    #     operations can't organically empty a nonempty input this way, so an
+    #     empty shadow with no enabled filter really does point at a defect
+    #     elsewhere (e.g. a broken rename/cast/join) and still hard-blocks.
+    thin_sample = len(sample) < settings.replay_sample_min
+    has_enabled_filter = any(
+        get_operation(op.op).kind == OperationKind.FILTER
+        for op in parsed.operations
+        if getattr(op, "enabled", True)
+    )
     add(
         "row_count",
         not (len(sample) > 0 and len(shadow) == 0),
         f"source_sample={len(sample)} -> shadow={len(shadow)} rows.",
+        warn=thin_sample or has_enabled_filter,
     )
 
     # ── aggregation sanity ───────────────────────────────────────────────────

@@ -68,6 +68,15 @@ class RunRequest(BaseModel):
     # user approved. When present the run verifies the freshly-built shadow
     # matches it, otherwise 409s (contract/source changed since review).
     expected_shadow_fingerprint: str | None = None
+    # None (default) -> anchor date_window_filter/relative_date_reassign to
+    # wall-clock "now", the correct behavior for a normal live run. Pass an
+    # ISO date (e.g. "2026-09-03") to replay/validate this contract as if it
+    # ran on that day instead — for reconciling against a HISTORICAL target
+    # snapshot captured on a different calendar day than today, which a
+    # wall-clock-anchored rollforward rule can never match. Must match
+    # whatever anchor_date the Review-Changes preview used, if one was given
+    # there, or the shadow-fingerprint check below will 409.
+    anchor_date: str | None = None
     actor: str = "system"
 
 
@@ -81,6 +90,9 @@ class ShadowPreviewRequest(BaseModel):
     # on disk and is referenced by snapshot/fingerprint, not shipped to the UI.
     preview_rows: int | None = None
     target_preview_rows: int | None = None
+    # See RunRequest.anchor_date — the run this preview is reviewed for must
+    # pass the same value.
+    anchor_date: str | None = None
     actor: str = "system"
 
 
@@ -257,6 +269,7 @@ def shadow_preview(req: ShadowPreviewRequest) -> dict[str, Any]:
                 if req.target_preview_rows is not None
                 else default_rows
             ),
+            anchor_date=req.anchor_date,
             actor=req.actor,
         )
     except KeyError as exc:
@@ -275,6 +288,7 @@ def create_run(req: RunRequest) -> dict[str, Any]:
             source_snapshot_id=req.source_snapshot_id,
             target_snapshot_id=req.target_snapshot_id,
             expected_shadow_fingerprint=req.expected_shadow_fingerprint,
+            anchor_date=req.anchor_date,
             actor=req.actor,
         )
     except service.ShadowFingerprintMismatch as exc:
@@ -334,6 +348,27 @@ def date_alignment(req: DateAlignmentRequest) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return {"alignment": alignment}
+
+
+@router.get("/runs/{run_id}/date-alignment")
+def run_date_alignment(run_id: str) -> dict[str, Any]:
+    """POST-run date-overlap diagnostic: the same window/overlap analysis as
+    ``/date-alignment`` above, but between the run's actual Shadow_Source
+    (post-transform — reflects date_window_filter/relative_date_reassign)
+    and its Raw_Target, rather than the two raw uploads pre-transform.
+
+    This is what actually explains a run with an unexpectedly high
+    missing_in_target/extra_in_target count when a date-dependent transform
+    is involved: e.g. a rollforward rule anchored to wall-clock "now" run
+    against a target snapshot captured on an earlier day will show ZERO date
+    overlap here even though the pre-transform snapshots (checked by
+    ``/date-alignment``) overlap fine — the mismatch only appears after the
+    transform, which this endpoint is the only diagnostic that actually
+    replays."""
+    run = run_store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Unknown run.")
+    return {"alignment": service.compute_run_date_alignment(run)}
 
 
 @router.get("/runs/{run_id}/comparison.xlsx")

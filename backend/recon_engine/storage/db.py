@@ -614,6 +614,31 @@ def _migrate_chat_run_sessions_add_pending_name_prompt(conn: sqlite3.Connection)
     conn.execute("ALTER TABLE chat_run_sessions ADD COLUMN pending_suspension_name_run_id TEXT")
 
 
+def _migrate_runs_add_anchor_date(conn: sqlite3.Connection) -> None:
+    """One-time migration adding ``anchor_date``/``anchor_resolver`` to
+    ``runs``.
+
+    Lets a run explicitly pin the run-time anchor that
+    ``date_window_filter``/``relative_date_reassign`` evaluate against (see
+    ``engine.executor.build_shadow_source``'s ``run_date`` param), instead of
+    always defaulting to wall-clock "now". Needed to replay/validate a
+    contract against a historical target snapshot captured on a different
+    calendar day than today — a static extract can never match a live
+    "roll forward to tomorrow" rule computed on any OTHER day, and that's a
+    genuine data/timing mismatch to surface and let a user re-run against,
+    never something to silently paper over. Nullable / defaulted, no
+    backfill needed — every pre-existing run was, correctly, anchored to
+    wall-clock now at the time it ran (``service.run_reconciliation``
+    resolves and records the actual anchor timestamp used either way, so
+    this is never left blank for a NEW run).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    if not cols or "anchor_resolver" in cols:
+        return  # table doesn't exist yet, or already on the current schema
+    conn.execute("ALTER TABLE runs ADD COLUMN anchor_date TEXT")
+    conn.execute("ALTER TABLE runs ADD COLUMN anchor_resolver TEXT NOT NULL DEFAULT 'wall_clock'")
+
+
 def _migrate_value_pair_library_add_run_scope(conn: sqlite3.Connection) -> None:
     """One-time migration adding ``graph_run_id``/``status`` to
     ``value_pair_library`` (see the table's DDL comment above).
@@ -649,6 +674,7 @@ def init_storage() -> None:
         _migrate_pipeline_runs_add_interrupt(conn)
         _migrate_chat_run_sessions_add_pending_name_prompt(conn)
         _migrate_value_pair_library_add_run_scope(conn)
+        _migrate_runs_add_anchor_date(conn)
         conn.commit()
 
     with _connect(settings.shadow_db_path) as conn:

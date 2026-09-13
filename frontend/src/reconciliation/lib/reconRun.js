@@ -80,13 +80,21 @@ async function fetchResultDetail(resultId) {
 
 // Execute an approved contract against pre-created snapshots. When
 // expectedShadowFingerprint is supplied the backend verifies the rebuilt
-// Shadow_Source matches what was reviewed (409 otherwise). Returns the shape
-// the wizard stores under `reconciliation`.
+// Shadow_Source matches what was reviewed (409 otherwise). `anchorDate`
+// ("YYYY-MM-DD" | null/undefined) should be the SAME value (if any) the
+// preview that produced expectedShadowFingerprint was built with — omitting
+// it here lets the backend re-resolve its own anchor (explicit override,
+// then target-inferred, then wall-clock; see service._resolve_run_anchor),
+// which reproduces the previewed shadow exactly as long as the target data
+// hasn't changed since, but passing the user's own explicit override through
+// keeps that guarantee even when one was set. Returns the shape the wizard
+// stores under `reconciliation`.
 export async function runContractReconciliation({
   contract,
   sourceSnapshotId,
   targetSnapshotId,
   expectedShadowFingerprint = null,
+  anchorDate = null,
 }) {
   const runRes = await api.post("/api/recon/runs", {
     contract_id: contract.contract_id,
@@ -94,6 +102,7 @@ export async function runContractReconciliation({
     source_snapshot_id: sourceSnapshotId,
     target_snapshot_id: targetSnapshotId,
     expected_shadow_fingerprint: expectedShadowFingerprint,
+    anchor_date: anchorDate || null,
     actor: "wizard-user",
   });
 

@@ -36,6 +36,7 @@ from backend.recon_engine.config import get_settings
 from backend.recon_engine.engine import (
     LINEAGE_COL,
     build_shadow_source,
+    infer_anchor_date,
     reconcile,
     shadow_fingerprint,
 )
@@ -545,6 +546,62 @@ def _compute_row_diffs(
     return diffs
 
 
+# A strict majority (never a hardcoded date or weekday — see
+# engine.anchor_inference) of the target's OWN rows must agree on the implied
+# anchor before it is trusted over wall-clock; a low-agreement inference is
+# still surfaced (see ``_anchor_inference_payload``) but not silently acted on.
+_ANCHOR_INFERENCE_MIN_CONFIDENCE = 0.5
+
+
+def _anchor_inference_payload(inference: Any | None) -> dict[str, Any] | None:
+    if inference is None:
+        return None
+    return {
+        "anchor_date": inference.anchor_date,
+        "field": inference.field,
+        "support": inference.support,
+        "total": inference.total,
+        "confidence": inference.confidence,
+        "reason": inference.reason,
+    }
+
+
+def _resolve_run_anchor(
+    contract: TransformationContract,
+    anchor_date: str | datetime | None,
+    raw_target: pd.DataFrame | None,
+) -> tuple[pd.Timestamp, str, Any | None]:
+    """Resolve the run-time anchor ``date_window_filter``/
+    ``relative_date_reassign`` evaluate against, in priority order:
+
+    1. an EXPLICIT caller-supplied ``anchor_date`` — always wins, no
+       inference attempted;
+    2. INFERRED from the target's own data, by inverting the approved
+       contract's own ``relative_date_reassign`` rule against it (see
+       ``engine.anchor_inference.infer_anchor_date``) — used only when a
+       strict majority of the target's rows agree on one implied anchor;
+    3. wall-clock "now" — the live-run default (source and target both
+       freshly pulled today), and the fallback whenever inference finds
+       nothing, or nothing confident enough.
+
+    Nothing here is hardcoded: every date, weekday, and field name involved
+    comes from the approved contract's own operation and the target
+    snapshot's own values. Returns ``(resolved_anchor, anchor_resolver,
+    inference)`` — ``inference`` is the raw ``AnchorInference`` (or ``None``
+    when it was never attempted, i.e. an explicit anchor was given), returned
+    regardless of whether it was actually used, so the caller can surface it
+    for audit even on a wall-clock fallback.
+    """
+    if anchor_date is not None:
+        return pd.Timestamp(anchor_date).normalize(), "explicit", None
+    if raw_target is None:
+        return pd.Timestamp.now().normalize(), "wall_clock", None
+    inference = infer_anchor_date(contract, raw_target)
+    if inference.anchor_date is not None and (inference.confidence or 0) > _ANCHOR_INFERENCE_MIN_CONFIDENCE:
+        return pd.Timestamp(inference.anchor_date).normalize(), "inferred_from_target", inference
+    return pd.Timestamp.now().normalize(), "wall_clock", inference
+
+
 def build_shadow_preview(
     *,
     contract_id: str,
@@ -553,6 +610,7 @@ def build_shadow_preview(
     target_snapshot_id: str | None = None,
     preview_rows: int = 200,
     target_preview_rows: int = 200,
+    anchor_date: str | datetime | None = None,
     actor: str = "system",
 ) -> dict[str, Any]:
     """Build (but do NOT persist as a run) the Shadow_Source for review.
@@ -562,8 +620,16 @@ def build_shadow_preview(
     returns everything the Review-Changes screen needs — plus a
     ``shadow_fingerprint`` the subsequent run verifies. This is a pure read: no
     run, shadow, or result records are created. Because the shadow is a
-    deterministic function of (approved contract + immutable source snapshot),
-    rebuilding it at run time reproduces exactly what was reviewed.
+    deterministic function of (approved contract + immutable source snapshot
+    + anchor date), rebuilding it at run time reproduces exactly what was
+    reviewed — provided :func:`run_reconciliation` is given the SAME
+    ``anchor_date`` this preview used, when one was passed here.
+
+    ``anchor_date`` mirrors :func:`run_reconciliation`'s param of the same
+    name: omit it to preview against wall-clock "now" (the live default), or
+    pin it to preview how the contract's date-window/rollforward operations
+    would have behaved on a specific day — e.g. validating against a
+    historical target snapshot.
     """
     init_storage()
 
@@ -582,7 +648,14 @@ def build_shadow_preview(
     raw_source = snapshot_store.load_snapshot_frame(source_snapshot_id)
     src_snap = snapshot_store.get_snapshot(source_snapshot_id)
 
-    built = build_shadow_source(contract, raw_source)
+    raw_target: pd.DataFrame | None = None
+    tgt_snap = None
+    if target_snapshot_id:
+        raw_target = snapshot_store.load_snapshot_frame(target_snapshot_id)
+        tgt_snap = snapshot_store.get_snapshot(target_snapshot_id)
+
+    resolved_anchor, anchor_resolver, anchor_inference = _resolve_run_anchor(contract, anchor_date, raw_target)
+    built = build_shadow_source(contract, raw_source, run_date=resolved_anchor)
     shadow_display = built.shadow_df.drop(columns=[LINEAGE_COL], errors="ignore")
     fingerprint = shadow_fingerprint(built.shadow_df)
 
@@ -592,9 +665,7 @@ def build_shadow_preview(
     )
 
     target_block: dict[str, Any] | None = None
-    if target_snapshot_id:
-        raw_target = snapshot_store.load_snapshot_frame(target_snapshot_id)
-        tgt_snap = snapshot_store.get_snapshot(target_snapshot_id)
+    if raw_target is not None:
         target_block = {
             "columns": [str(c) for c in raw_target.columns],
             "rows": _rows_as_records(raw_target, target_preview_rows),
@@ -639,6 +710,9 @@ def build_shadow_preview(
         "row_count_changed": len(shadow_display) != len(raw_source),
         "changed_cells": changed_cells,
         "preview_rows": min(preview_rows, len(shadow_display)),
+        "anchor_date": resolved_anchor.date().isoformat(),
+        "anchor_resolver": anchor_resolver,
+        "anchor_inference": _anchor_inference_payload(anchor_inference),
     }
 
 
@@ -771,6 +845,7 @@ def run_reconciliation(
     source_snapshot_id: str,
     target_snapshot_id: str,
     expected_shadow_fingerprint: str | None = None,
+    anchor_date: str | datetime | None = None,
     actor: str = "system",
 ) -> dict[str, Any]:
     """Execute an APPROVED contract. Builds a Shadow_Source, reconciles it
@@ -781,7 +856,25 @@ def run_reconciliation(
     Shadow_Source is verified against it BEFORE reconciling. A mismatch raises
     :class:`ShadowFingerprintMismatch` — the contract or source snapshot changed
     since review, so the review must be redone. Omitting it preserves the
-    original unguarded behaviour (e.g. direct API callers, tests)."""
+    original unguarded behaviour (e.g. direct API callers, tests).
+
+    ``anchor_date`` pins the run-time anchor that ``date_window_filter`` /
+    ``relative_date_reassign`` evaluate against, instead of the default
+    wall-clock "now". Omit it for a normal live run (source and target both
+    freshly pulled today — wall-clock "now" is exactly the right anchor);
+    when omitted, an anchor is also attempted from the target snapshot's own
+    data before falling back to wall-clock (see ``_resolve_run_anchor`` /
+    ``engine.anchor_inference`` — used when a strict majority of the target's
+    rows agree on one implied anchor, e.g. a HISTORICAL target snapshot
+    captured on a different calendar day than "now": a static extract can
+    never match a "roll forward to tomorrow"-style rule computed against any
+    other day, and that's a genuine data/timing fact to surface, not paper
+    over by quietly running the live default against stale data). Pass it
+    explicitly to override either default. Either way, the resolved anchor
+    and how it was resolved (``"explicit"``, ``"inferred_from_target"``, or
+    ``"wall_clock"``) are recorded on the run (see ``models.run.
+    ReconciliationRun.anchor_date``/``anchor_resolver``) for later audit —
+    e.g. via :func:`compute_run_date_alignment`."""
     init_storage()
 
     if contract_version is None:
@@ -797,6 +890,15 @@ def run_reconciliation(
             "only approved transformation rules can be run."
         )
 
+    # A provisional anchor, persisted immediately so a load/inference failure
+    # below still lands on a real (FAILED) run row rather than a bare
+    # exception — corrected in place, before anything anchor-dependent runs,
+    # once the target snapshot is loaded and (when no explicit anchor_date was
+    # given) inference has had its chance to improve on wall-clock.
+    resolved_anchor = (
+        pd.Timestamp(anchor_date).normalize() if anchor_date is not None else pd.Timestamp.now().normalize()
+    )
+    anchor_resolver = "explicit" if anchor_date is not None else "wall_clock"
     run = ReconciliationRun(
         run_id=run_store.new_run_id(),
         contract_id=contract.contract_id,
@@ -805,6 +907,8 @@ def run_reconciliation(
         target_snapshot_id=target_snapshot_id,
         status=RunStatus.RUNNING,
         created_by=actor,
+        anchor_date=resolved_anchor.to_pydatetime(),
+        anchor_resolver=anchor_resolver,
     )
     run_store.save_run(run)
     audit_store.record(
@@ -812,17 +916,26 @@ def run_reconciliation(
         details={"contract_id": contract.contract_id, "version": contract.contract_version},
     )
 
+    anchor_inference = None
     try:
         raw_source = snapshot_store.load_snapshot_frame(source_snapshot_id)
         raw_target = snapshot_store.load_snapshot_frame(target_snapshot_id)
         src_snap = snapshot_store.get_snapshot(source_snapshot_id)
 
-        built = build_shadow_source(contract, raw_source)
+        if anchor_date is None:
+            resolved_anchor, anchor_resolver, anchor_inference = _resolve_run_anchor(contract, None, raw_target)
+            run.anchor_date = resolved_anchor.to_pydatetime()
+            run.anchor_resolver = anchor_resolver
+            run_store.update_run(run)
+
+        built = build_shadow_source(contract, raw_source, run_date=resolved_anchor)
 
         # Review-Changes guard: the shadow we're about to reconcile must be the
         # exact one the user approved. A deterministic rebuild from the same
-        # (approved contract + immutable snapshot) reproduces it; a mismatch
-        # means something changed since review and it must be redone.
+        # (approved contract + immutable snapshot + anchor date) reproduces
+        # it; a mismatch means something changed since review — including the
+        # anchor date itself, if the caller passed a different explicit one
+        # here than at preview time — and it must be redone.
         if expected_shadow_fingerprint is not None:
             actual = shadow_fingerprint(built.shadow_df)
             if actual != expected_shadow_fingerprint:
@@ -876,6 +989,9 @@ def run_reconciliation(
             "shadow_id": shadow.shadow_id,
             "result_id": result.result_id,
             "summary": recon.summary.model_dump(),
+            "anchor_date": resolved_anchor.date().isoformat(),
+            "anchor_resolver": anchor_resolver,
+            "anchor_inference": _anchor_inference_payload(anchor_inference),
         }
     except Exception as exc:  # noqa: BLE001 - record failure then re-raise
         run.status = RunStatus.FAILED
@@ -2079,10 +2195,13 @@ def build_comparison_workbook(run_id: str) -> bytes:
     value_mappings_by_source_field = {vm.source_field: vm for vm in contract.value_mappings}
     try:
         raw_source_df = snapshot_store.load_snapshot_frame(run.source_snapshot_id)
-        # `run.created_at` anchors any run_date-dependent op (date_window_filter,
-        # relative_date_reassign) to when the run actually executed, not to
-        # whenever this export happens to be downloaded.
-        built = build_shadow_source(contract, raw_source_df, run_date=run.created_at)
+        # `run.anchor_date` (falling back to `run.created_at` for a run
+        # persisted before that field existed) anchors any run_date-dependent
+        # op (date_window_filter, relative_date_reassign) to whatever the run
+        # actually used — wall-clock "now" at execution time, or an explicit
+        # historical anchor — never to whenever this export happens to be
+        # downloaded.
+        built = build_shadow_source(contract, raw_source_df, run_date=run.anchor_date or run.created_at)
         detail_df = result_store.load_result_frame_any(result.result_id)
         operation_outcomes = _compute_operation_outcomes(
             built.operation_stats, detail_df, len(raw_source_df), built.held_out,
