@@ -49,9 +49,10 @@ def _read_env_value(var_name: str) -> str | None:
 
 
 _LIVE_AZURE_FOUNDRY_MODEL = _read_env_value("AZURE_FOUNDRY_MODEL")
+_LIVE_AZURE_FOUNDRY_BASE_URL = _read_env_value("AZURE_FOUNDRY_BASE_URL")
 requires_live_azure_foundry = pytest.mark.skipif(
-    not _LIVE_AZURE_FOUNDRY_MODEL,
-    reason="No real AZURE_FOUNDRY_MODEL in backend/recon_engine/.env for a live Azure AI Foundry call.",
+    not (_LIVE_AZURE_FOUNDRY_MODEL and _LIVE_AZURE_FOUNDRY_BASE_URL),
+    reason="No real AZURE_FOUNDRY_MODEL/AZURE_FOUNDRY_BASE_URL in backend/recon_engine/.env for a live Azure AI Foundry call.",
 )
 
 
@@ -60,6 +61,7 @@ requires_live_azure_foundry = pytest.mark.skipif(
 def test_groq_path_marks_compiler_groq(monkeypatch):
     """A successful compile must be reported as compiler=='groq', not stub."""
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     from backend.recon_engine.config import reset_settings_cache
 
     reset_settings_cache()
@@ -86,6 +88,7 @@ def test_groq_path_marks_compiler_groq(monkeypatch):
 def test_strict_mode_raises_instead_of_silently_falling_back_to_stub(monkeypatch):
     """RECON_GROQ_STRICT=true must surface a compile failure, not mask it as stub."""
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     monkeypatch.setenv("RECON_GROQ_STRICT", "true")
     from backend.recon_engine.config import reset_settings_cache
 
@@ -110,6 +113,7 @@ def test_strict_mode_raises_instead_of_silently_falling_back_to_stub(monkeypatch
 def test_non_strict_mode_still_degrades_to_stub(monkeypatch):
     """Default behaviour (RECON_GROQ_STRICT unset) is unchanged: degrade, don't raise."""
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     from backend.recon_engine.config import reset_settings_cache
 
     reset_settings_cache()
@@ -202,7 +206,7 @@ _REPORTED_TARGET_SCHEMA = ["I_LOCID", "I_PRDID", "I_SALESORDERREQUEST", "KEYFIGU
 
 
 @requires_live_azure_foundry
-def test_live_azure_foundry_never_sets_business_key_or_compare_fields():
+def test_live_azure_foundry_never_sets_business_key_or_compare_fields(monkeypatch):
     """Regression for the NON-NEGOTIABLE SCOPE LIMIT in the system prompt: even
     given a mapping sheet whose rows look like key/compare candidates, the
     real model must obey the prompt and always emit business_key/
@@ -212,6 +216,9 @@ def test_live_azure_foundry_never_sets_business_key_or_compare_fields():
     model to derive business_key itself and checked it against Gate 1; that
     responsibility moved to service.compile_draft — see
     test_compile_field_mapping_wiring.py for that wiring's coverage.)"""
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", _LIVE_AZURE_FOUNDRY_BASE_URL)
+    from backend.recon_engine.config import reset_settings_cache
+    reset_settings_cache()
     compiler = GroqContractCompiler(model=_LIVE_AZURE_FOUNDRY_MODEL)
     draft = compiler.compile(
         mapping_sheet=_REPORTED_MAPPING_SHEET, rules="",
@@ -224,7 +231,7 @@ def test_live_azure_foundry_never_sets_business_key_or_compare_fields():
 
 
 @requires_live_azure_foundry
-def test_live_azure_foundry_extracts_leading_zero_transformation():
+def test_live_azure_foundry_extracts_leading_zero_transformation(monkeypatch):
     mapping_sheet = {
         "mapping_candidates": [
             {
@@ -235,6 +242,9 @@ def test_live_azure_foundry_extracts_leading_zero_transformation():
             },
         ]
     }
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", _LIVE_AZURE_FOUNDRY_BASE_URL)
+    from backend.recon_engine.config import reset_settings_cache
+    reset_settings_cache()
     compiler = GroqContractCompiler(model=_LIVE_AZURE_FOUNDRY_MODEL)
     draft = compiler.compile(
         mapping_sheet=mapping_sheet, rules="", source_schema=["MATNR"], target_schema=["PRDID"],

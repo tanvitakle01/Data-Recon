@@ -42,7 +42,11 @@ def fake_llm(monkeypatch):
     return _install
 
 
-def test_identify_route_returns_autoselected_connectors(client, fake_llm):
+def test_identify_route_never_autoselects_a_connector(client, fake_llm):
+    """Stage-1 is file-upload only — there is no live-connector registry, so a
+    named kind is always surfaced as evidence/a warning, never auto-selected
+    into a connector_id (see ``recon_engine.connector_registry``, which is
+    permanently empty)."""
     fake_llm(
         {
             "source": {"kind": "s4", "evidence": "VBAP/VBEP table prefixes", "confidence": "high", "fields": ["Material"]},
@@ -52,10 +56,12 @@ def test_identify_route_returns_autoselected_connectors(client, fake_llm):
     resp = client.post("/api/recon/mapping-sheet/identify", json={"mapping_sheet": {"headers": ["Source Table/Field"]}})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["source"]["connector_id"] == "sap_s4hana"
-    assert body["target"]["connector_id"] == "sap_ibp"
+    assert body["source"]["kind"] is None  # not coerced to s4
+    assert body["source"]["connector_id"] is None
+    assert body["target"]["connector_id"] is None
     assert body["source"]["evidence"]
     assert body["degraded"] is False
+    assert any("s4" in w.lower() for w in body["warnings"])
 
 
 def test_identify_route_flags_unregistered_connector(client, fake_llm):

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
@@ -22,42 +22,7 @@ import {
   Check,
   AlertTriangle,
   Circle,
-  Sparkles,
 } from "lucide-react";
-import ResolverPanel from "../components/ResolverPanel";
-
-// Elapsed-time display for Auto mode: purely client-side (no backend job
-// status is polled fast enough to drive a smooth tick) — starts the moment
-// Auto is clicked, freezes at the last tick once the run reaches a terminal
-// state.
-function formatElapsed(ms) {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-// Mirrors backend/recon_engine/auto_pipeline/state.py's STEP_NAMES exactly —
-// keep the two in sync if either changes.
-const AUTO_STEP_LABELS = {
-  select_source: "Selecting source system…",
-  select_target: "Selecting target system…",
-  resolve_schema: "Resolving schema & candidate business keys (AI)…",
-  compile_contract: "Compiling reconciliation contract…",
-  plan_date_batches: "Planning batches…",
-  run_batches: "Running batches…",
-  finalize: "Finalizing results…",
-};
-
-// Mirrors backend/recon_engine/auto_pipeline/nodes.py's `_report_batch_stage`
-// stage names exactly — keep the two in sync if either changes.
-const AUTO_BATCH_STAGE_LABELS = {
-  fetching_source: "fetching source data",
-  fetching_target: "fetching target data",
-  pairing_values: "pairing values",
-  reconciling: "reconciling",
-  completed: "batch reconciled",
-};
 
 // The Dataset Type list is no longer static: it is the interface list read
 // from the uploaded workbook's "Interfaces" index sheet (see
@@ -290,7 +255,6 @@ function buildPreflightRows({
   sliceLoading,
   sourceSpec,
   targetSpec,
-  canAuto,
   canContinueManual,
 }) {
   const rows = [];
@@ -387,13 +351,11 @@ function buildPreflightRows({
   });
 
   rows.push({
-    status: canAuto ? "pass" : canContinueManual ? "warn" : "pending",
+    status: canContinueManual ? "pass" : "pending",
     name: "Ready to run",
-    detail: canAuto
-      ? "Both sides identified — Automatic is available."
-      : canContinueManual
-        ? "Continue manually through Source, Target and Mapping."
-        : "Select a dataset type to continue.",
+    detail: canContinueManual
+      ? "Continue through Source, Target and Mapping."
+      : "Select a dataset type to continue.",
   });
 
   return rows;
@@ -597,17 +559,7 @@ function ComparisonTypeStep() {
 
   const hasIdentification = Boolean(identification && !identification.degraded);
 
-  // Auto mode requires the mapping sheet to have actually resolved both
-  // sides to a configured connector + entity — otherwise the pipeline would
-  // hard-stop at step 1 every time. Manual's gate stays untouched (Excel
-  // upload can still happen later, on the Source/Target steps).
-  const canAuto =
-    canContinueManual &&
-    hasIdentification &&
-    Boolean(identification?.source?.kind) &&
-    Boolean(identification?.target?.kind);
-
-  // ── Auto/Manual: replaces the shell's generic Continue button ───────────
+  // ── Replaces the shell's generic Continue button ────────────────────────
   const navigate = useNavigate();
   const wizardSteps = useMemo(() => getVisibleSteps(), []);
 
@@ -622,252 +574,6 @@ function ComparisonTypeStep() {
     if (next) goToStep(next);
   };
 
-  const [autoRunning, setAutoRunning] = useState(false);
-  const [autoElapsedMs, setAutoElapsedMs] = useState(0);
-  const [autoCurrentStep, setAutoCurrentStep] = useState(null);
-  // Live "N/M batches done" + current-batch sub-stage while the run is inside
-  // the run_batches step — one date-batch at a time (see auto_pipeline.nodes'
-  // _do_run_batches/_report_batch_stage). null outside that step.
-  const [autoBatchProgress, setAutoBatchProgress] = useState(null);
-  const [autoError, setAutoError] = useState(null);
-  const [autoSuspendable, setAutoSuspendable] = useState(false);
-  const [autoSuspending, setAutoSuspending] = useState(false);
-  const [autoSuspended, setAutoSuspended] = useState(false);
-  const [autoFailedStep, setAutoFailedStep] = useState(null);
-
-  // ── Error-resolver bot: opens when Auto pauses on a RECOVERABLE resolution
-  // failure (entity/field/join-key not resolved) — never on an unrecoverable
-  // one, which still lands in autoError/autoFailedStep above unchanged. ────
-  const [autoInterrupt, setAutoInterrupt] = useState(null);
-  const [resolverOpen, setResolverOpen] = useState(false);
-  const [resolverBusy, setResolverBusy] = useState(false);
-  const [resolverError, setResolverError] = useState(null);
-
-  const autoStartRef = useRef(null);
-  const tickIntervalRef = useRef(null);
-  const pollIntervalRef = useRef(null);
-  const graphRunIdRef = useRef(null);
-  const lastInterruptKeyRef = useRef(null);
-  const appliedRef = useRef({ source: false, target: false, mapping: false });
-
-  useEffect(() => {
-    // Stop any in-flight timers if the user navigates away mid-run.
-    return () => {
-      if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    };
-  }, []);
-
-  const sideDataset = (role, side) => ({
-    datasetId: `${role}-${side.kind}-auto-${side.snapshot_id ?? "pending"}`,
-    filename: `${role === "source" ? identification?.source?.label : identification?.target?.label} — ${side.primary_entity}`,
-    kind: side.kind,
-    columns: side.columns ?? [],
-    preview: [],
-    rowCount: side.row_count ?? 0,
-    colCount: (side.columns ?? []).length,
-    rows: null,
-    file: null,
-    sheet: null,
-    sheets: [],
-    fetchedAt: new Date().toISOString(),
-  });
-
-  // Applies whatever the run has produced SO FAR to wizard state — called on
-  // every poll tick, not just on completion, so a mid-run hard-stop still
-  // leaves already-succeeded steps usable if the user switches to Manual.
-  const applyPartialResult = (result) => {
-    if (!result) return;
-    if (result.source?.snapshot_id && !appliedRef.current.source) {
-      appliedRef.current.source = true;
-      dispatch({ type: WizardActions.SET_DATASET, role: "source", dataset: sideDataset("source", result.source) });
-      dispatch({ type: WizardActions.COMPLETE_STEP, step: "source" });
-    }
-    if (result.target?.snapshot_id && !appliedRef.current.target) {
-      appliedRef.current.target = true;
-      dispatch({ type: WizardActions.SET_DATASET, role: "target", dataset: sideDataset("target", result.target) });
-      dispatch({ type: WizardActions.COMPLETE_STEP, step: "target" });
-    }
-    if ((result.product_mapping || result.location_mapping) && !appliedRef.current.mapping) {
-      appliedRef.current.mapping = true;
-      dispatch({
-        type: WizardActions.SET_VALUE_MAPPINGS,
-        valueMappings: { product: result.product_mapping ?? null, location: result.location_mapping ?? null },
-      });
-      dispatch({ type: WizardActions.SET_MAPPING_MODE, mappingMode: "deterministic" });
-    }
-  };
-
-  const finishAutoRun = async (result) => {
-    applyPartialResult(result);
-    if (result?.contract_id) {
-      try {
-        const contractRes = await api.get(`/api/recon/contracts/${result.contract_id}/approved`);
-        if (contractRes.data?.contract) {
-          dispatch({ type: WizardActions.SET_DETERMINISTIC_CONTRACT, contract: contractRes.data.contract });
-        }
-      } catch {
-        // Non-fatal — Results still renders from the reconciliation result alone.
-      }
-    }
-    if (result?.result_summary) {
-      dispatch({ type: WizardActions.SET_RECONCILIATION_RESULT, result: result.result_summary });
-    }
-    dispatch({ type: WizardActions.COMPLETE_STEP, step: "comparisonType" });
-    dispatch({ type: WizardActions.COMPLETE_STEP, step: "transformationSpec" });
-    dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
-    setAutoRunning(false);
-    goToStep(getStepByKey("reconciliation"));
-  };
-
-  const pollAutoRun = async (graphRunId) => {
-    try {
-      const res = await api.get(`/api/recon/auto-run/${graphRunId}/status`);
-      const run = res.data;
-      setAutoCurrentStep(run.current_step);
-      setAutoBatchProgress(run.batch_progress ?? null);
-      setAutoSuspendable(Boolean(run.suspendable));
-      applyPartialResult(run.result);
-
-      if (run.status === "waiting_for_input" && run.interrupt) {
-        // Re-open on a genuinely NEW question (including a re-ask after an
-        // invalid answer) — but leave it alone if the user already
-        // dismissed THIS same one and nothing has changed yet.
-        const key = `${run.interrupt.message}|${run.interrupt.attempted}`;
-        if (key !== lastInterruptKeyRef.current) {
-          lastInterruptKeyRef.current = key;
-          setResolverOpen(true);
-          setResolverError(null);
-        }
-        setAutoInterrupt(run.interrupt);
-        setResolverBusy(false);
-        return;
-      }
-
-      setAutoInterrupt(null);
-
-      if (run.status === "completed") {
-        clearInterval(pollIntervalRef.current);
-        clearInterval(tickIntervalRef.current);
-        setResolverOpen(false);
-        await finishAutoRun(run.result);
-      } else if (run.status === "failed") {
-        clearInterval(pollIntervalRef.current);
-        clearInterval(tickIntervalRef.current);
-        setAutoRunning(false);
-        setResolverOpen(false);
-        setAutoFailedStep(run.failed_step);
-        setAutoError(run.error || "Auto mode failed.");
-      } else if (run.status === "suspended") {
-        clearInterval(pollIntervalRef.current);
-        clearInterval(tickIntervalRef.current);
-        setAutoRunning(false);
-        setAutoSuspending(false);
-        setResolverOpen(false);
-        setAutoSuspended(true);
-      }
-    } catch {
-      // A transient poll failure shouldn't abort the run — the next tick retries.
-    }
-  };
-
-  // Offer-and-accept only — never automatic (see build notes). Suspend takes
-  // effect at the next batch boundary; the existing poll loop keeps running
-  // until the status flips to "suspended" above, so no extra polling logic
-  // is needed here.
-  const suspendAutoRun = async () => {
-    const graphRunId = graphRunIdRef.current;
-    if (!graphRunId) return;
-    // A FAILED run converts to SUSPENDED directly, with no further polling
-    // to observe it (the poll loop already stopped when the run failed) —
-    // reflect that immediately. A RUNNING run's cooperative suspend still
-    // takes effect a batch later; the existing poll loop (still running)
-    // picks up the eventual "suspended" status itself.
-    const isDirectFromFailure = Boolean(autoError);
-    setAutoSuspending(true);
-    try {
-      await api.post(`/api/recon/auto-run/${graphRunId}/suspend`, { reason: "user requested suspend" });
-      if (isDirectFromFailure) {
-        setAutoSuspending(false);
-        setAutoError(null);
-        setAutoFailedStep(null);
-        setAutoSuspended(true);
-      }
-    } catch (err) {
-      setAutoSuspending(false);
-      const detail = err?.response?.data?.detail;
-      setAutoError(typeof detail === "string" ? detail : "Could not suspend this run.");
-    }
-  };
-
-  // Submits a chip tap or typed value identically — the backend validates
-  // both against the exact same live options (see interrupts.py) and either
-  // progresses, re-asks with fresh chips, completes, or fails; the next poll
-  // tick picks up whichever it was. Never restarts the run.
-  const resolveInterrupt = async (value) => {
-    const graphRunId = graphRunIdRef.current;
-    if (!graphRunId || !value) return;
-    setResolverBusy(true);
-    setResolverError(null);
-    try {
-      await api.post(`/api/recon/auto-run/${graphRunId}/resolve`, { value });
-    } catch (err) {
-      const detail = err?.response?.data?.detail;
-      setResolverError(typeof detail === "string" ? detail : "Could not submit that answer.");
-      setResolverBusy(false);
-    }
-  };
-
-  const startAutoRun = async () => {
-    setAutoError(null);
-    setAutoFailedStep(null);
-    setAutoCurrentStep(null);
-    setAutoBatchProgress(null);
-    setAutoElapsedMs(0);
-    setAutoInterrupt(null);
-    setAutoSuspendable(false);
-    setAutoSuspending(false);
-    setAutoSuspended(false);
-    setResolverOpen(false);
-    setResolverError(null);
-    setResolverBusy(false);
-    lastInterruptKeyRef.current = null;
-    appliedRef.current = { source: false, target: false, mapping: false };
-    setAutoRunning(true);
-
-    autoStartRef.current = Date.now();
-    tickIntervalRef.current = setInterval(() => {
-      setAutoElapsedMs(Date.now() - autoStartRef.current);
-    }, 250);
-
-    try {
-      const res = await api.post("/api/recon/auto-run/start", {
-        mapping_sheet: identification.parsed,
-        identification: { source: identification.source, target: identification.target },
-        comparison_type: state.comparisonType?.id ?? null,
-        actor: "auto",
-      });
-      const graphRunId = res.data.graph_run_id;
-      graphRunIdRef.current = graphRunId;
-      pollIntervalRef.current = setInterval(() => pollAutoRun(graphRunId), 1000);
-    } catch (err) {
-      clearInterval(tickIntervalRef.current);
-      setAutoRunning(false);
-      const detail = err?.response?.data?.detail;
-      setAutoError(typeof detail === "string" ? detail : "Could not start Auto mode.");
-    }
-  };
-
-  // ── Run mode: segmented Manual/Automatic selector + a single Start action,
-  // matching the Enterprise UI layout. Selecting a mode doesn't act by
-  // itself — Start still calls the exact same handleManualContinue /
-  // startAutoRun as before. ──────────────────────────────────────────────
-  const [runModeChoice, setRunModeChoice] = useState("manual");
-  // Falls back to Manual whenever Automatic isn't actually available, rather
-  // than syncing it via an effect (there's nothing external to synchronize
-  // with — it's a pure function of state already in hand).
-  const runMode = runModeChoice === "auto" && !canAuto ? "manual" : runModeChoice;
-
   const sourceSpec = effectiveEntityJoin(state, "source");
   const targetSpec = effectiveEntityJoin(state, "target");
   const preflightRows = useMemo(
@@ -880,7 +586,6 @@ function ComparisonTypeStep() {
         sliceLoading,
         sourceSpec,
         targetSpec,
-        canAuto,
         canContinueManual,
       }),
     [
@@ -891,7 +596,6 @@ function ComparisonTypeStep() {
       sliceLoading,
       sourceSpec,
       targetSpec,
-      canAuto,
       canContinueManual,
     ]
   );
@@ -1222,141 +926,19 @@ function ComparisonTypeStep() {
                 </label>
               </div>
 
-              {/* ── Run mode: segmented Manual/Automatic + single Start action ── */}
               <div className="ct-runmode">
                 <p className="wizard-field__label">Run mode</p>
-
-                {autoRunning ? (
-                  <div className="wizard-auto-progress">
-                    {autoInterrupt ? (
-                      <Sparkles size={16} aria-hidden />
-                    ) : (
-                      <Loader2 size={16} className="animate-spin" aria-hidden />
-                    )}
-                    <span className="wizard-auto-progress__step">
-                      {autoInterrupt
-                        ? `Needs your input — ${AUTO_STEP_LABELS[autoCurrentStep] ?? "resolving"}`
-                        : AUTO_STEP_LABELS[autoCurrentStep] ?? "Starting…"}
-                      {autoCurrentStep === "run_batches" && autoBatchProgress && (
-                        <>
-                          {" "}— {autoBatchProgress.batches_completed ?? autoBatchProgress.batch_index}/
-                          {autoBatchProgress.batch_count} batches done (batch{" "}
-                          {autoBatchProgress.batch_index + 1} of {autoBatchProgress.batch_count},{" "}
-                          {autoBatchProgress.batch_label}
-                          {autoBatchProgress.stage
-                            ? `: ${AUTO_BATCH_STAGE_LABELS[autoBatchProgress.stage] ?? autoBatchProgress.stage}`
-                            : ""}
-                          )
-                        </>
-                      )}
-                    </span>
-                    <span className="wizard-auto-progress__timer">{formatElapsed(autoElapsedMs)}</span>
-                    {autoInterrupt && !resolverOpen && (
-                      <button
-                        type="button"
-                        className="wizard-link"
-                        onClick={() => setResolverOpen(true)}
-                      >
-                        Reopen
-                      </button>
-                    )}
-                    {autoSuspendable && !autoInterrupt && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={suspendAutoRun}
-                        disabled={autoSuspending}
-                      >
-                        {autoSuspending ? "Suspending…" : "Suspend"}
-                      </Button>
-                    )}
-                  </div>
-                ) : autoSuspended ? (
-                  <Alert variant="info">
-                    Run suspended — its progress is saved. Resume it anytime from{" "}
-                    <a href="/stored-runs">Stored Runs</a>.
-                    <div className="wizard-instructions__actions" style={{ marginTop: 8 }}>
-                      <Button variant="secondary" size="sm" onClick={startAutoRun}>
-                        Start a new run instead
-                      </Button>
-                    </div>
-                  </Alert>
-                ) : (
-                  <>
-                    <div className="ct-runmode-toggle">
-                      <button
-                        type="button"
-                        className={runMode === "manual" ? "is-active" : ""}
-                        onClick={() => setRunModeChoice("manual")}
-                      >
-                        Manual
-                      </button>
-                      <button
-                        type="button"
-                        className={runMode === "auto" ? "is-active" : ""}
-                        onClick={() => canAuto && setRunModeChoice("auto")}
-                        disabled={!canAuto}
-                      >
-                        Automatic
-                      </button>
-                    </div>
-                    <p className="wizard-field__help">
-                      {runMode === "auto"
-                        ? "Run all steps automatically and land on Results."
-                        : "Step through source, target and mapping with approval at each step."}
-                    </p>
-                    {runMode === "auto" && !canAuto && (
-                      <p className="wizard-field__help">
-                        Requires the mapping sheet to resolve both source and target systems.
-                      </p>
-                    )}
-                    <Button
-                      variant="primary"
-                      onClick={runMode === "auto" ? startAutoRun : handleManualContinue}
-                      disabled={runMode === "auto" ? !canAuto : !canContinueManual}
-                    >
-                      {runMode === "auto" ? "Start automatic run" : "Start manual run"}
-                    </Button>
-                  </>
-                )}
-
-                {!autoRunning && autoElapsedMs > 0 && !autoError && (
-                  <p className="wizard-field__help">Last Auto run took {formatElapsed(autoElapsedMs)}.</p>
-                )}
-
-                {autoError && (
-                  <Alert variant="error">
-                    {autoFailedStep ? `Auto mode failed at "${AUTO_STEP_LABELS[autoFailedStep] ?? autoFailedStep}": ` : ""}
-                    {autoError}
-                    <div className="wizard-instructions__actions" style={{ marginTop: 8 }}>
-                      <Button variant="secondary" size="sm" onClick={startAutoRun}>
-                        Retry Auto
-                      </Button>
-                      {autoSuspendable && (
-                        <Button variant="outline" size="sm" onClick={suspendAutoRun} disabled={autoSuspending}>
-                          {autoSuspending ? "Suspending…" : "Suspend for later"}
-                        </Button>
-                      )}
-                      <button type="button" className="wizard-link" onClick={handleManualContinue}>
-                        Switch to Manual
-                      </button>
-                    </div>
-                  </Alert>
-                )}
+                <p className="wizard-field__help">
+                  Step through source, target and mapping with approval at each step.
+                </p>
+                <Button variant="primary" onClick={handleManualContinue} disabled={!canContinueManual}>
+                  Start
+                </Button>
               </div>
             </div>
           </section>
         </div>
       </div>
-
-      <ResolverPanel
-        open={resolverOpen}
-        interrupt={autoInterrupt}
-        busy={resolverBusy}
-        error={resolverError}
-        onSubmit={resolveInterrupt}
-        onClose={() => setResolverOpen(false)}
-      />
     </StepShell>
   );
 }

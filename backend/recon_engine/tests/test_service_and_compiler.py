@@ -104,6 +104,7 @@ def test_compile_draft_never_fails_when_groq_is_configured_but_unreachable(monke
     stub compiler, not surface a 422 to the caller — mirrors the
     script-transformation generator's fallback."""
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     from backend.recon_engine.config import reset_settings_cache
 
     reset_settings_cache()

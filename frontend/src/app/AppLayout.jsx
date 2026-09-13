@@ -1,21 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import {
-  FiHome,
-  FiLayers,
-  FiBarChart2,
-  FiDatabase,
-  FiSettings,
-  FiSidebar,
-  FiMenu,
-  FiX,
-  FiBookOpen,
-  FiArchive,
-} from "react-icons/fi";
+import { FiHome, FiLayers, FiSidebar, FiMenu, FiX } from "react-icons/fi";
 import { BristleconeLogo } from "@bristlecone/canopy";
 import canopyPkg from "@bristlecone/canopy/package.json";
-import UserMenu from "./UserMenu";
-import AssistantBot from "../components/assistant/AssistantBot";
 import styles from "./appLayout.module.css";
 
 const SIDEBAR_STORAGE_KEY = "sidebar-expanded";
@@ -60,11 +47,6 @@ function AppLayout({ children }) {
   const activeKey = useMemo(() => {
     const p = location.pathname;
     if (p.startsWith("/reconciliation")) return "reconciliation";
-    if (p.startsWith("/insights")) return "insights";
-    if (p.startsWith("/library")) return "library";
-    if (p.startsWith("/stored-runs")) return "stored-runs";
-    if (p.startsWith("/data-sources")) return "data-sources";
-    if (p.startsWith("/settings")) return "settings";
     return "home";
   }, [location.pathname]);
 
@@ -91,30 +73,9 @@ function AppLayout({ children }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileOpen]);
 
-  // Ungrouped (mirrors the mock's own header identity, which already covers
-  // "home") + the mock's Reconcile / Operate / Govern sections, applied to
-  // this app's real, unchanged routes.
-  const topNavItems = [{ key: "home", to: "/home", icon: FiHome, label: "Home" }];
-  const navGroups = [
-    {
-      label: "Reconcile",
-      items: [
-        { key: "reconciliation", to: "/reconciliation", icon: FiLayers, label: "Reconciliation Engine" },
-        { key: "library", to: "/library", icon: FiBookOpen, label: "Library" },
-        { key: "insights", to: "/insights", icon: FiBarChart2, label: "Insights" },
-      ],
-    },
-    {
-      label: "Operate",
-      items: [
-        { key: "stored-runs", to: "/stored-runs", icon: FiArchive, label: "Stored Runs" },
-        { key: "data-sources", to: "/data-sources", icon: FiDatabase, label: "Data Sources" },
-      ],
-    },
-    {
-      label: "Govern",
-      items: [{ key: "settings", to: "/settings", icon: FiSettings, label: "Settings" }],
-    },
+  const topNavItems = [
+    { key: "home", to: "/home", icon: FiHome, label: "Home" },
+    { key: "reconciliation", to: "/reconciliation", icon: FiLayers, label: "Reconciliation Engine" },
   ];
 
   return (
@@ -134,7 +95,6 @@ function AppLayout({ children }) {
           <span className={styles.brandDivider} aria-hidden="true" />
           <span className={styles.brandText}>Data Reconciliation</span>
         </Link>
-        <UserMenu />
       </header>
 
       <div
@@ -177,23 +137,6 @@ function AppLayout({ children }) {
                 <NavItem to={it.to} icon={it.icon} label={it.label} active={activeKey === it.key} />
               </div>
             ))}
-
-            {navGroups.map((group) => (
-              <div key={group.label} className={styles.navSection}>
-                <p className={styles.navSectionLabel}>{group.label}</p>
-                {group.items.map((it) => (
-                  <div key={it.key} className={styles.navGroup}>
-                    <NavItem
-                      to={it.to}
-                      icon={it.icon}
-                      label={it.label}
-                      active={activeKey === it.key}
-                      badge={it.badge}
-                    />
-                  </div>
-                ))}
-              </div>
-            ))}
           </nav>
 
           <div className={styles.sidebarFooter}>
@@ -205,8 +148,6 @@ function AppLayout({ children }) {
           <div className={styles.mainInner}>{children}</div>
         </main>
       </div>
-
-      <AssistantBot />
     </div>
   );
 }

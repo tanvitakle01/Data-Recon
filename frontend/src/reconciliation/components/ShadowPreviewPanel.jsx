@@ -16,7 +16,6 @@ import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
 import {
   createBothSnapshots,
-  generateInsightsForRun,
   identicalDatasetReason,
   runContractReconciliation,
 } from "../lib/reconRun";
@@ -263,7 +262,6 @@ function ShadowPreviewPanel() {
       dispatch({ type: WizardActions.COMPLETE_STEP, step: "transformationSpec" });
       dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
       dispatch({ type: WizardActions.GO_TO_STEP, step: "reconciliation" });
-      generateInsightsForRun(result.run_id);
       navigate("/reconciliation/reconciliation");
     } catch (err) {
       if (err?.response?.status === 409) {

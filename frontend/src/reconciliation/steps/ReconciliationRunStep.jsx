@@ -6,7 +6,6 @@ import { appendDatasetSide, cleanBusinessRules } from "../lib/payload";
 import {
   createBothSnapshots,
   createSnapshot,
-  generateInsightsForRun,
   identicalDatasetReason,
   runContractReconciliation,
 } from "../lib/reconRun";
@@ -82,8 +81,6 @@ function ReconciliationRunStep() {
       },
     });
     dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
-    // Warm the insight payload immediately after completion (fire-and-forget).
-    generateInsightsForRun(result.run_id);
   };
 
   // Script runtime path (Transformation Preview → Approval): immutable
@@ -136,7 +133,6 @@ function ReconciliationRunStep() {
       },
     });
     dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
-    generateInsightsForRun(runRes.data.run_id);
   };
 
   const runReconciliation = async () => {

@@ -236,13 +236,12 @@ def test_production_run_refuses_tampered_script():
     )
 
     # Tamper with the stored script text after approval.
-    from backend.recon_engine.storage.db import main_db
+    from backend.recon_engine.storage import script_store
 
-    with main_db() as conn:
-        conn.execute(
-            "UPDATE transformation_scripts SET script_text = ? WHERE script_id = ?",
-            ("def transform(df):\n    return df\n", script.script_id),
-        )
+    tampered = script_store._SCRIPTS[script.script_id].model_copy(
+        update={"script": "def transform(df):\n    return df\n"}
+    )
+    script_store._SCRIPTS[script.script_id] = tampered
 
     src = service.ingest_snapshot(
         pd.DataFrame({"MATNR": ["1"], "WERKS": ["1"], "QTY": [1]}),

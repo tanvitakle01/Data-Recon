@@ -1,5 +1,3 @@
-API_conn/config/*.yaml
-
 # =========================
 # React / Node
 # =========================
@@ -63,11 +61,6 @@ logs/
 *.log
 
 # =========================
-# Streamlit (if keeping old app)
-# =========================
-.streamlit/
-
-# =========================
 # React Cache
 # =========================
 .cache/
@@ -82,14 +75,7 @@ outputs/
 temp/
 
 # =========================
-# Reconciliation engine persistent store
-# (raw snapshots, shadow sources, results, SQLite DBs)
+# Stage-1 is stateless: no DB, no on-disk run store. Any leftover local data
+# from a prior build is ignored, not tracked.
 # =========================
 data/recon_store/
-
-# =========================
-# Local-dev auth/connections backend
-# (temporary Supabase swap — see backend/db/sqlite.py, backend/db/local_kek.py)
-# =========================
-backend/local.db
-backend/.local_kek

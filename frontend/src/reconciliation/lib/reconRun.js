@@ -118,12 +118,3 @@ export async function runContractReconciliation({
 export function getComparisonUrl(runId) {
   return `${api.defaults.baseURL}/api/recon/runs/${runId}/comparison.xlsx`;
 }
-
-// Warm the insight payload immediately after a run completes so the Insights
-// page renders without a cold-start delay. Fire-and-forget: generation is
-// deterministic and the Insights page regenerates on load regardless, so a
-// failure here is non-fatal.
-export function generateInsightsForRun(runId) {
-  if (!runId) return;
-  api.post("/insights/from-run-id", { run_id: runId }).catch(() => {});
-}

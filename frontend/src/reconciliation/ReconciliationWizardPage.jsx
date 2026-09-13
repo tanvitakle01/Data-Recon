@@ -41,7 +41,7 @@ function ReconciliationWizardContent() {
             Distinct `key` per role is REQUIRED. Both routes render
             ConnectorSelectionStep at the same position in the <Routes> outlet;
             without a key React reuses one instance across source↔target and
-            the child FileUploadCard/SapFetchPanel keep their local file state,
+            the child FileUploadCard keeps its local file state,
             leaking one side's file into the other. The key forces a full
             remount per role so source and target uploads stay isolated.
           */}

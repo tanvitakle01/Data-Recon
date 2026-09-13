@@ -1,7 +1,7 @@
-"""LLM-call log — one row per ``FailoverLLMClient.complete_json`` invocation
-(the single funnel every LLM call in the codebase goes through: value
-pairing, contract compilation, candidate-key identification). Append-only;
-never updated.
+"""LLM-call log (in-memory) — one row per ``FailoverLLMClient.complete_json``
+invocation (the single funnel every LLM call in the codebase goes through:
+value pairing, contract compilation, candidate-key identification).
+Append-only; never updated.
 """
 
 from __future__ import annotations
@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend.recon_engine import ids
-from backend.recon_engine.storage.db import main_db
+
+_CALLS: dict[str, dict[str, Any]] = {}
 
 
 def record(
@@ -24,26 +25,23 @@ def record(
     all_failed: bool,
 ) -> str:
     llm_call_id = ids.new_id()
-    with main_db() as conn:
-        conn.execute(
-            """INSERT INTO llm_calls
-               (llm_call_id, run_id, batch_id, node, preferred, provider_used,
-                fallback_occurred, all_failed, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (
-                llm_call_id, run_id, batch_id, node, preferred, provider_used,
-                int(fallback_occurred), int(all_failed), datetime.now(timezone.utc).isoformat(),
-            ),
-        )
+    _CALLS[llm_call_id] = {
+        "llm_call_id": llm_call_id,
+        "run_id": run_id,
+        "batch_id": batch_id,
+        "node": node,
+        "preferred": preferred,
+        "provider_used": provider_used,
+        "fallback_occurred": fallback_occurred,
+        "all_failed": all_failed,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
     return llm_call_id
 
 
 def list_for_run(run_id: str) -> list[dict[str, Any]]:
-    with main_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM llm_calls WHERE run_id = ? ORDER BY created_at", (run_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = [r for r in _CALLS.values() if r["run_id"] == run_id]
+    return sorted(rows, key=lambda r: r["created_at"])
 
 
 __all__ = ["record", "list_for_run"]

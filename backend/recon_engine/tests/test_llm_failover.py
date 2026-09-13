@@ -220,6 +220,7 @@ def test_compile_draft_uses_azure_foundry_with_no_fallback(monkeypatch):
     """Azure AI Foundry alone serves the request — there is no other provider
     to fail over to, and no fallback/failover notice."""
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     reset_settings_cache()
 
     from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
@@ -243,6 +244,7 @@ def test_compile_draft_degrades_to_stub_when_azure_foundry_unavailable(monkeypat
     degrades straight to the deterministic stub compiler (default, non-strict
     mode)."""
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     reset_settings_cache()
 
     from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
@@ -269,6 +271,7 @@ def test_azure_foundry_client_uses_openai_compatible_sdk(monkeypatch):
     Foundry base_url, authenticating via an Azure AD bearer-token callable
     rather than a static API key."""
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     reset_settings_cache()
 
     class _Msg:
@@ -290,7 +293,7 @@ def test_azure_foundry_client_uses_openai_compatible_sdk(monkeypatch):
 
     class _FakeOpenAI:
         def __init__(self, **kwargs):
-            assert kwargs["base_url"] == "https://AI-Adoption-COE.services.ai.azure.com/openai/v1"
+            assert kwargs["base_url"] == "https://fake.example.com/openai/v1"
             assert callable(kwargs["api_key"])
             self.chat = _Chat()
 
@@ -327,6 +330,7 @@ def test_compile_route_surfaces_provider_fields(monkeypatch):
     from backend.routes.contracts import router
 
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "DeepSeek-V4-Pro")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     reset_settings_cache()
     monkeypatch.setattr(AzureFoundryJSONClient, "complete_json", lambda self, messages: dict(_VALID_CONTRACT))
 

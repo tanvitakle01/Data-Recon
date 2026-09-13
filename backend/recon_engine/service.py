@@ -74,7 +74,6 @@ from backend.recon_engine.storage import (
     shadow_store,
     snapshot_store,
 )
-from backend.recon_engine.storage.db import init_storage
 from backend.recon_engine.validation import replay_sample, validate_structural
 
 
@@ -89,7 +88,6 @@ def ingest_snapshot(
     created_by: str = "system",
     lineage: dict | None = None,
 ) -> RawSnapshot:
-    init_storage()
     snap = snapshot_store.create_snapshot(
         df,
         layer=layer,
@@ -177,7 +175,6 @@ def compile_draft(
     tests). An explicit ``compiler`` is used as-is and never falls back
     automatically — only the default LLM-vs-stub auto-selection degrades.
     """
-    init_storage()
     degraded_reason: str | None = None
     active_compiler = compiler
 
@@ -331,7 +328,6 @@ def validate_draft(
     actor: str = "system",
 ) -> dict[str, Any]:
     """Run both gates. Returns a report; ``ok`` is True only if both pass."""
-    init_storage()
     gate1 = validate_structural(draft, source_columns, target_columns)
 
     if gate1.ok:
@@ -369,7 +365,6 @@ def approve_contract(
     workflow after a human review. The caller is responsible for having run
     :func:`validate_draft` successfully first.
     """
-    init_storage()
     if isinstance(draft, dict):
         draft = DraftContract.model_validate(draft)
 
@@ -631,7 +626,6 @@ def build_shadow_preview(
     would have behaved on a specific day — e.g. validating against a
     historical target snapshot.
     """
-    init_storage()
 
     if contract_version is None:
         contract = contract_store.get_latest_approved(contract_id)
@@ -754,7 +748,6 @@ def build_recipe_preview(
     past the cut), so the executor always sees every row. Raw source is never
     mutated (the executor copies).
     """
-    init_storage()
 
     if isinstance(draft, DraftContract):
         parsed = draft
@@ -875,7 +868,6 @@ def run_reconciliation(
     ``"wall_clock"``) are recorded on the run (see ``models.run.
     ReconciliationRun.anchor_date``/``anchor_resolver``) for later audit —
     e.g. via :func:`compute_run_date_alignment`."""
-    init_storage()
 
     if contract_version is None:
         contract = contract_store.get_latest_approved(contract_id)
@@ -1031,7 +1023,6 @@ def generate_transformation_script(
 
     Returns ``(script, validation_report, degraded_reason)``. Groq failures
     degrade to the deterministic fallback generator — never an error."""
-    init_storage()
     normalized_rules = normalize_business_rules(business_rules)
     effective_rules = rules if normalized_rules.is_empty() else normalized_rules.to_prompt_text()
     script, degraded_reason = generate_script(
@@ -1065,7 +1056,6 @@ def preview_transformation(
     actor: str = "system",
 ) -> tuple[ScriptPreview, TransformationScript]:
     """Sandbox-execute a stored script against sample data; store the snapshot."""
-    init_storage()
     script = script_store.get_script(script_id)
     if script is None:
         raise KeyError(f"Unknown script '{script_id}'.")
@@ -1099,7 +1089,6 @@ def approve_transformation_preview(
     preview_id: str, *, approved_by: str
 ) -> ScriptApproval:
     """User sign-off on the transformed data. Pins the producing script's hash."""
-    init_storage()
     preview = script_store.get_preview(preview_id)
     if preview is None:
         raise KeyError(f"Unknown preview '{preview_id}'.")
@@ -1128,7 +1117,6 @@ def approve_transformation_preview(
 def reject_transformation_preview(
     preview_id: str, *, actor: str, reason: str | None = None
 ) -> None:
-    init_storage()
     preview = script_store.get_preview(preview_id)
     if preview is None:
         raise KeyError(f"Unknown preview '{preview_id}'.")
@@ -1172,7 +1160,6 @@ def run_reconciliation_with_script(
     statically, its hash is verified against the approval, and only then is it
     executed against the full Raw_Source snapshot.
     """
-    init_storage()
 
     approval = script_store.get_approval(approval_id)
     if approval is None:
@@ -1716,7 +1703,6 @@ def build_enriched_detail(run_id: str) -> pd.DataFrame:
     however many key/compare pairs the contract has — not fixed to two keys
     and one compare field.
     """
-    init_storage()
     run = run_store.get_run(run_id)
     if run is None:
         raise KeyError(f"Unknown run '{run_id}'.")
@@ -2164,7 +2150,6 @@ def build_comparison_workbook(run_id: str) -> bytes:
     from openpyxl.styles import Font, PatternFill
     from openpyxl.utils import get_column_letter
 
-    init_storage()
     run = run_store.get_run(run_id)
     if run is None:
         raise KeyError(f"Unknown run '{run_id}'.")
@@ -2422,7 +2407,6 @@ def compute_snapshot_date_alignment(
     executed. Read-only; does not alter reconciliation."""
     from backend.excel_comparator.core.date_alignment import build_alignment
 
-    init_storage()
     source_df = snapshot_store.load_snapshot_frame(source_snapshot_id)
     target_df = snapshot_store.load_snapshot_frame(target_snapshot_id)
     return _with_overlap_pct(build_alignment(source_df, target_df))
@@ -2461,7 +2445,6 @@ def compute_run_date_alignment(run: Any) -> dict[str, Any]:
 
 def cleanup_expired_shadows(actor: str = "system") -> list[str]:
     """TTL cleanup entry point (call from a scheduled job / startup)."""
-    init_storage()
     removed = shadow_store.cleanup_expired()
     for shadow_id in removed:
         audit_store.record(

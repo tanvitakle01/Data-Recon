@@ -17,16 +17,15 @@ AZURE_FOUNDRY_MODEL    Deployment/model id on the Azure AI Foundry endpoint —
                     than guessing a model name). Authentication is via Azure
                     AD (``DefaultAzureCredential`` — az login / managed
                     identity / env-based service principal), not an API key.
-AZURE_FOUNDRY_BASE_URL Optional override for the Azure AI Foundry OpenAI-compatible
-                    base URL (default: the AI-Adoption-COE endpoint,
-                    ``https://AI-Adoption-COE.services.ai.azure.com/openai/v1``).
+AZURE_FOUNDRY_BASE_URL Azure AI Foundry OpenAI-compatible base URL. Required —
+                    no default; must be set at deploy time (see
+                    ``llm/azure_foundry_client.py``, which fails loudly rather
+                    than guessing an endpoint).
 LLM_FALLBACK_COOLDOWN_SECONDS
                     Unused by the current Azure-AI-Foundry-only ``build_llm_client()``
                     (there is nothing to fail over to); kept for
                     ``FailoverLLMClient`` callers/tests that construct their own
                     multi-provider list. Default: 60.
-RECON_STORE_DIR     Directory root for all persisted state (SQLite DBs + raw
-                    snapshot / shadow data files). Default: ``<repo>/data/recon_store``.
 SHADOW_TTL_DAYS     Retention window (days) for Shadow_Source data before
                     auto-cleanup. Default: 7.
 RECON_PREVIEW_ROWS  Max rows embedded in a Transformation-Preview payload
@@ -61,12 +60,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
-
-
-def _repo_root() -> Path:
-    # backend/recon_engine/config.py -> repo root is three levels up.
-    return Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -82,12 +75,11 @@ class AzureFoundrySettings:
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.model)
+        return bool(self.model) and bool(self.base_url)
 
 
 @dataclass(frozen=True)
 class Settings:
-    store_dir: Path
     shadow_ttl_days: int
     preview_rows: int
     preview_cell_chars: int
@@ -101,49 +93,8 @@ class Settings:
     @property
     def any_llm_configured(self) -> bool:
         """True when Azure AI Foundry — the only LLM provider in this
-        codebase — has a model id configured."""
+        codebase — has a model id and base URL configured."""
         return self.azure_foundry.is_configured
-
-    # ── Derived paths ────────────────────────────────────────────────────────
-    @property
-    def main_db_path(self) -> Path:
-        """Primary metadata store: raw snapshots, contracts, runs, results, audit."""
-        return self.store_dir / "recon.db"
-
-    @property
-    def shadow_db_path(self) -> Path:
-        """Separate DB file emulating the ``recon_shadow`` schema boundary."""
-        return self.store_dir / "recon_shadow.db"
-
-    @property
-    def raw_data_dir(self) -> Path:
-        """On-disk immutable raw snapshot payloads (append-only)."""
-        return self.store_dir / "raw"
-
-    @property
-    def shadow_data_dir(self) -> Path:
-        """On-disk shadow-source payloads (disposable, TTL-governed)."""
-        return self.store_dir / "shadow"
-
-    @property
-    def results_data_dir(self) -> Path:
-        """On-disk reconciliation result detail payloads."""
-        return self.store_dir / "results"
-
-    @property
-    def previews_data_dir(self) -> Path:
-        """On-disk transformed-preview payloads (script-flow snapshots)."""
-        return self.store_dir / "previews"
-
-    def ensure_dirs(self) -> None:
-        for p in (
-            self.store_dir,
-            self.raw_data_dir,
-            self.shadow_data_dir,
-            self.results_data_dir,
-            self.previews_data_dir,
-        ):
-            p.mkdir(parents=True, exist_ok=True)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -170,21 +121,16 @@ def get_settings() -> Settings:
     Cached so every module observes the same store location. Tests that need a
     temporary store call :func:`reset_settings_cache` after setting env vars.
     """
-    store_dir_env = os.environ.get("RECON_STORE_DIR", "").strip()
-    store_dir = Path(store_dir_env) if store_dir_env else (_repo_root() / "data" / "recon_store")
-
     azure_foundry = AzureFoundrySettings(
-        # No invented default — this tier is only usable once
-        # AZURE_FOUNDRY_MODEL is actually set (see
+        # No invented defaults — this tier is only usable once both
+        # AZURE_FOUNDRY_MODEL and AZURE_FOUNDRY_BASE_URL are actually set (see
         # llm/azure_foundry_client.py, which fails loudly rather than
-        # guessing a model name).
+        # guessing a model name or endpoint).
         model=os.environ.get("AZURE_FOUNDRY_MODEL", ""),
-        base_url=os.environ.get("AZURE_FOUNDRY_BASE_URL")
-        or "https://AI-Adoption-COE.services.ai.azure.com/openai/v1",
+        base_url=os.environ.get("AZURE_FOUNDRY_BASE_URL", "") or None,
     )
 
     return Settings(
-        store_dir=store_dir,
         shadow_ttl_days=_int_env("SHADOW_TTL_DAYS", 7),
         preview_rows=max(1, _int_env("RECON_PREVIEW_ROWS", 100)),
         preview_cell_chars=max(0, _int_env("RECON_PREVIEW_CELL_CHARS", 200)),

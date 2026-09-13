@@ -17,7 +17,7 @@ import {
   rebuildMapping,
 } from "../lib/payload";
 import { detectFieldRole } from "../lib/fieldRoleAliases";
-import { createBothSnapshots, generateInsightsForRun, runContractReconciliation } from "../lib/reconRun";
+import { createBothSnapshots, runContractReconciliation } from "../lib/reconRun";
 import StepShell from "../components/StepShell";
 import MappingEditor from "../components/MappingEditor";
 import RecipeEditor from "../components/RecipeEditor";
@@ -649,7 +649,6 @@ function TransformationSpecStep() {
       });
       dispatch({ type: WizardActions.COMPLETE_STEP, step: "transformationSpec" });
       dispatch({ type: WizardActions.COMPLETE_STEP, step: "reconciliation" });
-      generateInsightsForRun(result.run_id);
 
       const resultsStep = getStepByKey("reconciliation");
       dispatch({ type: WizardActions.GO_TO_STEP, step: "reconciliation" });

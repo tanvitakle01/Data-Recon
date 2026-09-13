@@ -41,7 +41,7 @@ import logging
 import re
 from typing import Any
 
-from backend.API_conn.connectors import registry
+from backend.recon_engine import connector_registry as registry
 from backend.recon_engine.config import get_settings
 from backend.recon_engine.entity_join_parser import (
     entities_present_in_sheet,
@@ -479,12 +479,12 @@ def identify_systems(
             "identify the connectors manually."
         )
 
+    # Stage-1 is file-upload only — ``registry`` is permanently empty (no live
+    # connectors), so ``allowed`` is always []. Identification still runs: the
+    # model extracts kind/evidence/fields from the sheet as before, it just
+    # never has a live connector to auto-select into (every kind falls through
+    # to the "not registered, not coerced" branch further below).
     allowed = registry.get_configured_connectors()
-    if not allowed:
-        return _degraded_result(
-            "No connectors are configured/enabled in sap_config.yaml — "
-            "nothing to auto-select."
-        )
 
     # Each allowed connector carries its own live entity list, so the model sees
     # which entities are legal for which side and can ground a loose sheet name

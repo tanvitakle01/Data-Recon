@@ -158,6 +158,7 @@ def test_compile_degrades_instead_of_422_when_groq_is_configured_but_fails(clien
     from backend.recon_engine.compiler.groq_compiler import GroqContractCompiler as _Groq
 
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     reset_settings_cache()
     try:
 
@@ -183,6 +184,7 @@ def test_compile_route_uses_groq_when_it_succeeds(client, monkeypatch):
     from backend.recon_engine.models.contract import DraftContract
 
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     reset_settings_cache()
     try:
         fake_draft = DraftContract(
@@ -209,6 +211,7 @@ def test_compile_route_strict_mode_surfaces_groq_failure_instead_of_stub(client,
     from backend.recon_engine.compiler.groq_compiler import GroqContractCompiler as _Groq
 
     monkeypatch.setenv("AZURE_FOUNDRY_MODEL", "gm_fake_model_for_this_test")
+    monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://fake.example.com/openai/v1")
     monkeypatch.setenv("RECON_GROQ_STRICT", "true")
     reset_settings_cache()
     try:

@@ -43,6 +43,7 @@ class OpenAICompatibleJSONClient:
         provider_label: str,
         api_key_env: str,
         model_env: str,
+        base_url_env: str = "",
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -50,6 +51,7 @@ class OpenAICompatibleJSONClient:
         self._provider_label = provider_label
         self._api_key_env = api_key_env
         self._model_env = model_env
+        self._base_url_env = base_url_env
         self._client: Any = None  # lazily constructed openai.OpenAI()
 
     @property
@@ -74,6 +76,14 @@ class OpenAICompatibleJSONClient:
             raise ContractCompilerError(
                 f"{self._model_env} is not set. The {self._provider_label} "
                 f"provider requires a model id."
+            )
+        if not self._base_url and self._base_url_env:
+            # No invented default endpoint for this tier either — fail loudly
+            # rather than silently falling through to the openai SDK's own
+            # default (openai.com), which would misroute every call.
+            raise ContractCompilerError(
+                f"{self._base_url_env} is not set. The {self._provider_label} "
+                f"provider requires a base URL."
             )
         try:
             from openai import OpenAI  # type: ignore

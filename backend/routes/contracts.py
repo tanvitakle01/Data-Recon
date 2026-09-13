@@ -14,7 +14,7 @@ import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from backend.API_conn.connectors import registry
+from backend.recon_engine import connector_registry as registry
 from backend.recon_engine import service
 from backend.recon_engine.compiler import ContractCompilerError
 from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome

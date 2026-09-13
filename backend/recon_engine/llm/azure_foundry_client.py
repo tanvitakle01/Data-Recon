@@ -41,10 +41,12 @@ class AzureFoundryJSONClient(OpenAICompatibleJSONClient):
             provider_label="Azure AI Foundry",
             api_key_env="AZURE_FOUNDRY_MODEL",
             model_env="AZURE_FOUNDRY_MODEL",
+            base_url_env="AZURE_FOUNDRY_BASE_URL",
         )
 
     @property
     def is_configured(self) -> bool:
         # Auth comes from the ambient Azure AD credential chain, not a key we
-        # hold here, so "configured" means only that a model id was supplied.
-        return bool(self._model)
+        # hold here, so "configured" means a model id AND a base URL were
+        # both supplied — neither has an invented default.
+        return bool(self._model) and bool(self._base_url)

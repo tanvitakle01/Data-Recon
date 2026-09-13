@@ -11,14 +11,14 @@ export const WIZARD_STEPS = [
     path: "source",
     number: 2,
     label: "Source",
-    description: "Connect to or upload the source dataset.",
+    description: "Upload the source dataset.",
   },
   {
     key: "target",
     path: "target",
     number: 3,
     label: "Target",
-    description: "Connect to or upload the target dataset.",
+    description: "Upload the target dataset.",
   },
   {
     key: "transformationSpec",
@@ -33,7 +33,7 @@ export const WIZARD_STEPS = [
     path: "reconciliation",
     number: 5,
     label: "Results",
-    description: "Run the comparison, review the results, and view insights.",
+    description: "Run the comparison and review the results.",
   },
 ];
 

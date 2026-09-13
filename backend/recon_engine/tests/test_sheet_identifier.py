@@ -57,22 +57,27 @@ _STM_PAYLOAD = {
 
 
 def test_identifies_s4_source_and_ibp_target_with_evidence(monkeypatch, llm_configured):
+    """Stage-1 is file-upload only — ``registry`` is permanently empty (no live
+    connectors), so a named kind is never auto-selected into a connector_id;
+    it still surfaces as evidence + a "not registered" warning, never
+    coerced."""
     _install_llm(monkeypatch, payload=_STM_PAYLOAD)
     result = sheet_identifier.identify_systems({"headers": ["Source Table/Field", "IBP Field"]})
 
     assert result["degraded"] is False
     src, tgt = result["source"], result["target"]
 
-    assert src["kind"] == "s4"
-    assert src["connector_id"] == "sap_s4hana"
-    assert src["configured"] is True
+    assert src["kind"] is None
+    assert src["connector_id"] is None
+    assert src["configured"] is False
     assert "VBAP" in src["evidence"]  # evidence is cited, not blank
 
-    assert tgt["kind"] == "ibp"
-    assert tgt["connector_id"] == "sap_ibp"
-    assert tgt["configured"] is True
+    assert tgt["kind"] is None
+    assert tgt["connector_id"] is None
+    assert tgt["configured"] is False
 
-    assert result["warnings"] == []  # a clean, fully-identified sheet
+    assert any("s4" in w.lower() for w in result["warnings"])
+    assert any("ibp" in w.lower() for w in result["warnings"])
 
 
 def test_stm_sheet_produces_exact_expected_candidate_fields(monkeypatch, llm_configured):
@@ -154,8 +159,10 @@ def test_out_of_registry_system_is_flagged_not_coerced(monkeypatch, llm_configur
     # A warning explains why, citing the evidence — not a silent drop.
     assert any("bw" in w.lower() for w in result["warnings"])
 
-    # The target side is unaffected — still correctly IBP.
-    assert result["target"]["kind"] == "ibp"
+    # The target side gets the same "not registered" treatment (no live
+    # connectors exist in Stage-1) — never coerced either.
+    assert result["target"]["kind"] is None
+    assert result["target"]["connector_id"] is None
 
 
 def test_llm_failure_degrades_to_manual(monkeypatch, llm_configured):
@@ -186,4 +193,7 @@ def test_unidentified_side_produces_warning(monkeypatch, llm_configured):
     result = sheet_identifier.identify_systems({"headers": []})
     assert result["source"]["kind"] is None
     assert any("source" in w.lower() for w in result["warnings"])
-    assert result["target"]["kind"] == "ibp"
+    # Stage-1 has no live connectors — the target's suggested "ibp" is
+    # surfaced as evidence + a warning too, never auto-selected.
+    assert result["target"]["kind"] is None
+    assert any("ibp" in w.lower() for w in result["warnings"])

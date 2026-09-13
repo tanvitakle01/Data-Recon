@@ -1,7 +1,6 @@
 // Results view for contract-driven runs (the recon_engine runtime path):
 // the classification summary produced by Shadow_Source vs Raw_Target, and
 // next-step actions.
-import { useNavigate } from "react-router-dom";
 import { getComparisonUrl } from "../lib/reconRun";
 import ShortId from "../../components/ShortId";
 import { Button } from "@bristlecone/canopy";
@@ -9,7 +8,7 @@ import { Button } from "@bristlecone/canopy";
 // Outcome -> Canopy semantic color (matches the Badge outcome language:
 // match=success/green, quantity_mismatch=error/red). A business key present
 // on only one side is split by which side: missing_in_target (source-only)
-// vs extra_in_target (target-only) — same split InsightsView/charts.jsx use.
+// vs extra_in_target (target-only).
 const CLASS_LABELS = [
   { key: "match", label: "Matches", color: "var(--bcone-green)" },
   { key: "quantity_mismatch", label: "Qty Mismatches", color: "var(--bcone-red)" },
@@ -18,7 +17,6 @@ const CLASS_LABELS = [
 ];
 
 function ContractRunResults({ result }) {
-  const navigate = useNavigate();
   const summary = result?.summary ?? {};
   const run = result?.run ?? {};
   const runId = result?.run_id ?? run.run_id;
@@ -36,14 +34,6 @@ function ContractRunResults({ result }) {
       {/* Post-run actions — outcomes and next steps first (business users). */}
       <div className="contract-actions results-actions">
         <ShortId value={runId} prefix="Run " />
-        <Button
-          type="button"
-          variant="primary"
-          onClick={() => runId && navigate(`/insights/run/${runId}`)}
-          disabled={!runId}
-        >
-          View Insights
-        </Button>
         <Button type="button" variant="outline" onClick={downloadComparison} disabled={!runId}>
           Download Comparison Sheet
         </Button>
