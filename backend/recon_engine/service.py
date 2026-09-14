@@ -1875,10 +1875,12 @@ def _format_ist(value: Any) -> str:
     return ist.strftime("%Y-%m-%d %H:%M:%S") + " IST"
 
 
-# Business-friendly labels for a value-pairing confidence tier, matching the
-# Mapping Review page's TIER_LABEL (frontend/src/reconciliation/steps/
-# MappingReviewPage.jsx) for the two tiers that reach the shadow, plus the
-# tiers that only ever appear on an unpaired/held-out row.
+# Business-friendly labels for a value-pairing confidence tier: the two tiers
+# that reach the shadow, plus the tiers that only ever appear on an unpaired/
+# held-out row. These are export/report labels only — the wizard's Mapping
+# Review page that used to mirror them is gone (value pairing doesn't run in
+# the mapping-sheet-only deploy), but the export path still reads contracts
+# that carry value_mappings.
 _CONFIDENCE_LABELS: dict[str, str] = {
     "very_high": "Identity",
     "high": "Verified",

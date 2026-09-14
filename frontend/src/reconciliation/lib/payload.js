@@ -24,60 +24,12 @@ export function appendDatasetSide(formData, role, roleState) {
   return false;
 }
 
-// Every confirmed Key-role row's source/target column pair, in display
-// order — however many the analyst mapped (not just product/location/date).
-// This is the source of truth for which pairs get value-paired; the date
-// row is included here too (the backend excludes whichever pair looks
-// date-like from actual pairing and uses it for corroboration only).
-export function keyFieldPairs(display) {
-  return (display ?? [])
-    .filter((row) => row.source_col && row.target_col && isKeyRole(row.role))
-    .map((row) => ({ source_field: row.source_col, target_field: row.target_col }));
-}
-
-// FormData for POST /api/recon/value-mapping/run: the full current source +
-// target datasets (no field exclusions — the pipeline may read columns that
-// aren't part of the confirmed field mapping at all), in the same
-// file-or-rows shape /automap and /reconcile use, plus the connector kinds
-// (key the value-pair library so pairs are only reused between the same
-// connector pair), the parsed mapping sheet (optional STM context for
-// the LLM pairing step — a hint only, never load-bearing), and every
-// confirmed Key pair (see keyFieldPairs) — however many there are, so a 3rd+
-// key pair beyond product/location/date is paired too, not dropped. Returns
-// null if either side has no usable payload (e.g. after a refresh dropped
-// the in-memory file/rows).
-export function buildValueMappingFormData(source, target, mappingSheetContext, mappingDisplay) {
-  const formData = new FormData();
-  const okSource = appendDatasetSide(formData, "source", source);
-  const okTarget = appendDatasetSide(formData, "target", target);
-  if (!okSource || !okTarget) return null;
-  if (source?.kind) formData.append("source_connector", source.kind);
-  if (target?.kind) formData.append("target_connector", target.kind);
-  if (mappingSheetContext) formData.append("mapping_sheet", JSON.stringify(mappingSheetContext));
-
-  const pairs = keyFieldPairs(mappingDisplay);
-  if (pairs.length) formData.append("key_pairs", JSON.stringify(pairs));
-  return formData;
-}
-
-// Structural gate for "Run Deterministic Mapping": at least one confirmed Key
-// row besides the date one (a lone date key has nothing to value-pair — it's
-// corroboration-only). Returns the same [{role, label, requiredRowRole}]
-// shape the button's disabled-tooltip rendering already expects.
-export function missingValueMappingRequirements(display) {
-  const rows = display ?? [];
-  const pairableKeys = rows.filter(
-    (row) => row.source_col && row.target_col && isKeyRole(row.role) && row.field_role !== "date",
-  );
-  if (pairableKeys.length > 0) return [];
-  return [
-    {
-      role: "key_pair",
-      label: "at least one Key field pair (besides Date)",
-      requiredRowRole: "key",
-    },
-  ];
-}
+// NOTE: keyFieldPairs / buildValueMappingFormData /
+// missingValueMappingRequirements lived here to drive data-level value
+// pairing (/value-mapping/run and the live pre-pass). That whole stage is
+// gone from the wizard — this deploy is mapping-sheet-driven only, so the
+// draft contract always carries `value_mappings: []` and nothing client-side
+// ships row values for pairing. The backend routes still exist if it returns.
 
 // Sample rows for a wizard side, used both for Gate 2 replay (contract flow)
 // and for sandbox preview execution (script flow): full rows when the dataset
@@ -122,19 +74,6 @@ export async function gate2SampleRows(roleState, limit = 100) {
     }
   }
   return sampleRows(roleState, limit);
-}
-
-// Like sampleRows, but NEVER caps a SAP/IBP-fetched dataset's full in-memory
-// rows — used by the live recipe-pairing pre-pass, which must see every
-// distinct value, not just a capped sample. Excel uploads still fall back to
-// the preview rows captured at upload time (the full file isn't held as JSON
-// client-side — only sent server-side via the raw File object elsewhere).
-export function fullOrPreviewRows(roleState) {
-  const dataset = roleState?.dataset;
-  if (!dataset) return [];
-  if (Array.isArray(dataset.rows) && dataset.rows.length > 0) return dataset.rows;
-  if (Array.isArray(dataset.preview)) return dataset.preview;
-  return [];
 }
 
 // The mapping-sheet payload sent to both the contract compiler

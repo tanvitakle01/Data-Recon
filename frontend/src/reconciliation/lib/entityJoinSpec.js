@@ -75,23 +75,23 @@ export function applyPlanningArea(spec, area) {
   };
 }
 
-// The sheet-derived entity/join for one side, or null if the sheet said nothing.
-export function sheetEntityJoin(identification, role) {
-  return normalize(identification?.[role], "sheet");
-}
-
 // The free-text-derived entity/join for one side, or null if none was resolved.
 export function freeTextEntityJoin(entityJoin, role) {
   return normalize(entityJoin?.[role]?.parsed, "freeText");
 }
 
 // The spec that should actually pre-populate the canvas for this side.
-// Free text overrides the sheet; a hand-picked planning area then settles any
-// tie the sheet left behind. Null means "leave the canvas alone".
+// A hand-picked planning area settles any tie the instruction left behind.
+// Null means "leave the canvas alone".
+//
+// Path 2 above (mapping-sheet-derived entities) is gone in this deploy: it came
+// from /mapping-sheet/identify, which needed a live $metadata read per
+// connector to gate entity names and was removed with the rest of the live
+// fetch. Free text is the only remaining producer, so the precedence rule this
+// module existed to own is currently a no-op — restore `sheetEntityJoin` here
+// alongside that endpoint if live fetch comes back.
 export function effectiveEntityJoin(state, role) {
-  const spec =
-    freeTextEntityJoin(state?.entityJoin, role) ??
-    sheetEntityJoin(state?.sheetIdentification, role);
+  const spec = freeTextEntityJoin(state?.entityJoin, role);
   return applyPlanningArea(spec, state?.entityJoin?.[role]?.planningArea);
 }
 

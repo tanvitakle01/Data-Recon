@@ -57,7 +57,7 @@ function CardSide({ title, role, roleState, onEdit }) {
 // One resolved operation, formatted for a quick scan: op name, the field it
 // acts on, and its key parameters — never the raw mapping-sheet metadata or
 // the AI's intermediate reasoning (relevant/enriched fields, the chain) that
-// produced it; those stay in wizard state for the Recipe Editor only.
+// produced it; those stay in wizard state for the Transformations Editor only.
 function operationSummary(op) {
   const params = op.params && Object.keys(op.params).length > 0 ? JSON.stringify(op.params) : null;
   return [op.op, op.field ? `on ${op.field}` : null, params].filter(Boolean).join(" ");
@@ -67,7 +67,7 @@ function operationSummary(op) {
 // chain produced from the mapping sheet (see TransformationSpecStep's
 // runMappingResolution) — shown here, and nowhere else, as the Mapping Card's
 // resolved-transformation summary. Absent until a mapping sheet has been
-// resolved against both datasets; the Recipe Editor is still the place to
+// resolved against both datasets; the Transformations Editor is still the place to
 // edit these steps.
 function ResolvedOperations({ mappingResolution }) {
   const operations = mappingResolution?.operations ?? [];

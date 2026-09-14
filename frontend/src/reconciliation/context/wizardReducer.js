@@ -107,7 +107,7 @@ function createInitialTransformationSpec() {
     // (see engine.anchor_inference), else wall-clock "now" — never guessed or
     // hardcoded here. Set this only to override that default (e.g. replaying
     // against a historical target extract the auto-inference couldn't read
-    // confidently). Authored intent, like `recipe`/business rules — survives
+    // confidently). Authored intent, like `transformations`/business rules — survives
     // a dataset change; only clearing shadowPreview/shadowApproved below.
     anchorDate: null,
     shadowPreview: null, // /api/recon/shadow-preview response (original/shadow/diffs/target/anchor_*)

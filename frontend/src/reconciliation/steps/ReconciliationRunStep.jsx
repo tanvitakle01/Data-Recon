@@ -35,9 +35,9 @@ function keysFromMapping(mapping) {
 function ReconciliationRunStep() {
   const { state, dispatch } = useWizard();
   const { source, target, comparisonType, transformationSpec, reconciliation } = state;
-  // The merged Mapping step always approves its combined recipe + AI-pairing
-  // state there before Continue advances here — so this is the only contract
-  // Results ever needs (no more separate Deterministic auto-compile path).
+  // The Mapping step always approves its field mapping + transformation steps
+  // there before Continue advances here — so this is the only contract Results
+  // ever needs (no more separate Deterministic auto-compile path).
   const approvedContract = transformationSpec.contract;
   const scriptApproval = transformationSpec.scriptApproval;
 

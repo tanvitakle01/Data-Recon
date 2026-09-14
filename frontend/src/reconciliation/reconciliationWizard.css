@@ -324,27 +324,6 @@
   color: var(--ink-2);
 }
 
-.wizard-use-data {
-  margin-top: 14px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.wizard-use-data input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--bcone-orange, currentColor);
-  cursor: pointer;
-}
-
-.wizard-use-data__label {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
-}
-
 .wizard-pill {
   padding: 3px 10px;
   border-radius: var(--radius-pill);
@@ -1079,178 +1058,6 @@
   background: var(--scope-bg);
   color: var(--scope);
   border-color: var(--scope-bd);
-}
-
-.mapping-review__tabs {
-  display: flex;
-  gap: 8px;
-  margin: 10px 0;
-  flex-wrap: wrap;
-}
-
-.mapping-review__tab {
-  padding: 6px 14px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.mapping-review__tab:hover {
-  border-color: var(--border-strong);
-  color: var(--ink);
-}
-
-.mapping-review__tab--active {
-  border-color: var(--accent);
-  background: var(--accent-tint);
-  color: var(--accent);
-}
-
-.mapping-review__candidates {
-  margin: 4px 0 0;
-  padding-left: 18px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.mapping-review__ambiguous-row {
-  background: var(--medium-bg);
-}
-
-.mapping-review__detail-toggle {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--accent);
-  cursor: pointer;
-}
-
-.mapping-review__detail-text {
-  margin: 6px 0 0;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-
-.mapping-review__subtitle {
-  margin: 24px 0 8px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--muted);
-}
-
-/* ---- Mapping Review: summary charts ---- */
-.mapping-review__summary {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-}
-
-.mapping-review__chart {
-  flex: 1 1 220px;
-  min-width: 220px;
-  padding: 14px 16px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.mapping-review__chart-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
-  margin-bottom: 8px;
-}
-
-.mapping-review__chart-figure {
-  height: 140px;
-}
-
-.mapping-review__chart-caption {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-.mapping-review__chart-swatch {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-left: 6px;
-}
-
-.mapping-review__chart-swatch:first-child {
-  margin-left: 0;
-}
-
-/* ---- Mapping Review: search ---- */
-.mapping-review__search-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-}
-
-.mapping-review__search {
-  position: relative;
-  display: flex;
-  align-items: center;
-  flex: 1 1 320px;
-  max-width: 420px;
-}
-
-.mapping-review__search-icon {
-  position: absolute;
-  left: 10px;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.mapping-review__search-icon:hover {
-  color: var(--accent);
-}
-
-.mapping-review__search-input {
-  width: 100%;
-  padding-left: 32px;
-}
-
-.mapping-review__search-count {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.mapping-review__section {
-  margin-bottom: 16px;
-}
-
-/* Current match: solid highlight. Other on-screen matches: lighter highlight
-   from the same accent scale, so the reviewer always knows which is active. */
-.mapping-review__row--active-match {
-  background: var(--accent-tint-2) !important;
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.mapping-review__row--match {
-  background: var(--accent-tint) !important;
 }
 
 .recon-run__hint {
@@ -2013,15 +1820,8 @@
   white-space: nowrap;
 }
 
-.ct-resolve-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
 /* ── Interface scoping note: one line stating which single worksheet reaches
-   the interpretation step. Icon + text on a row, no card header of its own. ── */
+   the Mapping step. Icon + text on a row, no card header of its own. ── */
 .ct-scope-note {
   display: flex;
   align-items: flex-start;
@@ -2077,51 +1877,12 @@
   border-bottom: none;
 }
 
-/* ── Pre-flight checks: real-signal checklist rows (no timings) ── */
-.ct-preflight-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
-}
-.ct-preflight-row:last-child {
-  border-bottom: none;
-}
-.ct-preflight-row__mk {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  flex: none;
-}
-.ct-preflight-row__icon.is-pass { color: var(--match); }
-.ct-preflight-row__icon.is-warn { color: var(--medium); }
-.ct-preflight-row__icon.is-pending { color: var(--muted); fill: var(--muted); }
-.ct-preflight-row__name {
-  flex: 0 0 auto;
-  min-width: 160px;
-  font-weight: 700;
-  color: var(--ink);
-}
-.ct-preflight-row__detail {
-  flex: 1 1 auto;
-  color: var(--muted);
-}
-
-/* ── Run mode: segmented Manual/Automatic control ── */
-.ct-runmode {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-/* Mapping Review's launcher on the merged Mapping step — pinned to the
+/* The Transformations Editor's launcher on the Mapping step — pinned to the
    viewport's top-right (not the in-flow document), so it stays reachable no
-   matter how far the Recipe Editor below has been scrolled. Opens the
-   right-side drawer (.ct-drawer below) without disturbing the editor. Sits
-   under the app's sticky 52px top header (see appLayout.module.css). */
-.ct-mapping-review-fab {
+   matter how far the field mapping below has been scrolled. Opens the
+   right-side drawer (.ct-drawer below) without disturbing the mapping table.
+   Sits under the app's sticky 52px top header (see appLayout.module.css). */
+.ct-transformations-fab {
   position: fixed;
   top: 68px;
   right: 24px;
@@ -2142,10 +1903,10 @@
   cursor: pointer;
   text-align: left;
 }
-.ct-mapping-review-fab:hover {
+.ct-transformations-fab:hover {
   border-color: var(--border-strong);
 }
-.ct-mapping-review-fab__hint {
+.ct-transformations-fab__hint {
   font-size: 11px;
   color: var(--muted);
   font-weight: 500;
@@ -2153,12 +1914,12 @@
   letter-spacing: normal;
 }
 @media (max-width: 720px) {
-  .ct-mapping-review-fab { top: 60px; right: 12px; padding: 0 12px; }
-  .ct-mapping-review-fab__hint { display: none; }
+  .ct-transformations-fab { top: 60px; right: 12px; padding: 0 12px; }
+  .ct-transformations-fab__hint { display: none; }
 }
 
-/* Mapping Review right-side slide-out panel — a viewport-fixed drawer, not an
-   in-page collapse, so it overlays the Recipe Editor rather than replacing it. */
+/* Right-side slide-out panel — a viewport-fixed drawer, not an in-page
+   collapse, so it overlays the field mapping rather than replacing it. */
 .ct-drawer-backdrop {
   position: fixed;
   inset: 0;
@@ -2189,6 +1950,13 @@
 }
 .ct-drawer.is-open {
   transform: translateX(0);
+}
+/* The Transformations Editor is a two-pane editor (step list + step config),
+   so its drawer is wider than the default. Above 1100px the editor keeps both
+   panes side by side; below that its own stylesheet stacks them, and the
+   drawer is viewport-bound anyway. */
+.ct-drawer--wide {
+  width: min(1100px, 96vw);
 }
 .ct-drawer__head {
   display: flex;
@@ -2292,35 +2060,7 @@
   min-height: 36px;
 }
 
-.ct-runmode-toggle {
-  display: flex;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.ct-runmode-toggle button {
-  flex: 1;
-  height: 34px;
-  border: none;
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12.5px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.ct-runmode-toggle button + button {
-  border-left: 1px solid var(--border-strong);
-}
-.ct-runmode-toggle button.is-active {
-  background: var(--accent);
-  color: var(--accent-contrast);
-}
-.ct-runmode-toggle button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-/* ── KPI strip (Step 4 Mapping, Deterministic flow) ── */
+/* ── KPI strip ── */
 .ct-kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
