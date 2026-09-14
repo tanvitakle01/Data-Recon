@@ -1,6 +1,7 @@
-// Step-recipe transformation editor (Fig 4). A visual, structured authoring
-// surface over the SAME contract `operations` array the executor runs — no
-// parallel engine. Two panes:
+// Transformations Editor. A visual, structured authoring surface over the SAME
+// contract `operations` array the executor runs — no parallel engine. Rendered
+// inside the Mapping step's right-side drawer (see TransformationsDrawer).
+// Two panes:
 //
 //   left   — ordered step list, grouped by execution phase (Filters →
 //            Transforms → Aggregations). Drag to reorder WITHIN a phase; a
@@ -9,13 +10,9 @@
 //   right  — the selected step's config (field + parameters), driven by the
 //            allow-listed registry's param schema.
 //
-// Groq is optional: "Draft steps from a description" (when the parent wires
-// onDraftSteps) emits steps into the list that the user then edits. Building
-// steps by hand needs no LLM. Both produce the same operations array.
-//
-// No embedded preview here — the merged Mapping card's Mapping Review (fed by
-// the live pre-pass, see TransformationSpecStep) is the feedback surface for
-// what a recipe edit changes, not a raw shadow-diff curtain on this component.
+// The LLM is optional: "Draft Steps" (when the parent wires onDraftSteps)
+// emits steps into the list that the user then edits. Building steps by hand
+// needs no LLM. Both produce the same operations array.
 import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../../services/api";
 import {
@@ -28,9 +25,9 @@ import {
   reorderWithinPhase,
   toggleStep,
   updateStep,
-} from "../lib/recipeModel";
+} from "../lib/transformationsModel";
 import { Button, Badge } from "@bristlecone/canopy";
-import styles from "./recipeEditor.module.css";
+import styles from "./transformationsEditor.module.css";
 
 // How to render each known parameter. Anything not listed falls back to text.
 const PARAM_META = {
@@ -295,7 +292,7 @@ function ParamField({ name, value, columns, onChange }) {
   );
 }
 
-export default function RecipeEditor({
+export default function TransformationsEditor({
   steps,
   onChange,
   sourceColumns = [],
@@ -328,7 +325,7 @@ export default function RecipeEditor({
   }, []);
 
   const byName = useMemo(() => new Map(catalogue.map((c) => [c.name, c])), [catalogue]);
-  // Flat, execution-ordered recipe with each step's phase + within-phase index
+  // Flat, execution-ordered list with each step's phase + within-phase index
   // attached — the list is displayed 1..N, but drag-reorder still scopes to the
   // step's own phase (cross-phase drops snap back).
   const orderedList = useMemo(() => {
@@ -385,9 +382,9 @@ export default function RecipeEditor({
 
   return (
     <div className={styles.editor}>
-      {/* ── Left column (40%): draft (primary) · library · ordered recipe ── */}
+      {/* ── Left column (40%): draft (primary) · library · ordered steps ── */}
       <div className={[styles.pane, styles.paneSteps].join(" ")}>
-        <p className={styles.paneTitle}>Transformation Recipe</p>
+        <p className={styles.paneTitle}>Transformation Steps</p>
 
         {/* Primary entry point — always visible. */}
         {onDraftSteps && (
@@ -456,10 +453,10 @@ export default function RecipeEditor({
           )}
         </div>
 
-        {/* Current recipe: single ordered list — execution order, no phase split. */}
-        <div className={styles.recipe}>
+        {/* Current steps: single ordered list — execution order, no phase split. */}
+        <div className={styles.steps}>
           <div className={styles.phaseHead}>
-            <span className={styles.phaseLabel}>Current Recipe</span>
+            <span className={styles.phaseLabel}>Current Steps</span>
           </div>
           {orderedList.length === 0 && (
             <p className={styles.emptyPhase}>

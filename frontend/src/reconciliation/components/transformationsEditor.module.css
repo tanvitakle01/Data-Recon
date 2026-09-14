@@ -1,10 +1,12 @@
-/* Step-recipe editor: two panes — step list (left), selected-step config
-   (right). Collapses to stacked panes on narrow viewports. Uses the wizard's
-   surface tokens where possible. */
+/* Transformations Editor: two panes — step list (left), selected-step config
+   (right). Lives inside the Mapping step's slide-out drawer, which is widened
+   to hold it (see .ct-drawer--wide in reconciliationWizard.css). Collapses to
+   stacked panes on narrow viewports, where the drawer is narrow too. Uses the
+   wizard's surface tokens where possible. */
 
 .editor {
   display: grid;
-  /* Two columns: recipe steps (40%) · step configuration (60%). */
+  /* Two columns: transformation steps (40%) · step configuration (60%). */
   grid-template-columns: 40% 60%;
   gap: 16px;
   align-items: stretch;
@@ -37,7 +39,7 @@
   min-height: 120px;
 }
 
-/* Recipe steps: fills the left column height, scrolls if steps overflow. */
+/* Step list: fills the left column height, scrolls if steps overflow. */
 .paneSteps {
   height: 100%;
   min-height: 0;
@@ -225,8 +227,8 @@
   padding: 6px 2px 10px;
 }
 
-/* ── current recipe ── */
-.recipe {
+/* ── current steps ── */
+.steps {
   margin-top: 4px;
 }
 

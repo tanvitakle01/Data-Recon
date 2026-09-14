@@ -1,13 +1,23 @@
-// Right-side slide-out panel for Mapping Review, opened from the toggle on
-// TransformationSpecStep — overlays the Recipe Editor instead of replacing it
-// in place, so switching between reviewing pairing results and editing the
-// recipe no longer loses your place in either one. Wraps MappingReviewBody,
-// which owns all the actual KPI/search/table content.
+// Right-side slide-out panel holding the Transformations Editor, opened from
+// the floating launcher on TransformationSpecStep. It overlays the field
+// mapping rather than pushing it around, so opening and closing the editor
+// never loses your place in the mapping table underneath.
+//
+// The editor is the drawer's only content — everything the step needs below
+// the field mapping is the single Approve Transformations button.
 import { useEffect } from "react";
 import { X } from "lucide-react";
-import MappingReviewBody from "./MappingReviewBody";
+import TransformationsEditor from "./TransformationsEditor";
 
-function MappingReviewDrawer({ open, onClose }) {
+function TransformationsDrawer({
+  open,
+  onClose,
+  steps,
+  onChange,
+  sourceColumns,
+  onDraftSteps,
+  children,
+}) {
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e) => {
@@ -25,29 +35,38 @@ function MappingReviewDrawer({ open, onClose }) {
         aria-hidden="true"
       />
       <aside
-        className={`ct-drawer${open ? " is-open" : ""}`}
+        className={`ct-drawer ct-drawer--wide${open ? " is-open" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="Mapping Review"
+        aria-label="Transformations Editor"
         aria-hidden={!open}
       >
         <div className="ct-drawer__head">
-          <h3 className="ct-drawer__title">Mapping Review</h3>
+          <h3 className="ct-drawer__title">Transformations Editor</h3>
           <button
             type="button"
             className="ct-drawer__close"
             onClick={onClose}
-            aria-label="Close Mapping Review"
+            aria-label="Close Transformations Editor"
           >
             <X size={18} />
           </button>
         </div>
         <div className="ct-drawer__body">
-          <MappingReviewBody />
+          {/* Resolution status / proposed-operation notices from the mapping
+              sheet, rendered by the parent — they describe these steps, so
+              they belong beside them rather than on the page behind. */}
+          {children}
+          <TransformationsEditor
+            steps={steps}
+            onChange={onChange}
+            sourceColumns={sourceColumns}
+            onDraftSteps={onDraftSteps}
+          />
         </div>
       </aside>
     </>
   );
 }
 
-export default MappingReviewDrawer;
+export default TransformationsDrawer;

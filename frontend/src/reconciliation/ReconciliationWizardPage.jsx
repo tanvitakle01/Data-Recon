@@ -5,7 +5,6 @@ import StepRoute from "./components/StepRoute";
 import ConnectorSelectionStep from "./steps/ConnectorSelectionStep";
 import ComparisonTypeStep from "./steps/ComparisonTypeStep";
 import TransformationSpecStep from "./steps/TransformationSpecStep";
-import MappingReviewPage from "./steps/MappingReviewPage";
 import DatasetDetailPreviewPage from "./steps/DatasetDetailPreviewPage";
 import ReconciliationRunStep from "./steps/ReconciliationRunStep";
 import "./reconciliationWizard.css";
@@ -78,21 +77,11 @@ function ReconciliationWizardContent() {
             }
           />
           {/*
-            Mapping Review is a sub-flow reached from Step 4's "Run
-            Deterministic Mapping" button, NOT one of the 6 numbered wizard
-            steps — it's still gated by stepKey="transformationSpec" (so it
-            can't be reached before Step 4 unlocks) and keeps state.step ==
-            "transformationSpec", so the stepper continues to show Step 4 as
-            current while this page is open.
+            The former /transformation-spec/mapping-review sub-route is gone:
+            value-level pairing doesn't run in this mapping-sheet-only deploy,
+            so there was nothing to review. The Transformations Editor that
+            replaced it is a drawer on the Mapping step, not a route.
           */}
-          <Route
-            path="transformation-spec/mapping-review"
-            element={
-              <StepRoute stepKey="transformationSpec">
-                <MappingReviewPage />
-              </StepRoute>
-            }
-          />
           <Route path="dataset-preview/:role" element={<DatasetPreviewRoute />} />
           <Route
             path="reconciliation"

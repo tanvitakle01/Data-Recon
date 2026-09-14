@@ -8,11 +8,8 @@ export const WizardActions = {
   SET_DATASET: "SET_DATASET",
   RESET_ROLE: "RESET_ROLE",
   SET_COMPARISON_TYPE: "SET_COMPARISON_TYPE",
-  SET_USE_DATA: "SET_USE_DATA",
   SET_INTERFACE_INDEX: "SET_INTERFACE_INDEX",
   CLEAR_INTERFACE_INDEX: "CLEAR_INTERFACE_INDEX",
-  SET_SHEET_IDENTIFICATION: "SET_SHEET_IDENTIFICATION",
-  CLEAR_SHEET_IDENTIFICATION: "CLEAR_SHEET_IDENTIFICATION",
   SET_ENTITY_JOIN_TEXT: "SET_ENTITY_JOIN_TEXT",
   SET_ENTITY_JOIN_PARSED: "SET_ENTITY_JOIN_PARSED",
   SET_ENTITY_JOIN_AREA: "SET_ENTITY_JOIN_AREA",
@@ -22,11 +19,10 @@ export const WizardActions = {
   SET_MAPPING_SHEET: "SET_MAPPING_SHEET",
   SET_PARSED_MAPPING_SHEET: "SET_PARSED_MAPPING_SHEET",
   SET_BUSINESS_RULES: "SET_BUSINESS_RULES",
-  SET_RECIPE: "SET_RECIPE",
+  SET_TRANSFORMATIONS: "SET_TRANSFORMATIONS",
   SET_MAPPING_RESOLUTION: "SET_MAPPING_RESOLUTION",
   SET_AGGREGATION_RULES: "SET_AGGREGATION_RULES",
   SET_TRANSFORMATION_MAPPING: "SET_TRANSFORMATION_MAPPING",
-  SET_VALUE_MAPPINGS: "SET_VALUE_MAPPINGS",
   SET_DRAFT_CONTRACT: "SET_DRAFT_CONTRACT",
   SET_CONTRACT_VALIDATION: "SET_CONTRACT_VALIDATION",
   SET_APPROVED_CONTRACT: "SET_APPROVED_CONTRACT",
@@ -59,9 +55,8 @@ function createInitialTransformationSpec() {
   return {
     // Which mapping flow the user chose on the Mapping step: "manual" |
     // "deterministic" | null (not yet chosen). Each flow keeps its own
-    // derived state (Manual → contract/shadow; Deterministic →
-    // valueMappings/deterministicContract), so switching between them never
-    // discards the other flow's progress.
+    // derived state, so switching between them never discards the other
+    // flow's progress.
     mappingMode: null,
     // Non-fatal notice shown when a field-selection / dataset change reset
     // derived work (an approved contract/preview) or orphaned a typed rule.
@@ -75,17 +70,17 @@ function createInitialTransformationSpec() {
     transformationRules: [],
     matchingRules: [],
     filterRules: [],
-    // Step-recipe editor state: an ordered list of steps, each = one
+    // Transformations Editor state: an ordered list of steps, each = one
     // ContractOperation ({ id, op, kind, field, params, enabled }). Authored
     // intent (like business rules), so it SURVIVES a dataset change —
     // invalidateDerivedState only resets the derived contract/preview, not this.
-    recipe: [],
+    transformations: [],
     // Sequential AI mapping-resolution result from
     // /api/recon/mapping-resolution/resolve (auto-run once a mapping sheet
     // and both datasets are present): { relevant_fields, enriched_fields,
     // transformation_chain, operations, degraded, degraded_reason, provider }.
-    // `operations` seeds `recipe` above (still hand-editable there); this is
-    // kept separately so the Mapping Card can show the final resolved
+    // `operations` seeds `transformations` above (still hand-editable there);
+    // this is kept separately so the Mapping Card can show the final resolved
     // operations without the raw mapping-sheet/reasoning intermediates. Null
     // until resolution has run.
     mappingResolution: null,
@@ -93,17 +88,13 @@ function createInitialTransformationSpec() {
     // reconciliation.
     aggregationRules: [],
     mapping: null, // { display: [...], mapping: {...} } from /api/recon/mapping/infer (LLM), possibly hand-edited
-    // Deterministic value-level mapping — one ValueMapping per confirmed key
-    // pair (however many) from /api/recon/value-mapping/run, reviewed on the
-    // Mapping Review page.
-    valueMappings: null, // ValueMapping[] | null
     draftContract: null, // DraftContract JSON from /api/recon/contracts/compile
     validation: null, // { ok, gate1, gate2 } from /api/recon/contracts/validate
     contract: null, // approved TransformationContract (Manual flow) from /api/recon/contracts/approve
     // Deterministic flow's auto-assembled, zero-operation contract (business
-    // key + compare fields + VERY_HIGH/HIGH value mappings), approved at Run
-    // time. Kept separate from `contract` so the two flows never overwrite
-    // each other's approved contract.
+    // key + compare fields), approved at Run time. Kept separate from
+    // `contract` so the two flows never overwrite each other's approved
+    // contract.
     deterministicContract: null,
     // Review-Changes checkpoint (contract engine). Snapshots are created once
     // here and reused by the run so the reviewed shadow == the reconciled one.
@@ -142,13 +133,6 @@ export function createInitialWizardState() {
     source: createInitialRoleState(),
     target: createInitialRoleState(),
     comparisonType: null,
-    // Run-level flag from the "Use data" checkbox (Dataset Type step),
-    // unchecked by default. Gates ONLY the data-level value-pairing stage
-    // (distinct-value extraction + AI value-pairing, and its manual/auto
-    // triggers on the Mapping step) — never the header-binding-only
-    // mapping-resolution chain compile, which always runs regardless. See
-    // TransformationSpecStep's runValueMapping/canRunValueMapping.
-    useData: false,
     // The uploaded mapping workbook's INTERFACE INDEX (/mapping-sheet/interfaces):
     // { filename, sheets, index_sheet, interfaces: [{id, record, sheet, status,
     // match, candidates}], indexed, warnings, file }. A workbook is a collection
@@ -157,11 +141,6 @@ export function createInitialWizardState() {
     // retained so that scoped parse can be issued when the choice is made.
     // Null until a workbook is uploaded.
     interfaceIndex: null,
-    // Sheet-driven system identification from the Step 1 mapping-sheet upload.
-    // Drives the Step 2/3 connector auto-select + field pre-selection. Null
-    // until a sheet is uploaded and identified; independent of the Step 4
-    // mapping-sheet upload (which is preserved unchanged).
-    sheetIdentification: null,
     // Free-text entity/join fallback, authored per side on Step 1 for when the
     // mapping sheet doesn't say which entities to fetch or how to join them.
     // `text` is what the user typed; `parsed` is the validated spec from
@@ -266,11 +245,10 @@ function invalidateDerivedState(state, fieldChangeNotice = null) {
       fieldChangeNotice,
       mapping: null,
       // Re-run against the fresh columns — same reasoning as `mapping` above.
-      // `recipe` itself is NOT cleared (authored/AI-seeded steps survive a
-      // dataset change), so the resolution effect only re-seeds it when it's
-      // still empty; the Mapping Card's summary simply refreshes.
+      // `transformations` itself is NOT cleared (authored/AI-seeded steps
+      // survive a dataset change), so the resolution effect only re-seeds it
+      // when it's still empty; the Mapping Card's summary simply refreshes.
       mappingResolution: null,
-      valueMappings: null,
       draftContract: null,
       validation: null,
       contract: null,
@@ -328,12 +306,6 @@ export function wizardReducer(state, action) {
     case WizardActions.SET_COMPARISON_TYPE:
       return { ...state, comparisonType: action.comparisonType };
 
-    case WizardActions.SET_USE_DATA:
-      // Toggling this never retroactively affects a chain/contract already
-      // compiled/approved — it only gates the NEXT value-pairing trigger
-      // (see TransformationSpecStep), so nothing else is reset here.
-      return { ...state, useData: action.useData };
-
     case WizardActions.SET_INTERFACE_INDEX:
       // A newly uploaded workbook replaces the previous interface list. The
       // dataset-type choice and the identification derived from the OLD list
@@ -343,17 +315,6 @@ export function wizardReducer(state, action) {
 
     case WizardActions.CLEAR_INTERFACE_INDEX:
       return { ...state, interfaceIndex: null };
-
-    case WizardActions.SET_SHEET_IDENTIFICATION:
-      // Result of the Step 1 sheet upload → /mapping-sheet/identify. Purely
-      // advisory: it seeds the Step 2/3 connector auto-select + field
-      // pre-selection but never itself locks a connector or a dataset.
-      return { ...state, sheetIdentification: action.identification };
-
-    case WizardActions.CLEAR_SHEET_IDENTIFICATION:
-      // Only the sheet's own result is dropped. A typed entity/join instruction
-      // is the user's own input, independent of the sheet — it survives.
-      return { ...state, sheetIdentification: null };
 
     case WizardActions.SET_ENTITY_JOIN_TEXT: {
       const { role, text } = action;
@@ -430,8 +391,9 @@ export function wizardReducer(state, action) {
           mappingSheet: action.mappingSheet,
           parsedMappingSheet: null,
           // A changed/removed mapping sheet invalidates the AI-resolved
-          // recipe summary too — re-populated once the new sheet is parsed
-          // and re-resolved. `recipe` itself is left alone (see SET_RECIPE).
+          // transformation summary too — re-populated once the new sheet is
+          // parsed and re-resolved. `transformations` itself is left alone
+          // (see SET_TRANSFORMATIONS).
           mappingResolution: null,
           draftContract: null,
           validation: null,
@@ -447,8 +409,8 @@ export function wizardReducer(state, action) {
       // workbook — SET_MAPPING_SHEET isn't re-dispatched for that, only this
       // action is) invalidates any AI mapping resolution derived from the
       // PREVIOUS sheet, same reasoning as SET_MAPPING_SHEET's own reset
-      // below. `recipe` itself is left alone (still "authored intent" once
-      // non-empty) — the resolution effect only re-seeds it when empty.
+      // below. `transformations` itself is left alone (still "authored intent"
+      // once non-empty) — the resolution effect only re-seeds it when empty.
       return {
         ...state,
         transformationSpec: {
@@ -467,10 +429,10 @@ export function wizardReducer(state, action) {
       };
     }
 
-    case WizardActions.SET_RECIPE:
+    case WizardActions.SET_TRANSFORMATIONS:
       return {
         ...state,
-        transformationSpec: { ...state.transformationSpec, recipe: action.recipe },
+        transformationSpec: { ...state.transformationSpec, transformations: action.transformations },
       };
 
     case WizardActions.SET_MAPPING_RESOLUTION:
@@ -486,27 +448,13 @@ export function wizardReducer(state, action) {
       };
 
     case WizardActions.SET_TRANSFORMATION_MAPPING:
-      // A changed field mapping invalidates any deterministic value mapping
-      // run against the previous roles/targets (and the deterministic contract
-      // assembled from it) — re-run is required.
+      // A changed field mapping invalidates the deterministic contract
+      // assembled from the previous roles/targets — it must be rebuilt.
       return {
         ...state,
         transformationSpec: {
           ...state.transformationSpec,
           mapping: action.mapping,
-          valueMappings: null,
-          deterministicContract: null,
-        },
-      };
-
-    case WizardActions.SET_VALUE_MAPPINGS:
-      // A fresh deterministic run supersedes any contract assembled from a
-      // prior run — clear it so the next reconciliation rebuilds from these.
-      return {
-        ...state,
-        transformationSpec: {
-          ...state.transformationSpec,
-          valueMappings: action.valueMappings,
           deterministicContract: null,
         },
       };

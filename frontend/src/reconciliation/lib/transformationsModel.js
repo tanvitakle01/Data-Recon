@@ -1,7 +1,7 @@
-// Pure model for the step-recipe editor. A recipe is an ordered, named list of
-// steps — each step IS one ContractOperation. This module is the single source
-// of truth for how steps map to the `operations` array the deterministic
-// executor runs, and for the Decision-B ordering rule:
+// Pure model for the Transformations Editor. A transformation list is an
+// ordered, named list of steps — each step IS one ContractOperation. This
+// module is the single source of truth for how steps map to the `operations`
+// array the deterministic executor runs, and for the Decision-B ordering rule:
 //
 //   The executor applies operations in FIXED PHASES — Filters → Transforms →
 //   Aggregations — preserving each op's relative order WITHIN its phase. A
@@ -11,8 +11,8 @@
 //   order the executor RUNS. There is no way to author an order the executor
 //   would disagree with.
 //
-// COMPARE ops are excluded from the recipe entirely (the reconciler uses them,
-// not the shadow builder).
+// COMPARE ops are excluded from the step list entirely (the reconciler uses
+// them, not the shadow builder).
 
 let _seq = 0;
 function nextId() {
@@ -68,7 +68,7 @@ export function operationsToSteps(operations, catalogue) {
 
 // Steps in execution order as a single flat list — the order the executor
 // runs (Filters → Transforms → Aggregations), preserving within-phase order.
-// The editor shows this as one numbered "Current Recipe" list; the phase split
+// The editor shows this as one numbered "Current Steps" list; the phase split
 // is enforced by the stable sort, not surfaced to the user. Stable because
 // Array.prototype.sort is stable and the comparator only orders across phases.
 export function orderedSteps(steps) {

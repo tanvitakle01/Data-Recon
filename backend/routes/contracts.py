@@ -14,21 +14,16 @@ import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from backend.recon_engine import connector_registry as registry
 from backend.recon_engine import service
 from backend.recon_engine.compiler import ContractCompilerError
 from backend.recon_engine.llm import get_last_llm_outcome, reset_llm_outcome
 from backend.recon_engine.interface_index import read_interface_index as _read_interface_index
 from backend.recon_engine.mapping_resolution import resolve_mapping as _resolve_mapping
 from backend.recon_engine.mapping_sheet_parser import parse_mapping_sheet as _parse_sheet
-from backend.recon_engine.sheet_identifier import identify_systems as _identify_systems
 from backend.recon_engine.models.contract import DraftContract
 from backend.recon_engine.models.rules import BusinessRule, BusinessRules
 from backend.recon_engine.operations import list_operations
 from backend.recon_engine.storage import contract_store
-# The live entity lists the entity/join gating needs, loaded exactly once in one
-# place so this route and /entity-join/parse can never diverge on what "live" means.
-from backend.routes.entity_join import live_entity_catalog
 
 router = APIRouter(prefix="/api/recon", tags=["recon-contracts"])
 
@@ -157,46 +152,12 @@ async def parse_mapping_sheet(
     return {"filename": filename, **parsed}
 
 
-class IdentifyRequest(BaseModel):
-    # The parsed-sheet payload from /mapping-sheet/parse (dict), or plain rows.
-    mapping_sheet: dict[str, Any] | list[dict[str, Any]] = Field(default_factory=dict)
-    # Also identify which ENTITIES to fetch per side and how to join them. Opt-in
-    # because it costs a live $metadata read per configured connector: the
-    # entities must be gated against each connector's live-discovered list, so
-    # the lists have to be loaded. The wizard always asks for it; callers that
-    # only want connector/field identification can leave it off and pay nothing.
-    include_entities: bool = False
-
-
-@router.post("/mapping-sheet/identify")
-def identify_mapping_sheet(req: IdentifyRequest) -> dict[str, Any]:
-    """Infer which source/target connectors, candidate fields, and (opt-in)
-    entities + join a parsed sheet describes, constrained to the configured
-    connector allow-list.
-
-    The connector the LLM may pick is limited to configured & enabled
-    connectors; anything else is returned as evidence-bearing ``unidentified``
-    (a warning), never coerced to the nearest match. Degrades to an empty
-    result on any LLM failure rather than raising — the human then selects the
-    connector manually. Field validation against live schema happens on the
-    frontend once a side's connector has loaded its schema.
-
-    With ``include_entities``, the same single LLM call also returns each side's
-    entities/join, gated against that side's connector's live entity list. It
-    pre-populates the Join Builder canvas — it never bypasses it.
-    """
-    reset_llm_outcome()  # clear any prior provider outcome for this request
-
-    catalog: dict[str, list[str]] | None = None
-    catalog_warnings: list[str] = []
-    if req.include_entities:
-        kinds = [c["kind"] for c in registry.get_configured_connectors()]
-        catalog, catalog_warnings = live_entity_catalog(kinds)
-
-    result = _identify_systems(req.mapping_sheet, catalog)
-    if catalog_warnings:
-        result["warnings"] = [*result.get("warnings", []), *catalog_warnings]
-    return result
+# NOTE: POST /mapping-sheet/identify (connector/entity/join identification from
+# a parsed sheet) was removed — it depended on a live $metadata read per
+# configured connector, which this deploy has no live connection for. The
+# wizard's mapping-sheet path never calls it; connectors are picked by hand on
+# the Source/Target steps. `recon_engine.sheet_identifier` is left in place,
+# unrouted, should live fetch come back.
 
 
 class MappingResolutionRequest(BaseModel):
