@@ -1,0 +1,167 @@
+/* Connections page — same card/density language as the wizard's Step 1
+   (.ct-card in reconciliation/reconciliationWizard.css), reading the same
+   :root tokens from index.css. Separate cards rather than one panel, nothing
+   behind a click-to-expand, no inner scroll boxes. */
+
+.conn-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 760px;
+}
+
+.conn-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.conn-h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.conn-lede {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────── */
+.conn-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.conn-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.conn-card__title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.conn-card__spacer {
+  flex: 1 1 auto;
+}
+
+.conn-card__body {
+  padding: 14px;
+}
+
+.conn-card__body--stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ── Status rows ────────────────────────────────────────────────────────── */
+.conn-dl {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.conn-dl dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.conn-dl dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.conn-dl .mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.conn-muted {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-family: var(--font-sans);
+}
+
+/* ── Form + actions ─────────────────────────────────────────────────────── */
+.conn-field {
+  max-width: 460px;
+}
+
+.conn-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ── Test result ────────────────────────────────────────────────────────── */
+.conn-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.conn-result.is-pass {
+  color: var(--color-match, #15803d);
+  background: rgba(21, 128, 61, 0.07);
+}
+
+.conn-result.is-fail {
+  color: var(--color-missing, #b42318);
+  background: rgba(180, 35, 24, 0.07);
+}
+
+.conn-result svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* The provider's own message. Wraps in full — truncating it would hide the
+   reason a key was rejected, and it is already key-scrubbed server-side. */
+.conn-result__detail {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+  opacity: 0.85;
+}
+
+/* ── Persistent note ────────────────────────────────────────────────────── */
+.conn-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11.5px;
+}

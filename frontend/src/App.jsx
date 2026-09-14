@@ -4,6 +4,7 @@ import { WizardProvider } from "./reconciliation/context/WizardContext";
 
 import HomePage from "./pages/HomePage";
 import ReconciliationWizardPage from "./reconciliation/ReconciliationWizardPage";
+import ConnectionsPage from "./pages/ConnectionsPage";
 import DocsArchitecturePage from "./pages/DocsArchitecturePage";
 
 function App() {
@@ -15,6 +16,7 @@ function App() {
             <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/home" element={<HomePage />} />
             <Route path="/reconciliation/*" element={<ReconciliationWizardPage />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/docs/architecture" element={<DocsArchitecturePage />} />
             <Route path="*" element={<Navigate to="/home" replace />} />
           </Routes>

@@ -32,6 +32,12 @@ from backend.recon_engine.llm.failover import (
     reset_breaker,
     reset_llm_outcome,
 )
+from backend.recon_engine.llm import session_override
+from backend.recon_engine.llm.session_override import (
+    LLMOverride,
+    get_request_override,
+    mask_secrets,
+)
 from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
 
 __all__ = [
@@ -51,4 +57,8 @@ __all__ = [
     "reset_breaker",
     "reset_llm_outcome",
     "AzureFoundryJSONClient",
+    "session_override",
+    "LLMOverride",
+    "get_request_override",
+    "mask_secrets",
 ]

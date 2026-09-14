@@ -17,6 +17,34 @@ export function registerUnauthorizedHandler(handler) {
   onUnauthorized = handler;
 }
 
+// ── LLM endpoint override session token ─────────────────────────────────────
+// Deliberately a module-scope variable and NOT localStorage/sessionStorage/a
+// cookie: a page refresh re-evaluates this module, the token is gone, and the
+// backend reverts to the app's default endpoint. That is the whole "cleared on
+// refresh, never written to disk" guarantee the Connections page states — it
+// is enforced here, by where this value lives.
+//
+// The token is an opaque handle. The API key itself never comes back from the
+// server after being saved, so it is never held in browser memory either.
+let llmSessionToken = null;
+
+export function setLlmSessionToken(token) {
+  llmSessionToken = token || null;
+}
+
+export function getLlmSessionToken() {
+  return llmSessionToken;
+}
+
+// Attached to EVERY request, not just LLM ones: any route may reach an LLM
+// call site, and the backend resolves the override once in middleware.
+api.interceptors.request.use((config) => {
+  if (llmSessionToken) {
+    config.headers["X-Recon-Session"] = llmSessionToken;
+  }
+  return config;
+});
+
 api.interceptors.response.use(
   (response) => response,
   (error) => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { FiHome, FiLayers, FiSidebar, FiMenu, FiX } from "react-icons/fi";
+import { FiHome, FiLayers, FiKey, FiSidebar, FiMenu, FiX } from "react-icons/fi";
 import { BristleconeLogo } from "@bristlecone/canopy";
 import canopyPkg from "@bristlecone/canopy/package.json";
 import styles from "./appLayout.module.css";
@@ -47,6 +47,7 @@ function AppLayout({ children }) {
   const activeKey = useMemo(() => {
     const p = location.pathname;
     if (p.startsWith("/reconciliation")) return "reconciliation";
+    if (p.startsWith("/connections")) return "connections";
     return "home";
   }, [location.pathname]);
 
@@ -76,6 +77,7 @@ function AppLayout({ children }) {
   const topNavItems = [
     { key: "home", to: "/home", icon: FiHome, label: "Home" },
     { key: "reconciliation", to: "/reconciliation", icon: FiLayers, label: "Reconciliation Engine" },
+    { key: "connections", to: "/connections", icon: FiKey, label: "Connections" },
   ];
 
   return (
