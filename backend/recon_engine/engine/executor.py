@@ -18,6 +18,7 @@ from typing import Any
 
 import pandas as pd
 
+from backend.recon_engine.key_normalization import fit_group_key
 from backend.recon_engine.models.contract import (
     PERIOD_AGGREGATIONS,
     AggregationType,
@@ -514,14 +515,26 @@ def _apply_aggregation_rules(
             df[col] = pd.to_numeric(df[col], errors="coerce")
         agg_spec[col] = func
 
-    grouped_pos = df.groupby(group_keys, dropna=False)[POS_COL].apply(list)
-    result = df.groupby(group_keys, dropna=False, as_index=False).agg(agg_spec)
+    # Same canonical grouping the AGGREGATE ops use — a business key that two
+    # rows spell differently (Excel's mixed text/number cells, "786293" vs
+    # "786293.0") is one group here, because it is one key at the join.
+    group_key = fit_group_key(df, group_keys)
+    in_keys = group_key(df)
+    key_cols = list(in_keys.columns)
+    keyed = pd.concat([df, in_keys], axis=1)
+
+    grouped_pos = keyed.groupby(key_cols, dropna=False)[POS_COL].apply(list)
+    # The grouping columns themselves pass through with their original (first
+    # seen) values, exactly as before canonical grouping.
+    spec = {col: "first" for col in group_keys if col not in agg_spec}
+    spec.update(agg_spec)
+    result = keyed.groupby(key_cols, dropna=False, as_index=False).agg(spec).drop(columns=key_cols)
+    out_keys = group_key(result)
 
     new_lineage: dict[int, list[int]] = {}
     for new_i in range(len(result)):
-        row = result.iloc[new_i]
-        key = tuple(row[c] for c in group_keys)
-        lookup_key = key if len(group_keys) > 1 else key[0]
+        key = tuple(out_keys.iloc[new_i])
+        lookup_key = key if len(key_cols) > 1 else key[0]
         try:
             positions = grouped_pos.loc[lookup_key]
         except KeyError:
@@ -550,16 +563,26 @@ def _apply_aggregate(func, op, df: pd.DataFrame, lineage: dict[int, list[int]]):
     ``ShadowBuildResult.operation_stats``.
     """
     by = list(op.params["by"])
-    grouped = df.groupby(by, dropna=False)[POS_COL].apply(list)
+    # The op groups on the canonical key (see ``operations.ops``); lineage has
+    # to be collapsed on the SAME key or a group's row ids would be looked up
+    # under a key no group was ever filed under. The canonicalizers are fitted
+    # once, here, and applied to both frames, so the aggregated rows resolve to
+    # the same keys their inputs did.
+    group_key = fit_group_key(df, by)
+    in_keys = group_key(df)
+    key_cols = list(in_keys.columns)
+    grouped = pd.concat([df[[POS_COL]], in_keys], axis=1).groupby(
+        key_cols, dropna=False
+    )[POS_COL].apply(list)
 
     result = func(df, op.field, op.params).reset_index(drop=True)
+    out_keys = group_key(result)
 
     new_lineage: dict[int, list[int]] = {}
     applied_row_ids: set[int] = set()
     for new_i in range(len(result)):
-        row = result.iloc[new_i]
-        key = tuple(row[c] for c in by)
-        lookup_key = key if len(by) > 1 else key[0]
+        key = tuple(out_keys.iloc[new_i])
+        lookup_key = key if len(key_cols) > 1 else key[0]
         try:
             group_positions = grouped.loc[lookup_key]
         except KeyError:

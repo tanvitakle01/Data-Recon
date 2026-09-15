@@ -1,8 +1,8 @@
 /* ============================================================================
    Reconciliation wizard styling. Reads entirely through the design tokens
    defined in index.css so light/dark themes and the single accent/status
-   palette stay consistent with the rest of the app. The step navigator is
-   the horizontal .ct-stepbar rendered in StepShell, above each step's cards.
+   palette stay consistent with the rest of the app. The step navigator is a
+   band in the app header chrome (app/WizardStepBar.jsx), not part of a step.
 
    Colour discipline:
      - brand / interactive / selection  -> --accent family
@@ -86,82 +86,8 @@
   margin-top: 24px;
 }
 
-/* ── Horizontal step bar — replaces the old sidebar step list; sits above
-   the cards, directly under the page header, matching the Enterprise UI
-   mock's step-progress pattern. ── */
-.ct-stepbar {
-  display: flex;
-  align-items: stretch;
-  overflow-x: auto;
-  margin-top: 14px;
-  border-bottom: 1px solid var(--border);
-}
-.ct-stepbar__step {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-  height: 40px;
-  padding: 0 16px 0 0;
-  margin-right: 16px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.ct-stepbar__step.is-active {
-  border-bottom-color: var(--accent);
-}
-.ct-stepbar__step:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-.ct-stepbar__mk {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex: none;
-  border-radius: var(--radius-pill);
-  font-size: 9.5px;
-  font-weight: 900;
-  border: 1.5px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--muted);
-}
-.ct-stepbar__step.is-done .ct-stepbar__mk {
-  border-color: var(--match);
-  background: var(--match);
-  color: #fff;
-}
-.ct-stepbar__step.is-active .ct-stepbar__mk {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-contrast);
-  /* One deliberate small-accent moment (enterprise palette): a soft pink
-     halo on the single active-step marker — never a fill, never repeated
-     elsewhere, so it reads as a highlight rather than a second brand color. */
-  box-shadow: 0 0 0 3px var(--highlight-pink);
-}
-.ct-stepbar__label {
-  font-size: 12.5px;
-  font-weight: 400;
-  color: var(--muted);
-}
-.ct-stepbar__step.is-active .ct-stepbar__label {
-  font-weight: 700;
-  color: var(--accent);
-}
-.ct-stepbar__step.is-done .ct-stepbar__label {
-  font-weight: 700;
-  color: var(--ink);
-}
-.ct-stepbar__detail {
-  font-size: 11px;
-  color: var(--muted);
-}
+/* The horizontal step bar moved into the app header chrome — its styles now
+   live alongside the rest of the shell in app/appLayout.module.css. */
 
 .wizard-step__footer {
   margin-top: 28px;
@@ -1881,10 +1807,11 @@
    viewport's top-right (not the in-flow document), so it stays reachable no
    matter how far the field mapping below has been scrolled. Opens the
    right-side drawer (.ct-drawer below) without disturbing the mapping table.
-   Sits under the app's sticky 52px top header (see appLayout.module.css). */
+   Clears the app's sticky chrome — header band + step bar (see
+   appLayout.module.css) — so it never floats over the steps. */
 .ct-transformations-fab {
   position: fixed;
-  top: 68px;
+  top: 140px;
   right: 24px;
   z-index: 1002;
   display: flex;
@@ -1914,7 +1841,7 @@
   letter-spacing: normal;
 }
 @media (max-width: 720px) {
-  .ct-transformations-fab { top: 60px; right: 12px; padding: 0 12px; }
+  .ct-transformations-fab { top: 140px; right: 12px; padding: 0 12px; }
   .ct-transformations-fab__hint { display: none; }
 }
 
@@ -2407,3 +2334,111 @@
   border-color: color-mix(in srgb, var(--bcone-red) 30%, transparent);
 }
 
+
+/* ---- Auto-run mode ------------------------------------------------------ */
+/* Status band for the unattended path (see reconciliation/lib/autoRun.js).
+   Rendered in the wizard shell above the routed step so progress survives the
+   navigation auto-run performs itself. */
+.autorun {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.autorun__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.autorun__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.autorun__detail {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.autorun--running {
+  border-left-color: var(--accent);
+}
+.autorun--blocked {
+  border-left-color: var(--bcone-orange);
+}
+.autorun--error {
+  border-left-color: var(--bcone-red);
+}
+
+.autorun__spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  animation: autorun-spin 0.7s linear infinite;
+}
+@keyframes autorun-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .autorun__spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+/* Manual trigger for the same seven stages (components/RerunTransformationCard).
+   First card on the Mapping step, separated from the field-mapping card below
+   it — it is its own action, not a row inside the mapping panel. */
+.rerun-card {
+  margin-bottom: 12px;
+}
+.rerun-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+}
+.rerun-card__detail {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/* One card per failing check — each check is its own item of work, so they are
+   separate cards rather than rows inside a single panel, and every one is fully
+   expanded: there is nothing to click open. */
+.autorun-check {
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--bcone-orange);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.autorun-check__name {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--bcone-orange);
+}
+.autorun-check__detail {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+}

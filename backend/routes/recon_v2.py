@@ -112,6 +112,38 @@ class RecipePreviewRequest(BaseModel):
     actor: str = "system"
 
 
+class ChainRowCountsRequest(BaseModel):
+    # The unsaved draft whose chain is walked node by node. Only `operations`
+    # (+ schemas/options) matter — no reconciliation is performed.
+    draft: dict[str, Any]
+    # Source: a persisted snapshot (preferred — the FULL frame, so an empty
+    # result is real and not a thin-sample artifact) or inline rows.
+    source_snapshot_id: str | None = None
+    source_rows: list[dict[str, Any]] | None = None
+    actor: str = "system"
+
+
+@router.post("/chain-row-counts")
+def chain_row_counts(req: ChainRowCountsRequest) -> dict[str, Any]:
+    """Per-node shadow row counts for a draft chain — read-only.
+
+    Backs the auto-approve gate's "no node produces an empty frame" condition:
+    it runs the deterministic executor once per enabled node, on the prefix
+    ending at that node, and reports each node's output row count. Creates no
+    run, shadow, or result."""
+    try:
+        return service.build_chain_row_counts(
+            draft=req.draft,
+            source_snapshot_id=req.source_snapshot_id,
+            source_rows=req.source_rows,
+            actor=req.actor,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/recipe-preview")
 def recipe_preview(req: RecipePreviewRequest) -> dict[str, Any]:
     """Live, read-only before/after preview for the recipe editor.

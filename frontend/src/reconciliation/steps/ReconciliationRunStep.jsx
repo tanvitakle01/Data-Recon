@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../../services/api";
 import { useWizard } from "../context/useWizard";
 import { WizardActions } from "../context/wizardReducer";
@@ -34,6 +35,7 @@ function keysFromMapping(mapping) {
 
 function ReconciliationRunStep() {
   const { state, dispatch } = useWizard();
+  const navigate = useNavigate();
   const { source, target, comparisonType, transformationSpec, reconciliation } = state;
   // The Mapping step always approves its field mapping + transformation steps
   // there before Continue advances here — so this is the only contract Results
@@ -224,6 +226,17 @@ function ReconciliationRunStep() {
     }
   };
 
+  // Manual correction path. Editing hands this run to the human: the prior
+  // approval is dropped (auto or manual — CLAIM_FOR_HUMAN does not care which),
+  // the authored steps are kept as the working draft, and re-approval back on
+  // the Mapping step is an explicit click even if the edited chain would pass
+  // every auto-approve condition. A human touched it, so it stays human-owned
+  // for this run.
+  const editTransformationRules = () => {
+    dispatch({ type: WizardActions.CLAIM_FOR_HUMAN });
+    navigate("/reconciliation/transformation-spec");
+  };
+
   const loadingLabel =
     phase === "snapshots"
       ? "Creating snapshots…"
@@ -245,11 +258,21 @@ function ReconciliationRunStep() {
         >
           {loading ? loadingLabel : reconciliation ? "Re-run Reconciliation" : "Run Reconciliation"}
         </Button>
+        {approvedContract && (
+          <Button type="button" variant="secondary" size="lg" onClick={editTransformationRules} disabled={loading}>
+            Edit transformation rules
+          </Button>
+        )}
         <span className="recon-run__hint">
           {source.dataset?.filename} → {target.dataset?.filename}
           {comparisonType ? ` · ${comparisonType.label}` : ""}
           {approvedContract
-            ? ` · Transformation Rules ${approvedContract.contract_id} v${approvedContract.contract_version}`
+            ? ` · Transformation Rules ${approvedContract.contract_id} v${approvedContract.contract_version}` +
+              (transformationSpec.approvalMode === "auto"
+                ? " · approved automatically (all checks passed)"
+                : transformationSpec.approvalMode === "manual"
+                  ? " · approved by you"
+                  : "")
             : scriptApproval
               ? ` · Approved transformation (${scriptApproval.approval_id})`
               : " · no transformation rules (direct comparison)"}

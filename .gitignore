@@ -76,6 +76,19 @@ temp/
 
 # =========================
 # Stage-1 is stateless: no DB, no on-disk run store. Any leftover local data
-# from a prior build is ignored, not tracked.
+# from a prior build is ignored, not tracked. Databases of any kind are a
+# build artifact here, never source — backend/local.db and data/recon_store
+# were both tracked before the deploy cleanup and must not come back.
 # =========================
-data/recon_store/
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Build / tooling caches. dist/ and node_modules/ are covered above; these are
+# the ones that silently reappeared on this branch.
+# =========================
+.turbo/
+storybook-static/
+*.vsix

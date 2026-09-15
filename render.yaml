@@ -1,0 +1,84 @@
+# Render blueprint — Stage 1 (stateless).
+#
+# Two services, because the repo produces two build artifacts: a FastAPI
+# process and a static Vite/React bundle. Nothing here provisions a database:
+# Stage 1 keeps uploads, parsed mapping sheets, compiled chains and run
+# results in the API process's memory only.
+
+services:
+  # ---------------------------------------------------------------- API ----
+  - type: web
+    name: data-recon-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # Matches the local venv (Python 3.14.0). If Render's builder does not
+      # offer 3.14 yet, 3.13.x also satisfies every pin in requirements.txt.
+      - key: PYTHON_VERSION
+        value: 3.14.0
+
+      # --- LLM endpoint (backend/recon_engine/config.py) ---
+      # Both are read with no fallback: the LLM path fails loudly rather than
+      # guessing a deployment name or endpoint.
+      - key: AZURE_FOUNDRY_MODEL
+        sync: false
+      - key: AZURE_FOUNDRY_BASE_URL
+        sync: false
+
+      # --- Azure AD service principal ---
+      # backend/recon_engine/llm/azure_foundry_client.py authenticates with
+      # DefaultAzureCredential. There is no `az login` on Render, so these three
+      # are what its EnvironmentCredential stage reads to obtain a bearer token.
+      - key: AZURE_CLIENT_ID
+        sync: false
+      - key: AZURE_TENANT_ID
+        sync: false
+      - key: AZURE_CLIENT_SECRET
+        sync: false
+
+      # --- CORS (backend/main.py) ---
+      # Comma-separated origins. Set this to the deployed static site's full
+      # URL, scheme included, e.g. https://data-recon-web.onrender.com
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+
+      # --- Optional tuning knobs ---
+      # Every one of these is read by backend/recon_engine/config.py and every
+      # one has a working default in code, so none is required to boot. Listed
+      # here so they are discoverable; uncomment only to override.
+      #
+      #   SHADOW_TTL_DAYS                default 7
+      #   RECON_PREVIEW_ROWS             default 100
+      #   RECON_PREVIEW_CELL_CHARS       default 200
+      #   REPLAY_SAMPLE_MIN              default 50
+      #   REPLAY_SAMPLE_MAX              default 100
+      #   USE_SCRIPT_TRANSFORMATIONS     default false
+      #   RECON_GROQ_STRICT              default false
+      #   LLM_FALLBACK_COOLDOWN_SECONDS  default 60
+
+  # ----------------------------------------------------------- Frontend ----
+  - type: web
+    name: data-recon-web
+    runtime: static
+    # The Vite config consumes the Canopy design system straight from
+    # ../canopyDesign/src, so the build needs the whole repo checked out, not
+    # just this subtree. rootDir only sets where the commands run.
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: NODE_VERSION
+        value: 24.20.0
+      # Baked into the bundle at build time by frontend/src/services/api.js.
+      # Full URL of the API service above, e.g. https://data-recon-api.onrender.com
+      - key: VITE_API_BASE_URL
+        sync: false
+    routes:
+      # React Router owns /home and /reconciliation/*; without this, a deep
+      # link or refresh on those paths 404s at the CDN before the SPA loads.
+      - type: rewrite
+        source: /*
+        destination: /index.html

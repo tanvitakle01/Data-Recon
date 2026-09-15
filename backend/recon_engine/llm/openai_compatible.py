@@ -18,7 +18,7 @@ from typing import Any
 from backend.recon_engine.compiler.base import ContractCompilerError
 from backend.recon_engine.llm.base import extract_message_content, parse_json_payload
 from backend.recon_engine.llm.errors import RetryableLLMError, is_retryable_exception
-from backend.recon_engine.llm.session_override import mask_secrets
+from backend.recon_engine.llm.secrets import mask_secrets
 
 logger = logging.getLogger("recon.llm.openai_compatible")
 
@@ -117,41 +117,6 @@ class OpenAICompatibleJSONClient:
                 return client.chat.completions.create(**base_kwargs)
             raise
 
-    def probe(self) -> None:
-        """Issue the smallest possible real request; raise if it fails.
-
-        Used by the Connections page's "Test connection" — it has to prove the
-        credentials actually authenticate against the endpoint, which only a
-        round trip can do, but it must not spend tokens doing it, so this asks
-        for a one-token completion and discards the content. JSON parsing is
-        deliberately skipped: a model that authenticates fine but ignores the
-        JSON-mode hint is a working connection, not a failed test.
-
-        Raises the same classified errors as :meth:`complete_json`
-        (:class:`RetryableLLMError` / :class:`ContractCompilerError`), with the
-        API key scrubbed from the message.
-        """
-        client = self._get_client()
-        messages = [{"role": "user", "content": "ping"}]
-        try:
-            client.chat.completions.create(
-                model=self._model, messages=messages, max_tokens=1, temperature=0
-            )
-        except Exception as exc:  # noqa: BLE001 - normalise/classify all API failures
-            detail = mask_secrets(str(exc))
-            logger.warning(
-                "%s connection test failed: model=%s base_url=%s error=%s",
-                self._provider_label, self._model, self._base_url or "default", detail,
-            )
-            if is_retryable_exception(exc):
-                raise RetryableLLMError(
-                    f"{self._provider_label} connection test failed: {detail}",
-                    provider=self.name,
-                ) from exc
-            raise ContractCompilerError(
-                f"{self._provider_label} connection test failed: {detail}"
-            ) from exc
-
     def complete_json(self, messages: list[dict[str, str]]) -> Any:
         """Run one completion and return the parsed JSON payload.
 
@@ -172,9 +137,9 @@ class OpenAICompatibleJSONClient:
         except Exception as exc:  # noqa: BLE001 - normalise/classify all API failures
             # Masked, not logger.exception: a provider SDK error can echo the
             # request (including an Authorization header) into its message, and
-            # a rendered traceback ends with that message. The API key must not
-            # reach a log line in ANY environment, so every path that turns an
-            # exception into text goes through mask_secrets first.
+            # a rendered traceback ends with that message. The Azure AD bearer
+            # token must not reach a log line in ANY environment, so every path
+            # that turns an exception into text goes through mask_secrets first.
             detail = mask_secrets(str(exc))
             logger.error(
                 "%s API call failed: model=%s base_url=%s error=%s",

@@ -46,31 +46,10 @@ from backend.routes.value_pairs import router as value_pairs_router
 from backend.routes.mapping_infer import router as mapping_infer_router
 from backend.routes.recon_v2 import router as recon_v2_router
 from backend.routes.script_transformations import router as script_transformations_router
-from backend.routes.connections import SESSION_HEADER, router as connections_router
-from backend.recon_engine.llm import session_override
 
 logger = logging.getLogger("recon.main")
 
 app = FastAPI()
-
-
-@app.middleware("http")
-async def _bind_llm_session_override(request: Request, call_next):
-    """Resolve this request's LLM endpoint override, once, for the whole stack.
-
-    The browser sends its session token (see ``routes/connections.py``) on
-    every request; this looks the override up and binds it to the request's
-    context so ``build_llm_client()`` — the single endpoint-resolution point —
-    can read it without any LLM call site threading a request object down. No
-    token, an unknown token, or an expired one all resolve to ``None``, i.e.
-    the app's default env-var-configured endpoint.
-    """
-    override = session_override.get(request.headers.get(SESSION_HEADER))
-    ctx_token = session_override.set_request_override(override)
-    try:
-        return await call_next(request)
-    finally:
-        session_override.reset_request_override(ctx_token)
 
 
 # TEMP DIAGNOSTIC — logs the raw request body and the exact Pydantic errors
@@ -80,53 +59,56 @@ async def _bind_llm_session_override(request: Request, call_next):
 # root cause is found and fixed.
 _diag_log = logging.getLogger("recon.diagnostics")
 
-# Path prefixes whose request bodies must NEVER be logged, even by the
-# diagnostic handler below. /api/connections carries the user's raw API key in
-# its body; a malformed request there would otherwise print it to the console.
-# Errors are still logged for these paths — the body is replaced with a
-# placeholder, and the per-field `input` values are dropped for the same reason.
-_BODY_LOG_DENYLIST = ("/api/connections",)
-
 
 @app.exception_handler(RequestValidationError)
 async def _diagnostic_validation_error_handler(request: Request, exc: RequestValidationError):
-    sensitive = request.url.path.startswith(_BODY_LOG_DENYLIST)
-    raw_body = b"" if sensitive else await request.body()
+    raw_body = await request.body()
     _diag_log.info(
         "422 VALIDATION FAILURE %s %s\n  raw body: %s\n  errors: %s",
         request.method,
         request.url.path,
-        "<redacted — sensitive path>"
-        if sensitive
-        else raw_body.decode("utf-8", errors="replace"),
+        raw_body.decode("utf-8", errors="replace"),
         [
             {
                 "loc": list(err.get("loc", [])),
                 "msg": err.get("msg"),
                 "type": err.get("type"),
-                # `input` is the offending value itself — on a sensitive path
-                # that is the API key, so it is omitted rather than logged.
-                **({} if sensitive else {"input": err.get("input")}),
+                "input": err.get("input"),
             }
             for err in exc.errors()
         ],
     )
-    errors = exc.errors()
-    if sensitive:
-        # Same reasoning for the response body: FastAPI's default 422 echoes
-        # the rejected input straight back, which would put the key in the
-        # browser's network log and anything proxying it.
-        errors = [{k: v for k, v in err.items() if k != "input"} for err in errors]
-    return JSONResponse(status_code=422, content={"detail": errors})
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
+
+# The frontend is deployed as a separate Render static site, so its origin is
+# only known at deploy time. CORS_ALLOW_ORIGINS carries it as a comma-separated
+# list; the default keeps the local Vite dev server working with no env set.
+_DEV_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+_allow_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOW_ORIGINS", _DEV_ORIGINS).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness probe for Render's healthCheckPath.
+
+    Deliberately does no LLM or filesystem work — it answers "is this process
+    up", not "is the model endpoint reachable", so a Foundry outage can't cause
+    Render to recycle an otherwise healthy instance.
+    """
+    return {"status": "ok"}
 
 app.include_router(preview_router)
 app.include_router(automap_router)
@@ -139,4 +121,3 @@ app.include_router(value_pairs_router)
 app.include_router(mapping_infer_router)
 app.include_router(recon_v2_router)
 app.include_router(script_transformations_router)
-app.include_router(connections_router)

@@ -35,7 +35,6 @@ from backend.recon_engine.config import get_settings
 from backend.recon_engine.llm.base import LLMProvider
 from backend.recon_engine.llm.call_context import get_llm_call_context
 from backend.recon_engine.llm.errors import AllProvidersUnavailableError, RetryableLLMError
-from backend.recon_engine.llm.session_override import get_request_override
 from backend.recon_engine.storage import llm_call_store
 
 logger = logging.getLogger("recon.llm.failover")
@@ -249,47 +248,28 @@ def build_llm_client(
 
     **This is the single endpoint-resolution point.** Every LLM call path —
     mapping-sheet classification, header binding, value pairing, script
-    generation — goes through here, so the session-override decision is made
-    once, not per call site.
+    generation — goes through here, and they all reach the same endpoint: the
+    app's own Azure AI Foundry deployment. There is no per-user or per-session
+    credential anywhere in the app; a request cannot redirect an LLM call.
 
-    Resolution order for credentials and endpoint:
-
-    1. Explicit ``api_key``/``model`` arguments, when a caller injects them
-       (tests, and the compiler's optional constructor arguments).
-    2. The request's **session override** (``llm/session_override.py``) — the
-       user's own API key, and their own base URL if they supplied one. Set by
-       the middleware in ``backend/main.py`` from the ``X-Recon-Session``
-       header; absent for requests that carry no token.
-    3. The app default: Azure AD (``DefaultAzureCredential``) against
-       ``AZURE_FOUNDRY_BASE_URL`` / ``AZURE_FOUNDRY_MODEL``.
-
-    Azure AI Foundry is the sole provider — there is no failover to another
-    one. Which source won is logged (endpoint + model, never the key), which
-    is how a run can be confirmed to have used an override.
+    Azure AI Foundry is the sole provider — there is no failover to Groq,
+    Cerebras, OpenRouter, or OpenAI. ``model`` overrides the configured model
+    id (used by callers/tests that inject it); otherwise it is read from
+    settings (``AZURE_FOUNDRY_MODEL``). ``api_key`` overrides the Azure AD
+    token provider with a static value (used by tests only — production auth
+    is always via ``DefaultAzureCredential``).
     """
     from backend.recon_engine.llm.azure_foundry_client import AzureFoundryJSONClient
 
     settings = get_settings()
-    override = get_request_override() if api_key is None else None
-
-    if override is not None:
-        api_key = override.api_key
-        base_url = override.base_url or settings.azure_foundry.base_url
-        source = "session_override"
-    else:
-        base_url = settings.azure_foundry.base_url
-        source = "default"
 
     # The line that answers "which endpoint served this run?". Endpoint and
-    # model only — the key itself is never logged, in any environment.
+    # model only — the credential itself is never logged, in any environment.
     logger.info(
-        "LLM endpoint source=%s base_url=%s model=%s",
-        source,
-        base_url or "unset",
+        "LLM endpoint base_url=%s model=%s",
+        settings.azure_foundry.base_url or "unset",
         model or settings.azure_foundry.model or "unset",
     )
 
-    providers: list[LLMProvider] = [
-        AzureFoundryJSONClient(api_key=api_key, model=model, base_url=base_url)
-    ]
+    providers: list[LLMProvider] = [AzureFoundryJSONClient(api_key=api_key, model=model)]
     return FailoverLLMClient(providers, cooldown_s=settings.llm_fallback_cooldown_s)

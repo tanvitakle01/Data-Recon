@@ -1,19 +1,8 @@
 import { isKeyRole, isUserRow, rebuildMapping } from "../lib/payload";
-import { FIELD_ROLES, fieldRoleLabel, detectFieldRole } from "../lib/fieldRoleAliases";
 import { Button, Select, Badge, Alert, Skeleton, EmptyState } from "@bristlecone/canopy";
 
 const KEY_ROLE = "🔑 Key";
 const COMPARE_ROLE = "📊 Compare";
-
-// "Business Field" dropdown options — an optional semantic tag shown in the
-// UI and used to spot the date pair (see field_role usage in payload.js);
-// Deterministic Mapping itself pairs every confirmed Key row regardless of
-// whether it has a tag. "— none —" means no semantic role, still fine for
-// both Deterministic and Manual Mapping.
-const BUSINESS_FIELD_OPTIONS = [
-  { value: "", label: "— none —" },
-  ...Object.values(FIELD_ROLES).map((role) => ({ value: role, label: fieldRoleLabel(role) })),
-];
 
 // Per-row origin badge (the "Origin" column). Library/Azure AI Foundry are
 // the generated tiers; user-added/user-edited are the manual tier.
@@ -54,19 +43,11 @@ function MappingEditor({
 
   // Editing a row's source/target/role flips a generated row to "user-edited"
   // so a later Regenerate preserves it; a "user-added" row keeps its origin.
-  // Renaming the source or target column re-detects the Business Field from
-  // the new name (e.g. fixing a typo'd header) UNLESS the edit itself already
-  // sets field_role explicitly (the Business Field dropdown) — that always
-  // wins, and a rename that matches no alias keeps whatever tag was there.
   const updateRow = (index, patch) => {
     const nextDisplay = display.map((row, i) => {
       if (i !== index) return row;
       const provenance = row.provenance === "user-added" ? "user-added" : "user-edited";
-      const next = { ...row, ...patch, provenance };
-      if (patch.field_role === undefined && ("source_col" in patch || "target_col" in patch)) {
-        next.field_role = detectFieldRole(next.source_col, next.target_col) ?? next.field_role ?? null;
-      }
-      return next;
+      return { ...row, ...patch, provenance };
     });
     commit(nextDisplay);
   };
@@ -84,7 +65,6 @@ function MappingEditor({
         role: KEY_ROLE,
         reason: "",
         provenance: "user-added",
-        field_role: null,
       },
     ]);
   };
@@ -130,7 +110,6 @@ function MappingEditor({
                 <th>Source Field</th>
                 <th>Target Field</th>
                 <th>Mapping Type</th>
-                <th>Business Field</th>
                 <th>Origin</th>
                 <th aria-label="Row actions"></th>
               </tr>
@@ -177,14 +156,6 @@ function MappingEditor({
                           { value: "key", label: "🔑 Key" },
                           { value: "compare", label: "📊 Compare" },
                         ]}
-                      />
-                    </td>
-                    <td>
-                      <Select
-                        className="h-8 text-xs"
-                        value={row.field_role ?? ""}
-                        onChange={(e) => updateRow(index, { field_role: e.target.value || null })}
-                        options={BUSINESS_FIELD_OPTIONS}
                       />
                     </td>
                     <td>

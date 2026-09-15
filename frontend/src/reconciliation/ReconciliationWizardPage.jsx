@@ -7,6 +7,8 @@ import ComparisonTypeStep from "./steps/ComparisonTypeStep";
 import TransformationSpecStep from "./steps/TransformationSpecStep";
 import DatasetDetailPreviewPage from "./steps/DatasetDetailPreviewPage";
 import ReconciliationRunStep from "./steps/ReconciliationRunStep";
+import AutoRunBanner from "./components/AutoRunBanner";
+import { useAutoRun } from "./hooks/useAutoRun";
 import "./reconciliationWizard.css";
 
 // The detailed dataset preview is a sub-page of a connector step (source or
@@ -31,9 +33,19 @@ function WizardIndexRedirect() {
 }
 
 function ReconciliationWizardContent() {
+  // Auto-run lives here, above the routed step, so it survives the step
+  // navigation it performs itself and can fire from whichever step the third
+  // input landed on. Manual approve on the Mapping step is untouched by it and
+  // remains the fallback whenever the gate refuses.
+  useAutoRun();
+
   return (
     <div className="wizard-shell">
       <div className="wizard-content">
+        {/* Progress stays visible across auto-run's own navigation; the
+            per-check breakdown renders on the Mapping step, where the fixes
+            are made. */}
+        <AutoRunBanner />
         <Routes>
           <Route index element={<WizardIndexRedirect />} />
           {/*

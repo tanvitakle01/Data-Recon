@@ -358,9 +358,23 @@ def enrich_relevant_fields(
     relevant_rows: list[dict[str, Any]],
     source_columns: list[str],
 ) -> dict[str, Any]:
-    """LLM call 2: resolve each relevant row to a real source column + metadata."""
+    """LLM call 2: resolve each relevant row to a real source column + metadata.
+
+    Every relevant candidate that does NOT come back bound to a real source
+    column is reported in ``pending_confirmation`` rather than only dropped.
+    Dropping is still what happens to the *operation* (a column is never
+    invented), but a silent drop is indistinguishable from "there was nothing
+    to bind" — and the auto-approve gate has to be able to tell those apart and
+    name the specific field it could not bind. See ``resolve_mapping``.
+    """
     if not relevant_candidates:
-        return {"enriched_fields": [], "degraded": False, "degraded_reason": None, "provider": None}
+        return {
+            "enriched_fields": [],
+            "pending_confirmation": [],
+            "degraded": False,
+            "degraded_reason": None,
+            "provider": None,
+        }
 
     payload, error = _call_llm(
         _ENRICH_FIELDS_PROMPT,
@@ -372,11 +386,33 @@ def enrich_relevant_fields(
     )
     if error is not None:
         logger.warning("enrich_relevant_fields failed: %s", error)
-        return {"enriched_fields": [], **_degraded(f"Field enrichment failed: {error}")}
+        return {
+            "enriched_fields": [],
+            "pending_confirmation": [],
+            **_degraded(f"Field enrichment failed: {error}"),
+        }
 
     raw_fields = payload.get("enriched_fields") if isinstance(payload, dict) else None
     valid_indices = {c.get("row_index") for c in relevant_candidates if isinstance(c, dict)}
 
+    # row_index -> the sheet's own label for that row, for a human-readable
+    # "could not bind X" message rather than a bare row number.
+    labels: dict[int, str] = {}
+    for cand in relevant_candidates:
+        if not isinstance(cand, dict):
+            continue
+        try:
+            idx = int(cand.get("row_index"))
+        except (TypeError, ValueError):
+            continue
+        labels[idx] = str(
+            cand.get("source_field")
+            or cand.get("technical_field")
+            or cand.get("target_field")
+            or f"row {idx}"
+        ).strip()
+
+    pending: list[dict[str, Any]] = []
     enriched: list[dict[str, Any]] = []
     for item in raw_fields if isinstance(raw_fields, list) else []:
         if not isinstance(item, dict):
@@ -388,9 +424,24 @@ def enrich_relevant_fields(
             continue
         if row_index not in valid_indices:
             continue
-        source_column = _resolve_column(item.get("source_column"), source_columns)
+        declared = item.get("source_column")
+        source_column = _resolve_column(declared, source_columns)
         if not source_column:
-            continue  # never invent a source column
+            # never invent a source column — report it instead of only dropping
+            pending.append(
+                {
+                    "row_index": row_index,
+                    "field": labels.get(row_index, f"row {row_index}"),
+                    "declared_column": str(declared).strip() if declared else None,
+                    "reason": (
+                        f"the mapping sheet declares source column "
+                        f"'{str(declared).strip()}', which is not in the uploaded source data"
+                        if declared
+                        else "no source column could be resolved for this field"
+                    ),
+                }
+            )
+            continue
         enriched.append(
             {
                 "row_index": row_index,
@@ -405,9 +456,26 @@ def enrich_relevant_fields(
             }
         )
 
+    # A relevant candidate the model never returned at all is just as unbound as
+    # one it returned with an unresolvable column — both leave a field the sheet
+    # declared with nothing behind it.
+    answered = {e["row_index"] for e in enriched} | {p["row_index"] for p in pending}
+    for idx in sorted(valid_indices - answered):
+        if idx is None:
+            continue
+        pending.append(
+            {
+                "row_index": idx,
+                "field": labels.get(idx, f"row {idx}"),
+                "declared_column": None,
+                "reason": "no source column could be resolved for this field",
+            }
+        )
+
     outcome = get_last_llm_outcome()
     return {
         "enriched_fields": enriched,
+        "pending_confirmation": pending,
         "degraded": False,
         "degraded_reason": None,
         "provider": outcome.provider_used if outcome and outcome.provider_used else None,
@@ -819,6 +887,7 @@ def resolve_mapping(
             "operations": [],
             "proposed_operations": [],
             "requires_value_pairing": [],
+            "pending_confirmation": [],
             **_degraded("No AI provider is configured (AZURE_FOUNDRY_MODEL) — build the recipe manually."),
         }
 
@@ -878,6 +947,13 @@ def resolve_mapping(
         # silently skipped or guessed at; resolved by the separate
         # value-pairing step when the caller opts into sending data to AI.
         "requires_value_pairing": step4.get("requires_value_pairing", []),
+        # Fields the sheet declared that could NOT be bound to a real source
+        # column (step 2). Each entry names the field and why it stayed
+        # unbound. Non-empty means header binding left something unresolved —
+        # the auto-approve gate refuses to auto-approve on it and names the
+        # field, because an unbound field silently drops a rule the mapping
+        # sheet's author intended to apply.
+        "pending_confirmation": step2.get("pending_confirmation", []),
         "degraded": bool(warnings),
         "degraded_reason": "; ".join(warnings) if warnings else None,
         "provider": provider,

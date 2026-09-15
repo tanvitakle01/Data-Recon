@@ -29,19 +29,10 @@ class AzureFoundryJSONClient(OpenAICompatibleJSONClient):
 
     name = "azure_foundry"
 
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        model: str | None = None,
-        base_url: str | None = None,
-    ) -> None:
-        """``api_key``/``base_url`` are supplied when a session override is
-        active (see ``llm/session_override.py``): the user's own static key
-        replaces the Azure AD bearer-token provider, and their own endpoint
-        replaces ``AZURE_FOUNDRY_BASE_URL`` when they gave one. With neither —
-        the default path — auth is the ambient Azure AD credential chain and
-        the endpoint comes from settings."""
+    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
+        """``api_key`` is injected by tests only. On every production path it is
+        ``None``, and auth is the ambient Azure AD credential chain; the
+        endpoint always comes from ``AZURE_FOUNDRY_BASE_URL`` in settings."""
         settings = get_settings()
         if api_key is None:
             credential = DefaultAzureCredential()
@@ -49,7 +40,7 @@ class AzureFoundryJSONClient(OpenAICompatibleJSONClient):
         super().__init__(
             api_key=api_key,
             model=model or settings.azure_foundry.model,
-            base_url=base_url or settings.azure_foundry.base_url,
+            base_url=settings.azure_foundry.base_url,
             provider_label="Azure AI Foundry",
             api_key_env="AZURE_FOUNDRY_MODEL",
             model_env="AZURE_FOUNDRY_MODEL",

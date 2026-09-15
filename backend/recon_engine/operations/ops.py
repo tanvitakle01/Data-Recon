@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from backend.recon_engine.key_normalization import fit_group_key
 from backend.recon_engine.models.contract import AggregationType, MEASURE_AGGREGATIONS
 
 # ── date format translation ──────────────────────────────────────────────────
@@ -558,11 +559,46 @@ def include_value(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.Da
 
 
 # ── aggregate ops ──────────────────────────────────────────────────────────
+# Every op here groups on the CANONICAL form of its ``by`` columns
+# (``key_normalization.fit_group_key``) rather than on the raw values, because
+# raw values compare by Python type: a column Excel stored partly as text and
+# partly as numbers arrives as a mix of "2000" and 2000, which pandas puts in
+# two different groups. The reconciler's join canonicalizes, so it would then
+# see one business key carrying two rows and silently keep only the first —
+# the other group's measures would vanish from the run's totals. Grouping the
+# way the join compares is what keeps a sum whole.
+#
+# The GROUPED values themselves are left exactly as they were: each group
+# emits the first original value it saw for the column, so a zero-padded
+# material code stays zero-padded in the output even though it grouped
+# canonically.
+
+def _grouped_by_canonical_key(
+    df: pd.DataFrame, by: list[str], agg_spec: dict[str, str]
+) -> pd.DataFrame:
+    """Group ``df`` on the canonical form of ``by`` and apply ``agg_spec``.
+
+    Returns the ``by`` columns (original values, first per group) followed by
+    the aggregated ones — the same shape a plain ``groupby(by).agg(...)``
+    returns, minus the type-sensitivity.
+    """
+    frame = df.reset_index(drop=True)
+    keys = fit_group_key(frame, by)(frame)
+    key_cols = list(keys.columns)
+    tmp = pd.concat([frame, keys], axis=1)
+    # "first" carries each grouping column's original value through; listing
+    # them before the measures keeps the column order groupby(by) produced.
+    spec = {col: "first" for col in by if col not in agg_spec}
+    spec.update(agg_spec)
+    result = tmp.groupby(key_cols, as_index=False, dropna=False).agg(spec)
+    return result.drop(columns=key_cols)
+
 
 def group_by(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> pd.DataFrame:
     """Collapse to one row per unique combination of ``params['by']`` columns."""
     by = list(params["by"])
-    return df.drop_duplicates(subset=by, keep="first").copy()
+    duplicated = fit_group_key(df, by)(df).duplicated(keep="first")
+    return df[~duplicated.to_numpy()].copy()
 
 
 def sum_aggregate(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.DataFrame:
@@ -571,7 +607,7 @@ def sum_aggregate(df: pd.DataFrame, field: str, params: dict[str, Any]) -> pd.Da
     numeric = pd.to_numeric(df[field], errors="coerce")
     tmp = df[by].copy()
     tmp[field] = numeric
-    return tmp.groupby(by, as_index=False, dropna=False)[field].sum()
+    return _grouped_by_canonical_key(tmp, by, {field: "sum"})
 
 
 def deduplicate(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> pd.DataFrame:
@@ -584,7 +620,8 @@ def deduplicate(df: pd.DataFrame, field: str | None, params: dict[str, Any]) -> 
     keep = str(params.get("keep", "first")).lower()
     if keep not in ("first", "last"):
         keep = "first"
-    return df.drop_duplicates(subset=by, keep=keep).copy()
+    duplicated = fit_group_key(df, by)(df).duplicated(keep=keep)
+    return df[~duplicated.to_numpy()].copy()
 
 
 # The measure-aggregation vocabulary (sum/count/average/min/max) — same enum
@@ -635,7 +672,7 @@ def aggregate_group(df: pd.DataFrame, field: str | None, params: dict[str, Any])
         if func_name in _NUMERIC_AGG_FUNCS:
             tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
         agg_spec[col] = pandas_func
-    return tmp.groupby(by, as_index=False, dropna=False).agg(agg_spec)
+    return _grouped_by_canonical_key(tmp, by, agg_spec)
 
 
 # ── compare ops (used by the reconciler, not the shadow builder) ─────────────

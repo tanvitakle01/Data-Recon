@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { API_BASE_URL } from "../services/api";
 
 function ReconciliationResults({ reconResult }) {
   const { preview_rows: previewRows, file } = reconResult || {};
@@ -126,7 +127,7 @@ function ReconciliationResults({ reconResult }) {
                   try {
                     const downloadEndpoint = downloadUrl.startsWith("http")
                       ? downloadUrl
-                      : `http://localhost:8000${downloadUrl}`;
+                      : `${API_BASE_URL}${downloadUrl}`;
 
                     const res = await fetch(downloadEndpoint, {
                       method: "GET",

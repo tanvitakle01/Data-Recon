@@ -811,6 +811,88 @@ def build_recipe_preview(
     }
 
 
+def build_chain_row_counts(
+    *,
+    draft: dict[str, Any] | DraftContract,
+    source_snapshot_id: str | None = None,
+    source_rows: list[dict[str, Any]] | None = None,
+    actor: str = "system",
+) -> dict[str, Any]:
+    """Per-node shadow row counts for a draft chain — one node, one count.
+
+    Answers a question no existing surface answers: does any single node in the
+    chain collapse the frame to zero rows? :func:`build_recipe_preview` reports
+    the row count of ONE prefix, and Gate 2's ``row_count`` check only looks at
+    the whole chain's output (and downgrades itself to a warning when a filter
+    is enabled, because a selective filter emptying a thin *sample* is not
+    evidence of a broken rule). This walks the chain node by node against the
+    FULL frame, so an empty result is a real empty result rather than a
+    sampling artifact.
+
+    Runs the same deterministic executor a real run uses, once per enabled node,
+    on the prefix ending at that node. Read-only: creates no run, shadow, or
+    result. A node whose execution raises is reported with ``error`` set and
+    ``rows_out`` of ``None`` rather than aborting the walk, so the caller can
+    name every failing node in one pass instead of one per round trip.
+
+    Nodes are reported in authored order. Disabled ops are skipped entirely
+    (they do not execute in a run either). A draft with no enabled operations
+    yields an empty ``nodes`` list — nothing to collapse the frame, which is a
+    valid chain, not a failure.
+    """
+    parsed = draft if isinstance(draft, DraftContract) else DraftContract.model_validate(draft)
+
+    if source_snapshot_id:
+        raw_source = snapshot_store.load_snapshot_frame(source_snapshot_id)
+    elif source_rows is not None:
+        raw_source = pd.DataFrame(source_rows)
+    else:
+        raise ValueError("Provide either source_snapshot_id or source_rows.")
+
+    source_total = int(raw_source.shape[0])
+    ops = list(parsed.operations)
+    nodes: list[dict[str, Any]] = []
+
+    for index, op in enumerate(ops):
+        if not op.enabled:
+            continue
+        prefix = parsed.model_copy(
+            update={
+                "operations": [
+                    o.model_copy(update={"enabled": o.enabled and i <= index})
+                    for i, o in enumerate(ops)
+                ]
+            }
+        )
+        node: dict[str, Any] = {
+            "step_index": index,
+            "op": op.op,
+            "kind": getattr(op, "kind", None),
+            "field": getattr(op, "field", None),
+            "rows_in": source_total,
+            "rows_out": None,
+            "error": None,
+        }
+        try:
+            built = build_shadow_source(prefix, raw_source)
+            node["rows_out"] = int(
+                built.shadow_df.drop(columns=[LINEAGE_COL], errors="ignore").shape[0]
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad node must not hide the rest
+            node["error"] = str(exc)
+        nodes.append(node)
+
+    return {
+        "source_total_rows": source_total,
+        "nodes": nodes,
+        # Convenience for the caller's gate: the nodes that produced nothing (or
+        # could not run at all). Empty means every node kept at least one row.
+        "empty_nodes": [
+            n for n in nodes if n["error"] is not None or (n["rows_out"] or 0) == 0
+        ],
+    }
+
+
 # ── run reconciliation (runtime, deterministic) ─────────────────────────────
 
 def _store_back_attribute_library(contract, run_id: str, summary, actor: str) -> None:

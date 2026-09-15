@@ -23,7 +23,7 @@ from typing import Any
 import pandas as pd
 
 from backend.recon_engine.engine.executor import LINEAGE_COL, pair_id_col
-from backend.recon_engine.engine.key_normalization import canonicalize_key_column
+from backend.recon_engine.key_normalization import canonicalize_key_column, normalize_key_scalar
 from backend.recon_engine.models.contract import MatchType, TransformationContract
 from backend.recon_engine.models.results import RecordClass, ReconciliationSummary
 from backend.recon_engine.operations import get_operation
@@ -43,22 +43,6 @@ class ReconcileResult:
 _DETAIL_COLUMNS = ["business_key", "classification", "detail", "source_row_ids", "field_diffs", "pair_ids"]
 
 
-def _normalise_scalar(value: Any, options: dict[str, Any]) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    try:
-        if pd.isna(value):
-            return ""
-    except (TypeError, ValueError):
-        pass
-    s = str(value)
-    if options.get("trim_whitespace", True):
-        s = s.strip()
-    if options.get("case_insensitive", True):
-        s = s.casefold()
-    return s
-
-
 def _build_key(df: pd.DataFrame, fields: list[str], options: dict[str, Any]) -> pd.Series:
     """Build the composite join key for ``fields``.
 
@@ -69,11 +53,15 @@ def _build_key(df: pd.DataFrame, fields: list[str], options: dict[str, Any]) -> 
     this, a source/target pair that serializes the SAME date or ID
     differently (ISO vs "M/D/YYYY", "786293.0" vs "786293") would never
     join, however correct the rest of the contract is.
+
+    The aggregate stage keys its groups the same way (``key_normalization.
+    fit_group_key``) — two rows this collapses onto one key must already have
+    been aggregated into one row, or the dedupe below drops one of them.
     """
     if df.empty:
         return pd.Series([], dtype=str)
     parts = [
-        canonicalize_key_column(df[f]).map(lambda v: _normalise_scalar(v, options))
+        canonicalize_key_column(df[f]).map(lambda v: normalize_key_scalar(v, options))
         for f in fields
     ]
     key = parts[0]

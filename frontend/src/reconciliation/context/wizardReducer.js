@@ -36,10 +36,34 @@ export const WizardActions = {
   SET_SCRIPT_PREVIEW: "SET_SCRIPT_PREVIEW",
   SET_SCRIPT_APPROVAL: "SET_SCRIPT_APPROVAL",
   SET_RECONCILIATION_RESULT: "SET_RECONCILIATION_RESULT",
+  SET_AUTO_RUN: "SET_AUTO_RUN",
+  RESTART_AUTO_RUN: "RESTART_AUTO_RUN",
+  SET_APPROVAL_MODE: "SET_APPROVAL_MODE",
+  CLAIM_FOR_HUMAN: "CLAIM_FOR_HUMAN",
   GO_TO_STEP: "GO_TO_STEP",
   COMPLETE_STEP: "COMPLETE_STEP",
   RESET_WIZARD: "RESET_WIZARD",
 };
+
+// Auto-run's resting state. Any change to one of the three input slots resets
+// to this, which is what re-arms the auto-run for the new inputs.
+function createIdleAutoRun() {
+  return {
+    status: "idle", // idle | running | blocked | done | error
+    stage: null, // mapping | resolve | snapshots | validate | gate | approve | run
+    // What started the pass in flight: "auto" for the unattended run that fires
+    // on its own once all three inputs are present, "rerun" only after the user
+    // clicked "Re-run source transformation". Progress labels read this so the
+    // first pass says "Running" and never "Re-running".
+    trigger: "auto",
+    // Named gate checks that refused auto-approval (see lib/autoRun.js).
+    failures: [],
+    error: null,
+    // The input signature this outcome belongs to — a completed/blocked run
+    // stays settled until the inputs themselves change.
+    signature: null,
+  };
+}
 
 function createInitialRoleState() {
   return {
@@ -75,6 +99,13 @@ function createInitialTransformationSpec() {
     // intent (like business rules), so it SURVIVES a dataset change —
     // invalidateDerivedState only resets the derived contract/preview, not this.
     transformations: [],
+    // Did a HUMAN author/edit the steps above, or were they seeded from the
+    // compiled chain? It decides what a replaced input slot does to them:
+    // auto-seeded steps describe the OLD data and are discarded so the new data
+    // recompiles (a stale chain is never partially reused), while steps a
+    // person wrote are kept — losing those to a re-upload would destroy real
+    // work. Set true by any edit in the Transformations drawer.
+    transformationsAuthored: false,
     // Sequential AI mapping-resolution result from
     // /api/recon/mapping-resolution/resolve (auto-run once a mapping sheet
     // and both datasets are present): { relevant_fields, enriched_fields,
@@ -91,6 +122,17 @@ function createInitialTransformationSpec() {
     draftContract: null, // DraftContract JSON from /api/recon/contracts/compile
     validation: null, // { ok, gate1, gate2 } from /api/recon/contracts/validate
     contract: null, // approved TransformationContract (Manual flow) from /api/recon/contracts/approve
+    // How `contract` came to be approved: "auto" (the auto-run gate cleared
+    // every condition) or "manual" (a person clicked Approve). Null when
+    // nothing is approved. Display/audit only — it never gates anything.
+    approvalMode: null,
+    // Set once a human edits the chain from Results. It survives a re-approval
+    // (that is the point: a human touched this chain, so it stays human-owned)
+    // and suppresses auto-approval for the rest of the run — re-approval from
+    // here is always an explicit click, even if the edited chain would pass
+    // every auto-approve condition. Cleared only by replacing an input slot,
+    // which invalidates the whole run anyway.
+    humanOwned: false,
     // Deterministic flow's auto-assembled, zero-operation contract (business
     // key + compare fields), approved at Run time. Kept separate from
     // `contract` so the two flows never overwrite each other's approved
@@ -158,6 +200,9 @@ export function createInitialWizardState() {
     },
     transformationSpec: createInitialTransformationSpec(),
     reconciliation: null,
+    // Auto-run mode's progress/outcome for the current input triple. See
+    // lib/autoRun.js — the wizard page drives it, every step reads it.
+    autoRun: createIdleAutoRun(),
   };
 }
 
@@ -208,6 +253,14 @@ function nextStepKey(state, key) {
   return index >= 0 ? steps[index + 1]?.key ?? null : null;
 }
 
+// Steps that were seeded from the compiled chain describe the data that was
+// loaded when they were compiled. Once a slot is replaced they are stale, so
+// they are dropped and the chain is rebuilt from scratch against the new data.
+// Hand-authored steps are kept — see `transformationsAuthored`.
+function surviveReplacement(spec) {
+  return spec.transformationsAuthored ? spec.transformations : [];
+}
+
 // Whenever a dataset (or connector) changes, any mapping/results derived from
 // the *previous* data are stale — a mapping can reference columns that no
 // longer exist in the newly loaded file (this is what produced errors like
@@ -233,11 +286,23 @@ function invalidateDerivedState(state, fieldChangeNotice = null) {
   return {
     ...state,
     stepStatus,
+    // Replacing an input slot invalidates the previously compiled chain, its
+    // header bindings, and any approval state (auto or manual) for this run
+    // ENTIRELY — a stale chain is never partially reused against new data.
+    // Resetting autoRun here is also what re-arms auto mode: once the replaced
+    // slot is populated and all three are present again, the wizard page sees
+    // an idle auto-run for a new input signature and restarts the full happy
+    // path with no user click.
+    autoRun: createIdleAutoRun(),
     // A contract compiled against the previous schemas is stale too — Gate 1
     // validates field references against the actual dataset columns, so a
     // dataset change invalidates the whole compile→validate→approve chain.
     transformationSpec: {
       ...state.transformationSpec,
+      approvalMode: null,
+      // A replacement ends the run that the human took ownership of, so the
+      // new inputs start eligible for auto-approval again.
+      humanOwned: false,
       // mappingMode is a UI choice, not derived data — preserved across a
       // dataset change so the user isn't bounced back to the method chooser.
       // fieldChangeNotice carries the human-readable explanation of what this
@@ -245,9 +310,10 @@ function invalidateDerivedState(state, fieldChangeNotice = null) {
       fieldChangeNotice,
       mapping: null,
       // Re-run against the fresh columns — same reasoning as `mapping` above.
-      // `transformations` itself is NOT cleared (authored/AI-seeded steps
-      // survive a dataset change), so the resolution effect only re-seeds it
-      // when it's still empty; the Mapping Card's summary simply refreshes.
+      // Auto-seeded steps go with it (they describe the replaced data); steps a
+      // person wrote survive. Whichever remains, the resolution/auto-run
+      // re-seeds only when the list ends up empty.
+      transformations: surviveReplacement(state.transformationSpec),
       mappingResolution: null,
       draftContract: null,
       validation: null,
@@ -386,10 +452,18 @@ export function wizardReducer(state, action) {
       // (or, in the script flow, the generated script/preview/approval).
       return {
         ...state,
+        // Same rule as a dataset replacement: the chain, bindings and approval
+        // derived from the previous sheet are discarded whole, and auto mode is
+        // re-armed for the new sheet.
+        autoRun: createIdleAutoRun(),
         transformationSpec: {
           ...state.transformationSpec,
+          approvalMode: null,
+          humanOwned: false,
           mappingSheet: action.mappingSheet,
           parsedMappingSheet: null,
+          // Same rule as every other replacement — see surviveReplacement.
+          transformations: surviveReplacement(state.transformationSpec),
           // A changed/removed mapping sheet invalidates the AI-resolved
           // transformation summary too — re-populated once the new sheet is
           // parsed and re-resolved. `transformations` itself is left alone
@@ -413,10 +487,21 @@ export function wizardReducer(state, action) {
       // once non-empty) — the resolution effect only re-seeds it when empty.
       return {
         ...state,
+        // Switching interfaces swaps the mapping sheet's content, so the same
+        // whole-run invalidation applies — and re-arms auto mode for it.
+        autoRun: createIdleAutoRun(),
         transformationSpec: {
           ...state.transformationSpec,
+          approvalMode: null,
+          humanOwned: false,
           parsedMappingSheet: action.parsedMappingSheet,
+          // A different interface is a different set of rules — auto-seeded
+          // steps from the previous one are stale; hand-authored ones survive.
+          transformations: surviveReplacement(state.transformationSpec),
           mappingResolution: null,
+          draftContract: null,
+          validation: null,
+          contract: null,
         },
       };
 
@@ -430,9 +515,18 @@ export function wizardReducer(state, action) {
     }
 
     case WizardActions.SET_TRANSFORMATIONS:
+      // `authored` says whether a human wrote these (drawer edit) or they were
+      // seeded from the compiled chain. It only ever latches ON: once a person
+      // has edited the chain, a later re-seed cannot quietly downgrade it back
+      // to disposable. See surviveReplacement.
       return {
         ...state,
-        transformationSpec: { ...state.transformationSpec, transformations: action.transformations },
+        transformationSpec: {
+          ...state.transformationSpec,
+          transformations: action.transformations,
+          transformationsAuthored:
+            state.transformationSpec.transformationsAuthored || Boolean(action.authored),
+        },
       };
 
     case WizardActions.SET_MAPPING_RESOLUTION:
@@ -592,6 +686,88 @@ export function wizardReducer(state, action) {
 
     case WizardActions.SET_RECONCILIATION_RESULT:
       return { ...state, reconciliation: action.result };
+
+    case WizardActions.SET_AUTO_RUN:
+      // Partial update — callers set only the fields they know (e.g. a stage
+      // tick sets `stage` alone) without clearing the rest.
+      return { ...state, autoRun: { ...state.autoRun, ...action.autoRun } };
+
+    case WizardActions.RESTART_AUTO_RUN:
+      // "Re-run source transformation" on the Mapping step. Re-arms the
+      // unattended path so it replays all seven stages from the first one
+      // (infer field mapping -> resolve the mapping sheet into a chain ->
+      // snapshot -> validate -> gate -> approve -> reconcile) against the
+      // inputs already loaded, instead of re-running the previously approved
+      // contract as-is.
+      //
+      // Everything derived from the previous pass is dropped — a stale chain is
+      // never partially reused, the same rule invalidateDerivedState applies to
+      // a replaced input — with two deliberate exceptions:
+      //   • the field mapping is KEPT, so stage 1 can merge the fresh inference
+      //     over the rows a person edited (see runAutoPipeline). A re-run must
+      //     never silently discard hand-confirmed Key/Compare assignments.
+      //   • hand-authored transformation steps survive, as they do everywhere
+      //     else; auto-seeded ones go, so the sheet recompiles them.
+      // `humanOwned` clears because this click IS a human asking for the
+      // automatic path again — but the Key/Compare gate still runs, so an
+      // unconfirmed AI proposal blocks the run exactly as it always does.
+      //
+      // The auto-run slot is armed as "running" against a null signature rather
+      // than reset to idle: the null signature is what makes useAutoRun fire
+      // again for unchanged inputs, and marking it running in the same commit
+      // keeps the Mapping step's own inference/resolution effects standing down
+      // in the gap between this click and the hook's first dispatch — otherwise
+      // a remounted step would re-resolve the mapping sheet in parallel with the
+      // pipeline doing the same call.
+      return {
+        ...state,
+        stepStatus: { ...state.stepStatus, reconciliation: "locked" },
+        autoRun: { ...createIdleAutoRun(), status: "running", stage: "mapping", trigger: "rerun" },
+        reconciliation: null,
+        transformationSpec: {
+          ...state.transformationSpec,
+          approvalMode: null,
+          humanOwned: false,
+          transformations: surviveReplacement(state.transformationSpec),
+          mappingResolution: null,
+          draftContract: null,
+          validation: null,
+          contract: null,
+          deterministicContract: null,
+          sourceSnapshotId: null,
+          targetSnapshotId: null,
+          shadowPreview: null,
+          shadowApproved: null,
+        },
+      };
+
+    case WizardActions.SET_APPROVAL_MODE:
+      return {
+        ...state,
+        transformationSpec: { ...state.transformationSpec, approvalMode: action.approvalMode },
+      };
+
+    case WizardActions.CLAIM_FOR_HUMAN:
+      // "Edit transformation rules" from Results. The prior approval is
+      // invalidated (the contract it approved no longer describes what will
+      // run) but the user's steps are KEPT as the working draft — only the
+      // approval is dropped, never the authored chain. `humanOwned` then holds
+      // for the rest of the run, so re-approval is an explicit click even if
+      // the edited chain would satisfy every auto-approve condition.
+      return {
+        ...state,
+        stepStatus: { ...state.stepStatus, reconciliation: "locked" },
+        autoRun: { ...createIdleAutoRun(), status: "done", signature: state.autoRun.signature },
+        transformationSpec: {
+          ...state.transformationSpec,
+          humanOwned: true,
+          approvalMode: null,
+          contract: null,
+          validation: null,
+          shadowPreview: null,
+          shadowApproved: null,
+        },
+      };
 
     case WizardActions.COMPLETE_STEP: {
       const { step } = action;

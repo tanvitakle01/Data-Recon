@@ -4,10 +4,11 @@ Whether a key pair is "the date one" — excluded from value-pairing and used
 only for corroboration (see ``routes.value_mapping._split_date_pair``) — is
 decided by looking at a cheap sample of the column's OWN VALUES: a
 date-shaped regex pre-filter, then a real parse attempt via
-``pandas.to_datetime``. Never a column-name guess (that's
-``recon_engine.field_roles``, still used by Auto mode's column-name-only role
-detection) and never an LLM call — this is a fixed-cost check over a small
-sample, safe to run on every request.
+``pandas.to_datetime``. Never a column-name guess (the column-name alias
+tables that used to live in ``recon_engine.field_roles`` /
+``lib/fieldRoleAliases.js`` are gone — nothing in this deploy infers a
+business role from a header) and never an LLM call — this is a fixed-cost
+check over a small sample, safe to run on every request.
 """
 
 from __future__ import annotations
@@ -118,12 +119,37 @@ class DateFormatSpec:
 def strip_time_suffix(value: str) -> str:
     """Drop an optional trailing time-of-day (``" 12:30[:00]"``/``"T12:30..."``)
     off a date-like string, and surrounding whitespace. Shared with
-    ``engine.key_normalization`` so a detected format's separator/order is
+    ``key_normalization`` so a detected format's separator/order is
     applied to the same date-only text it was inferred from."""
     return value.split("T")[0].split(" ")[0].strip()
 
 
 _STRFTIME_TOKEN = {"Y4": "%Y", "Y2": "%y", "M": "%m", "D": "%d"}
+
+
+def strftime_format(spec: DateFormatSpec) -> str:
+    """The ``strftime`` format string ``spec`` describes, e.g. ``"%m.%d.%Y"``.
+
+    Exposed so a caller that has to parse the SAME column more than once (see
+    ``key_normalization.fit_key_canonicalizer``) can detect the format once and
+    reuse it, instead of re-detecting it from whatever rows it happens to hold
+    the second time.
+    """
+    year_token = _STRFTIME_TOKEN["Y4" if spec.year_digits == 4 else "Y2"]
+    tokens = {"Y": year_token, "M": _STRFTIME_TOKEN["M"], "D": _STRFTIME_TOKEN["D"]}
+    return spec.separator.join(tokens[c] for c in spec.order)
+
+
+def parse_with_format(series: pd.Series, fmt: str | None) -> pd.Series:
+    """Parse ``series`` with ``fmt``, or with a mixed parse when ``fmt`` is
+    ``None`` (the column was date-like but no component order could be read
+    off it). Unparseable values become ``NaT``."""
+    if series is None or len(series) == 0:
+        return pd.Series([], dtype="datetime64[ns]")
+    if fmt is None:
+        return pd.to_datetime(series, errors="coerce", format="mixed")
+    stripped = series.astype(str).map(strip_time_suffix)
+    return pd.to_datetime(stripped, format=fmt, errors="coerce")
 
 
 def parse_date_series(series: pd.Series | None) -> pd.Series:
@@ -141,7 +167,7 @@ def parse_date_series(series: pd.Series | None) -> pd.Series:
     usable, if unconfident, format). Returns an all-``NaT`` series, preserving
     ``series``'s index, when ``series`` isn't date-like at all.
 
-    Shared by ``engine.key_normalization`` (join-key canonicalization) and
+    Shared by ``key_normalization`` (join-key canonicalization) and
     ``engine.anchor_inference`` (recovering a run's anchor date from a frozen
     target extract) so a date column is parsed exactly the same way, off its
     own values, everywhere in the engine that needs to.
@@ -151,13 +177,7 @@ def parse_date_series(series: pd.Series | None) -> pd.Series:
     if not is_date_like_series(series):
         return pd.Series([pd.NaT] * len(series), index=series.index, dtype="datetime64[ns]")
     spec = detect_date_format(series)
-    if spec is None:
-        return pd.to_datetime(series, errors="coerce", format="mixed")
-    year_token = _STRFTIME_TOKEN["Y4" if spec.year_digits == 4 else "Y2"]
-    tokens = {"Y": year_token, "M": _STRFTIME_TOKEN["M"], "D": _STRFTIME_TOKEN["D"]}
-    fmt = spec.separator.join(tokens[c] for c in spec.order)
-    stripped = series.astype(str).map(strip_time_suffix)
-    return pd.to_datetime(stripped, format=fmt, errors="coerce")
+    return parse_with_format(series, strftime_format(spec) if spec is not None else None)
 
 
 def detect_date_format(

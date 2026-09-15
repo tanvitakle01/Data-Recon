@@ -10,18 +10,19 @@ import {
   mergeGeneratedMapping,
   rebuildMapping,
 } from "../lib/payload";
-import { detectFieldRole } from "../lib/fieldRoleAliases";
 import StepShell from "../components/StepShell";
 import MappingEditor from "../components/MappingEditor";
 import TransformationPreviewPanel from "../components/TransformationPreviewPanel";
 import TransformationsDrawer from "../components/TransformationsDrawer";
+import { AutoRunFailures } from "../components/AutoRunBanner";
+import RerunTransformationCard from "../components/RerunTransformationCard";
 import { operationsToSteps, serializeOperations } from "../lib/transformationsModel";
 import { Button, Alert } from "@bristlecone/canopy";
 import { SlidersHorizontal } from "lucide-react";
 
 function TransformationSpecStep() {
   const { state, dispatch } = useWizard();
-  const { source, target, comparisonType, transformationSpec } = state;
+  const { source, target, comparisonType, transformationSpec, autoRun } = state;
   const {
     parsedMappingSheet,
     aggregationRules,
@@ -29,8 +30,14 @@ function TransformationSpecStep() {
     mapping,
     mappingResolution,
     contract,
+    humanOwned,
     useScriptTransformations,
   } = transformationSpec;
+
+  // Auto-run performs the same inference and resolution calls this step does,
+  // dispatching into the same state slots. While it holds the pipeline, this
+  // step's own auto-effects stand down so the two never race or double-call.
+  const autoRunning = autoRun.status === "running";
 
   const sourceColumns = useMemo(() => source.dataset?.columns ?? [], [source.dataset]);
   const targetColumns = useMemo(() => target.dataset?.columns ?? [], [target.dataset]);
@@ -122,14 +129,7 @@ function TransformationSpecStep() {
     try {
       const res = await api.post("/api/recon/mapping/infer", formData);
       const data = res.data ?? {};
-      // Tag each row with the canonical business-field role its header(s)
-      // match (Product/Location/Date/Quantity) — same detection used for a
-      // manually-added row in MappingEditor — so Deterministic Mapping can
-      // resolve them by role instead of by a hardcoded literal column name.
-      const inferred = (data.display ?? []).map((row) => ({
-        ...row,
-        field_role: row.field_role ?? detectFieldRole(row.source_col, row.target_col),
-      }));
+      const inferred = data.display ?? [];
       const nextDisplay = preserveEdits
         ? mergeGeneratedMapping(mapping?.display, inferred)
         : inferred;
@@ -166,13 +166,14 @@ function TransformationSpecStep() {
   // run synchronously inside the effect body.
   useEffect(() => {
     if (mapping) return;
+    if (autoRunning) return;
     if (!source.dataset || !target.dataset) return;
     const signature = datasetSignature(source, target);
     if (mappedSignatureRef.current === signature) return;
     mappedSignatureRef.current = signature;
     const id = setTimeout(() => runInference({ preserveEdits: false }), 0);
     return () => clearTimeout(id);
-  }, [mapping, source, target, runInference]);
+  }, [mapping, autoRunning, source, target, runInference]);
 
   // ── Sequential AI mapping resolution (mapping-sheet-driven) ──────────────
   // Only runs when a mapping sheet was uploaded. Four chained LLM calls
@@ -217,6 +218,7 @@ function TransformationSpecStep() {
 
   useEffect(() => {
     if (mappingResolution) return;
+    if (autoRunning) return;
     if (!parsedMappingSheet || !source.dataset || !target.dataset) return;
     // Keyed on the dataset pair AND the sheet itself — the reducer nulls
     // `mappingResolution` on either a dataset change or a new/removed mapping
@@ -229,7 +231,7 @@ function TransformationSpecStep() {
     resolvedMappingSignatureRef.current = signature;
     const id = setTimeout(() => runMappingResolution(), 0);
     return () => clearTimeout(id);
-  }, [mappingResolution, parsedMappingSheet, source, target, runMappingResolution]);
+  }, [mappingResolution, autoRunning, parsedMappingSheet, source, target, runMappingResolution]);
 
   // ── contract lifecycle: validate → approve ────────────────────────────────
   const validateDraft = useCallback(
@@ -349,6 +351,8 @@ function TransformationSpecStep() {
         approved_by: "wizard-user",
       });
       dispatch({ type: WizardActions.SET_APPROVED_CONTRACT, contract: res.data?.contract });
+      // An explicit click — this contract is human-owned however it was built.
+      dispatch({ type: WizardActions.SET_APPROVAL_MODE, approvalMode: "manual" });
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setContractError(typeof detail === "string" ? detail : "Approval failed.");
@@ -379,6 +383,22 @@ function TransformationSpecStep() {
 
   return (
     <StepShell stepKey="transformationSpec" canContinue={canContinueStep}>
+      {/* Replays the whole automatic path (stages 1–7) against the current
+          inputs. First card on the step: it is the action that rebuilds
+          everything below it. */}
+      <RerunTransformationCard />
+
+      {/* Why auto-run stopped, one card per failing check — named, so the fix
+          is obvious. The summary banner itself renders in the wizard shell. */}
+      <AutoRunFailures />
+
+      {humanOwned && !contract && (
+        <Alert variant="info" style={{ marginBottom: 12 }}>
+          You edited these transformation rules, so this run stays human-owned — approve below to
+          re-run the reconciliation against your edits.
+        </Alert>
+      )}
+
       <MappingEditor
         mapping={mapping}
         sourceColumns={sourceColumns}
@@ -422,7 +442,10 @@ function TransformationSpecStep() {
         sourceColumns={sourceColumns}
         onDraftSteps={draftStepsFromDescription}
         onChange={(next) => {
-          dispatch({ type: WizardActions.SET_TRANSFORMATIONS, transformations: next });
+          // `authored` marks these as a person's work, so a later input
+          // replacement keeps them instead of discarding them as a stale
+          // auto-seeded chain.
+          dispatch({ type: WizardActions.SET_TRANSFORMATIONS, transformations: next, authored: true });
           invalidateApproval();
         }}
       >
