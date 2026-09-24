@@ -22,6 +22,8 @@ those stores' primary keys.
 
 from __future__ import annotations
 
+import os
+import time
 import uuid
 
 # Frozen forever — changing this changes every previously computed
@@ -31,9 +33,31 @@ NAMESPACE = uuid.UUID("ec0e09ac-7119-4c37-b352-f29a817e6c66")
 _UNIT_SEP = "\x1f"  # avoids ambiguity from values that contain a plain "-" or "|"
 
 
+def _uuid7_fallback() -> uuid.UUID:
+    """RFC 9562 uuid7 for Pythons before 3.14 (the EC2 host runs 3.12).
+
+    48-bit unix-ms timestamp, version 7, variant 0b10, 74 random bits. Unlike
+    the stdlib version there is no sub-millisecond counter, so ids minted in
+    the same millisecond are unique but not strictly ordered among themselves.
+    """
+    unix_ms = time.time_ns() // 1_000_000
+    rand = int.from_bytes(os.urandom(10), "big")  # 80 bits; 74 are used
+    value = (
+        (unix_ms & ((1 << 48) - 1)) << 80
+        | 0x7 << 76
+        | (rand >> 68) << 64  # rand_a: 12 bits
+        | 0b10 << 62
+        | rand & ((1 << 62) - 1)  # rand_b: 62 bits
+    )
+    return uuid.UUID(int=value)
+
+
+_uuid7 = getattr(uuid, "uuid7", _uuid7_fallback)
+
+
 def new_id() -> str:
     """A fresh, time-ordered, globally-unique id (uuid7)."""
-    return str(uuid.uuid7())
+    return str(_uuid7())
 
 
 def _norm(value: object) -> str:
