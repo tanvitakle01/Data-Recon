@@ -8,6 +8,8 @@ shadow, results, audit) for a fully auditable, reproducible workflow.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 from io import BytesIO
 from typing import Any
@@ -28,6 +30,9 @@ from backend.recon_engine.storage import (
     run_store,
     snapshot_store,
 )
+from backend.routes.multi_file_join import _content_disposition
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recon", tags=["recon-runtime"])
 
@@ -415,12 +420,50 @@ def download_comparison(run_id: str) -> Response:
         content = service.build_comparison_workbook(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    filename = f"comparison_{run_id}.xlsx"
+    filename = _comparison_filename(run_id)
+    # The run id is no longer in the visible filename; keep it traceable for
+    # support via the log and a response header.
+    logger.info("Comparison workbook download: run_id=%s filename=%r", run_id, filename)
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": _content_disposition(filename), "X-Run-Id": run_id},
     )
+
+
+# Characters invalid in Windows/macOS filenames, plus control characters.
+_INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+# Per-half UTF-8 byte budget: 2 * 110 + len("__comparison.xlsx") stays under
+# the common 255-byte filename limit even for multi-byte names.
+_MAX_STEM_BYTES = 110
+
+
+def _filename_stem(name: str | None, fallback: str) -> str:
+    """Extension-less, filesystem-safe stem of an uploaded file's name."""
+    head, dot, _ext = (name or "").rpartition(".")
+    stem = head if dot else (name or "")
+    stem = _INVALID_FILENAME_CHARS.sub("_", stem).strip(" ._")
+    stem = stem.encode("utf-8")[:_MAX_STEM_BYTES].decode("utf-8", errors="ignore").rstrip(" ._")
+    return stem or fallback
+
+
+def _snapshot_stem(snapshot_id: str, fallback: str) -> str:
+    """Name a snapshot by its uploaded filename; SAP-fetched snapshots have no
+    filename, so fall back to their source type (e.g. ``s4``, ``ibp``)."""
+    snap = snapshot_store.get_snapshot(snapshot_id)
+    if snap is None:
+        return fallback
+    return _filename_stem(snap.lineage.get("filename"), _filename_stem(snap.source_type, fallback))
+
+
+def _comparison_filename(run_id: str) -> str:
+    """``{source}_{target}_comparison.xlsx`` from the run's two raw snapshots."""
+    run = run_store.get_run(run_id)
+    if run is None:
+        return "comparison.xlsx"
+    source = _snapshot_stem(run.source_snapshot_id, "source")
+    target = _snapshot_stem(run.target_snapshot_id, "target")
+    return f"{source}_{target}_comparison.xlsx"
 
 
 @router.get("/results/{result_id}")
