@@ -1,5 +1,5 @@
 import { Button, Badge } from "@bristlecone/canopy";
-import { FileSpreadsheet } from "lucide-react";
+import { FileSpreadsheet, Plus } from "lucide-react";
 
 // Flow A (Excel/CSV) "Dataset Preview" — the second and final card of the
 // file-upload path. Purely a presentation of the dataset already sitting in
@@ -14,7 +14,9 @@ function fileTypeFromName(filename) {
   return ext ? ext.toUpperCase() : "—";
 }
 
-function DatasetPreviewCard({ dataset, onReplaceFile }) {
+// `onAddFile` (source slot only) adds a "+ Add file" button that starts a
+// multi-file join — see MultiFileSourcePanel.
+function DatasetPreviewCard({ dataset, onReplaceFile, onAddFile, addFileDisabled = false }) {
   if (!dataset) return null;
 
   const columns = dataset.columns ?? [];
@@ -43,6 +45,18 @@ function DatasetPreviewCard({ dataset, onReplaceFile }) {
             <Button type="button" variant="outline" size="sm" onClick={onReplaceFile}>
               Replace File
             </Button>
+            {onAddFile && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onAddFile}
+                disabled={addFileDisabled}
+                title="Add another file to join into this dataset"
+              >
+                <Plus size={14} aria-hidden /> Add file
+              </Button>
+            )}
           </div>
         </div>
       </section>

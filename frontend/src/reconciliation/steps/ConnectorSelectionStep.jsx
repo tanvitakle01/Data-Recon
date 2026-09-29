@@ -5,6 +5,7 @@ import StepShell from "../components/StepShell";
 import SubStagePills from "../components/SubStagePills";
 import DatasetPreviewCard from "../components/DatasetPreviewCard";
 import FileUploadCard from "../../components/FileUploadCard";
+import MultiFileSourcePanel from "../components/MultiFileSourcePanel";
 import { EXCEL_OPTION } from "../lib/connectorOptions";
 
 const FILE_STAGE_LABELS = ["Upload Dataset", "Dataset Preview"];
@@ -18,6 +19,10 @@ function ConnectorSelectionStep({ role }) {
   const roleLabel = role === "source" ? "Source" : "Target";
 
   const [showUploadAgain, setShowUploadAgain] = useState(false);
+  // Source only: several files joined into one dataset. While a join is
+  // configured but not yet applied, Continue stays locked.
+  const allowMultiFile = role === "source";
+  const [joinPending, setJoinPending] = useState(false);
 
   useEffect(() => {
     if (!roleState.connectorId) {
@@ -39,7 +44,7 @@ function ConnectorSelectionStep({ role }) {
     );
   };
 
-  const handleExcelLoaded = (data, file, meta) => {
+  const handleExcelLoaded = (data, file, meta, extra) => {
     if (!data) {
       console.debug(`[wizard] RESET_ROLE | role=${role} (upload cleared/failed)`);
       dispatch({ type: WizardActions.RESET_ROLE, role });
@@ -62,14 +67,33 @@ function ConnectorSelectionStep({ role }) {
         sheet: meta?.sheet_name ?? null,
         sheets: meta?.sheets ?? [],
         fetchedAt: new Date().toISOString(),
+        ...(extra ?? {}),
       },
     });
   };
 
-  const canContinue = useMemo(() => Boolean(roleState.dataset), [roleState.dataset]);
+  const canContinue = useMemo(
+    () => Boolean(roleState.dataset) && !(allowMultiFile && joinPending),
+    [roleState.dataset, allowMultiFile, joinPending],
+  );
 
   if (!roleState.connectorId) {
     return <StepShell stepKey={role} canContinue={canContinue} />;
+  }
+
+  if (allowMultiFile) {
+    return (
+      <StepShell stepKey={role} canContinue={canContinue}>
+        <SubStagePills stages={FILE_STAGE_LABELS} activeIndex={roleState.dataset && !joinPending ? 1 : 0} />
+        <MultiFileSourcePanel
+          role={role}
+          dataset={roleState.dataset}
+          onDatasetReady={handleExcelLoaded}
+          onCleared={() => handleExcelLoaded(null)}
+          onPendingChange={setJoinPending}
+        />
+      </StepShell>
+    );
   }
 
   const showPreviewCard = Boolean(roleState.dataset) && !showUploadAgain;

@@ -39,6 +39,7 @@ from backend.routes.preview import router as preview_router
 from backend.routes.automap import router as automap_router
 from backend.routes.reconcile import router as reconcile_router
 from backend.routes.files import router as files_router
+from backend.routes.multi_file_join import router as multi_file_join_router
 from backend.routes.date_alignment_preview import router as date_alignment_preview_router
 from backend.routes.contracts import router as contracts_router
 from backend.routes.value_mapping import router as value_mapping_router
@@ -114,6 +115,7 @@ app.include_router(preview_router)
 app.include_router(automap_router)
 app.include_router(reconcile_router)
 app.include_router(files_router)
+app.include_router(multi_file_join_router)
 app.include_router(date_alignment_preview_router)
 app.include_router(contracts_router)
 app.include_router(value_mapping_router)

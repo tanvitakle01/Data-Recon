@@ -59,7 +59,7 @@ async def preview_excel(
         "rows": loaded["row_count"],
         "cols": loaded["col_count"],
         "columns": df.columns.tolist(),
-        "preview": df.head(row_cap).astype(str).to_dict(orient="records"),
+        "preview": df.head(row_cap).map(str).to_dict(orient="records"),
     }
 
 
