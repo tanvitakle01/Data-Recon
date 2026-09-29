@@ -8,11 +8,17 @@ files ``1..i``).
 
 Rules, in the order they are applied:
 
-* All files must share one type (all CSV or all Excel), 2..MAX_FILES of them.
+* 2..MAX_FILES files, each .xlsx/.xls/.csv. Formats may be mixed: every file
+  is parsed on its own by its own extension (Excel → its chosen sheet, first
+  sheet by default) and only the parsed frames reach the join.
 * Non-key columns whose name appears in more than one file are suffixed
   ``_file<N>`` in every file that has them, so nothing is overwritten.
-* Key *values* are matched after trimming and case-folding (and, when both key
-  columns look like dates, after parsing them to ISO dates). Column names are
+* Key *values* are matched after trimming and case-folding. When both key
+  columns look like dates they are matched as ISO dates (an Excel column of
+  plain date serials counts as dates when the other side is a date column,
+  and a day-first text column such as ``13/02/2026`` is read day-first). When
+  both look numeric they are matched as numbers, so Excel's typed ``1001`` /
+  ``1001.0`` meets CSV's text ``"1001"`` / ``"001001"``. Column names are
   never normalised.
 * Rows whose key is blank never match. They stay in the result as unmatched
   when the join type keeps that side's unmatched rows (left/outer), are
@@ -29,6 +35,7 @@ import datetime as _dt
 import math
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import PurePath
 from typing import Any
@@ -104,15 +111,21 @@ def file_kind(filename: str) -> str:
     raise JoinConfigError(f"Unsupported file type: {filename!r}. Upload .xlsx, .xls or .csv.")
 
 
-def validate_files(filenames: list[str]) -> str:
+def validate_files(filenames: list[str]) -> list[str]:
+    """Each file's own kind, in order. Every file is checked on its own;
+    mixing CSV and Excel is allowed."""
     if len(filenames) < 2:
         raise JoinConfigError("At least two files are needed to join.")
     if len(filenames) > MAX_FILES:
         raise JoinConfigError(f"At most {MAX_FILES} files can be joined.")
-    kinds = {file_kind(name) for name in filenames}
-    if len(kinds) > 1:
-        raise JoinConfigError("All files must be the same type — either all Excel (.xlsx/.xls) or all CSV.")
-    return kinds.pop()
+    return [file_kind(name) for name in filenames]
+
+
+def output_kind(kinds: list[str]) -> str:
+    """CSV only when every input is CSV. Any Excel input makes the result
+    .xlsx, so Excel's typed numbers and dates are written back as typed
+    cells instead of being flattened to text."""
+    return "csv" if all(kind == "csv" for kind in kinds) else "excel"
 
 
 # ── value helpers ──────────────────────────────────────────────────────────
@@ -141,7 +154,11 @@ def _is_datetime_value(value: Any) -> bool:
 _DEFAULT_DATE = _dt.datetime(2000, 1, 1)
 
 
-def _parse_date(value: Any) -> _dt.datetime | None:
+# A numeric D/M/Y or M/D/Y date: the two leading groups decide day-first.
+_DMY = re.compile(r"(\d{1,2})[-/.](\d{1,2})[-/.]\d{2,4}\b")
+
+
+def _parse_date(value: Any, dayfirst: bool = False) -> _dt.datetime | None:
     if _is_blank(value):
         return None
     if isinstance(value, pd.Timestamp):
@@ -150,10 +167,79 @@ def _parse_date(value: Any) -> _dt.datetime | None:
         return value
     if isinstance(value, _dt.date):
         return _dt.datetime(value.year, value.month, value.day)
+    text = str(value).strip()
     try:
-        return _dateutil.parse(str(value).strip(), default=_DEFAULT_DATE)
+        # Day-first only applies to D/M/Y-shaped text; ISO stays year-first.
+        return _dateutil.parse(text, default=_DEFAULT_DATE, dayfirst=dayfirst and bool(_DMY.match(text)))
     except (ValueError, OverflowError, TypeError):
         return None
+
+
+def _is_dayfirst(series: pd.Series) -> bool:
+    """True when the column's own numeric dates are day-first: some leading
+    group exceeds 12 and no second group does. Ambiguous columns keep the
+    month-first default."""
+    first_over = second_over = False
+    for value in series.tolist():
+        if _is_blank(value) or _is_datetime_value(value):
+            continue
+        m = _DMY.match(str(value).strip())
+        if m:
+            first_over |= int(m.group(1)) > 12
+            second_over |= int(m.group(2)) > 12
+    return first_over and not second_over
+
+
+def _is_number_value(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+# Excel's day 0 (serials from 61 on are exact; 60 is the phantom 1900-02-29).
+_EXCEL_EPOCH = _dt.datetime(1899, 12, 30)
+_EXCEL_MAX_SERIAL = 2958465  # 9999-12-31
+
+
+def _looks_like_excel_serials(series: pd.Series) -> bool:
+    """Every non-blank value is a number in Excel's date-serial range (an
+    unformatted date column read from a workbook)."""
+    values = [v for v in series.tolist() if not _is_blank(v)]
+    return bool(values) and all(_is_number_value(v) and 1 <= v <= _EXCEL_MAX_SERIAL for v in values)
+
+
+def _from_excel_serial(value: Any) -> _dt.datetime | None:
+    if not _is_number_value(value):
+        return None
+    return _EXCEL_EPOCH + _dt.timedelta(days=float(value))
+
+
+_NUMERIC_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
+
+
+def looks_numeric(series: pd.Series) -> bool:
+    """Every non-blank value is a number, or text that is a plain decimal
+    number (no exponent, no thousands separators)."""
+    values = [v for v in series.tolist() if not _is_blank(v)]
+    if not values:
+        return False
+    return all(
+        (_is_number_value(v) and math.isfinite(v))
+        or (isinstance(v, str) and _NUMERIC_TEXT.fullmatch(v.strip()) is not None)
+        for v in values
+    )
+
+
+def _canonical_number(value: Any) -> str | None:
+    """One text form per numeric value: ``1001``, ``1001.0``, ``"001001"``
+    and ``"1001.00"`` all become ``"1001"``; ``12.50`` becomes ``"12.5"``."""
+    try:
+        number = Decimal(repr(value) if isinstance(value, float) else str(value).strip())
+    except InvalidOperation:
+        return None
+    if not number.is_finite():
+        return None
+    if number == number.to_integral_value():
+        return str(int(number))
+    return format(number.normalize(), "f")
 
 
 def _iso(value: _dt.datetime) -> str:
@@ -178,13 +264,46 @@ def looks_like_date(series: pd.Series) -> bool:
     return parsed / len(strings) >= 0.9
 
 
-def _normalize_key(value: Any, as_date: bool) -> Any:
+@dataclass(frozen=True)
+class _KeyForm:
+    """How one side of a join step reads its key values."""
+    kind: str = "text"  # "date" | "number" | "text"
+    dayfirst: bool = False
+    excel_serial: bool = False
+
+
+def _key_forms(
+    left: pd.Series, left_excel: bool, right: pd.Series, right_excel: bool
+) -> tuple[_KeyForm, _KeyForm]:
+    """Decide, from both key columns' own values, whether a step matches
+    dates, numbers or text. Each side is read by its own shape, so an Excel
+    column and a CSV column holding the same keys land on the same form."""
+    left_date, right_date = looks_like_date(left), looks_like_date(right)
+    # Plain numbers only count as date serials when they came from a workbook
+    # and the other key column really holds dates.
+    left_serial = left_excel and not left_date and right_date and _looks_like_excel_serials(left)
+    right_serial = right_excel and not right_date and left_date and _looks_like_excel_serials(right)
+    if (left_date or left_serial) and (right_date or right_serial):
+        return (
+            _KeyForm("date", _is_dayfirst(left), left_serial),
+            _KeyForm("date", _is_dayfirst(right), right_serial),
+        )
+    if looks_numeric(left) and looks_numeric(right):
+        return _KeyForm("number"), _KeyForm("number")
+    return _KeyForm(), _KeyForm()
+
+
+def _normalize_key(value: Any, form: _KeyForm = _KeyForm()) -> Any:
     if _is_blank(value):
         return None
-    if as_date or _is_datetime_value(value):
-        parsed = _parse_date(value)
+    if form.kind == "date" or _is_datetime_value(value):
+        parsed = _from_excel_serial(value) if form.excel_serial else _parse_date(value, form.dayfirst)
         if parsed is not None:
             return _iso(parsed)
+    if form.kind == "number":
+        number = _canonical_number(value)
+        if number is not None:
+            return number
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     return str(value).strip().casefold()
@@ -254,7 +373,8 @@ def _sort_frame(df: pd.DataFrame, column: str, direction: str) -> tuple[pd.DataF
             return None
 
     if looks_like_date(df[column]):
-        kind, key = "date", _parse_date
+        dayfirst = _is_dayfirst(df[column])
+        kind, key = "date", lambda v: _parse_date(v, dayfirst)
     elif present and all(_num(v) is not None for v in present):
         kind, key = "numeric", _num
     else:
@@ -283,11 +403,14 @@ def join_files(
     preview_rows: int = 10,
 ) -> JoinResult:
     filenames = [name for name, _ in files]
-    kind = validate_files(filenames)
+    kinds = validate_files(filenames)
+    kind = output_kind(kinds)
     if len(steps) != len(files) - 1:
         raise JoinConfigError(f"Expected {len(files) - 1} join step(s), got {len(steps)}.")
     sheets = list(sheets) + [None] * (len(files) - len(sheets))
 
+    # Each file is parsed on its own by its own extension; from here on the
+    # join only sees DataFrames, never the original format.
     frames: list[pd.DataFrame] = []
     for (name, content), sheet in zip(files, sheets):
         try:
@@ -337,7 +460,10 @@ def join_files(
         left_label = f"File {step.left_file + 1} · {step.left_column}"
         right_label = f"File {right_idx + 1} · {right_col}"
 
-        as_date = looks_like_date(combined[left_col]) and looks_like_date(right[right_col])
+        left_form, right_form = _key_forms(
+            combined[left_col], kinds[step.left_file] == "excel",
+            right[right_col], kinds[right_idx] == "excel",
+        )
 
         left_missing = _missing_mask(combined[left_col])
         right_missing = _missing_mask(right[right_col])
@@ -367,12 +493,12 @@ def join_files(
         left = combined.copy()
         left[_LO] = range(len(left))
         left[_KEY] = [
-            f"￿blank-left-{pos}" if missing else _normalize_key(v, as_date)
+            f"￿blank-left-{pos}" if missing else _normalize_key(v, left_form)
             for pos, (v, missing) in enumerate(zip(left[left_col], left_missing))
         ]
         right[_RO] = range(len(right))
         right[_KEY] = [
-            f"￿blank-right-{pos}" if missing else _normalize_key(v, as_date)
+            f"￿blank-right-{pos}" if missing else _normalize_key(v, right_form)
             for pos, (v, missing) in enumerate(zip(right[right_col], right_missing))
         ]
         if not keep_left:
@@ -406,7 +532,8 @@ def join_files(
             "right_filename": filenames[right_idx],
             "output_key": left_col,
             "how": step.how,
-            "matched_as_dates": as_date,
+            "matched_as_dates": left_form.kind == "date",
+            "matched_as_numbers": left_form.kind == "number",
             "left_rows": int(len(combined)),
             "right_rows": int(len(frames[right_idx])),
             "left_missing_key": int(left_missing.sum()),
@@ -448,8 +575,9 @@ def join_files(
 
 
 def to_bytes(result: JoinResult) -> tuple[bytes, str]:
-    """Serialise the combined frame in the same family as its inputs, so the
-    downstream loader reads it exactly like a single uploaded file."""
+    """Serialise the combined frame (CSV when every input was CSV, else .xlsx
+    — see ``output_kind``), so the downstream loader reads it exactly like a
+    single uploaded file."""
     if result.kind == "csv":
         return result.df.to_csv(index=False).encode("utf-8"), "text/csv"
     buf = BytesIO()

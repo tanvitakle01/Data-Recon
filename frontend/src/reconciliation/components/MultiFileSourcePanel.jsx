@@ -26,6 +26,12 @@ import {
 const ACCEPT = ".xlsx,.xls,.csv";
 const FAMILY_LABEL = { excel: "Excel", csv: "CSV" };
 
+// "Excel", "CSV" or "Excel + CSV" for the files in the slot.
+function familySummary(files) {
+  const families = [...new Set(files.map((f) => f.family))].filter(Boolean);
+  return families.map((f) => FAMILY_LABEL[f]).join(" + ");
+}
+
 function initialState(dataset) {
   if (dataset?.multiFile) {
     const { files, stepsById, sort, signature } = dataset.multiFile;
@@ -168,15 +174,9 @@ function MultiFileSourcePanel({ role, dataset, onDatasetReady, onCleared, onPend
     if (nextFiles.length === 0) onCleared();
   };
 
-  const checkFamily = (file, others) => {
-    const family = fileFamily(file?.name);
-    if (!family) return "Unsupported file type. Upload .xlsx, .xls or .csv.";
-    const expected = others[0]?.family;
-    if (expected && family !== expected) {
-      return `All files in one slot must be the same type — this slot holds ${FAMILY_LABEL[expected]} files, "${file.name}" is ${FAMILY_LABEL[family]}.`;
-    }
-    return null;
-  };
+  // Each file is checked on its own; Excel and CSV files may be mixed.
+  const checkFamily = (file) =>
+    fileFamily(file?.name) ? null : "Unsupported file type. Upload .xlsx, .xls or .csv.";
 
   // ── add / replace / remove / sheet ─────────────────────────────────────
   const handleAdd = async (file) => {
@@ -186,7 +186,7 @@ function MultiFileSourcePanel({ role, dataset, onDatasetReady, onCleared, onPend
       setFileError(`At most ${MAX_JOIN_FILES} files can be joined into one source.`);
       return;
     }
-    const familyError = checkFamily(file, files);
+    const familyError = checkFamily(file);
     if (familyError) {
       setFileError(familyError);
       return;
@@ -211,8 +211,7 @@ function MultiFileSourcePanel({ role, dataset, onDatasetReady, onCleared, onPend
   const handleReplace = async (id, file) => {
     if (!file) return;
     setFileError(null);
-    const others = files.filter((f) => f.id !== id);
-    const familyError = checkFamily(file, others);
+    const familyError = checkFamily(file);
     if (familyError) {
       setFileError(familyError);
       return;
@@ -310,7 +309,8 @@ function MultiFileSourcePanel({ role, dataset, onDatasetReady, onCleared, onPend
     setApplyError(null);
     try {
       const blob = await requestJoin(files, config, "build");
-      const family = files[0].family;
+      // The backend writes CSV only when every input is CSV, else .xlsx.
+      const family = fileFamily(current.filename);
       const combinedFile = new File([blob], current.filename, {
         type:
           family === "csv"
@@ -413,7 +413,7 @@ function MultiFileSourcePanel({ role, dataset, onDatasetReady, onCleared, onPend
           <h3 className="ct-card__title">Source files</h3>
           <span className="ct-card__spacer" />
           <span className="ct-card__hint">
-            {files.length} of {MAX_JOIN_FILES} · {FAMILY_LABEL[files[0].family]} only
+            {files.length} of {MAX_JOIN_FILES} · {familySummary(files)}
           </span>
         </div>
         <div className="ct-card__body mf-file-list">
@@ -474,7 +474,7 @@ function MultiFileSourcePanel({ role, dataset, onDatasetReady, onCleared, onPend
             <span className="ct-card__hint">
               {atCap
                 ? `Limit reached — at most ${MAX_JOIN_FILES} files per source.`
-                : `Each added file is joined onto the files above it. Same type only (${FAMILY_LABEL[files[0].family]}).`}
+                : "Each added file is joined onto the files above it. Excel and CSV can be mixed."}
             </span>
           </div>
           {fileError && <Alert variant="error">{fileError}</Alert>}
@@ -652,7 +652,7 @@ function MultiFileSourcePanel({ role, dataset, onDatasetReady, onCleared, onPend
                           <td>File {s.step + 2}</td>
                           <td className="mono">
                             {s.left_label} ↔ {s.right_label}
-                            {s.matched_as_dates ? " (as dates)" : ""}
+                            {s.matched_as_dates ? " (as dates)" : s.matched_as_numbers ? " (as numbers)" : ""}
                           </td>
                           <td>{s.how}</td>
                           <td className="mono">

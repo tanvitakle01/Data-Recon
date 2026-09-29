@@ -59,7 +59,8 @@ async def join_uploaded_files(
     preview_rows: int = Form(default=10),
 ):
     """``mode=preview`` → JSON stats + combined preview; ``mode=build`` → the
-    combined file itself (CSV for CSV inputs, .xlsx for Excel inputs)."""
+    combined file itself (CSV when every input is CSV, otherwise .xlsx —
+    inputs may mix CSV and Excel)."""
     sheets, steps, sort = _parse_config(config)
     payload = [(f.filename or "", await f.read()) for f in files]
     rows = max(1, min(int(preview_rows), _MAX_PREVIEW_ROWS))
