@@ -244,8 +244,8 @@
 }
 
 .recon-metric-card {
-  background: rgba(255,255,255,0.95);
-  border: 1px solid rgba(229,231,235,0.85);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 16px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.02);
@@ -258,7 +258,7 @@
 .recon-metric-label {
   font-size: 13px;
   font-weight: 650;
-  color: rgba(51,65,85,0.86);
+  color: var(--ink-2);
 }
 
 .recon-metric-value {

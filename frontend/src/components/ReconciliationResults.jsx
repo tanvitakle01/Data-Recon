@@ -61,17 +61,17 @@ function ReconciliationResults({ reconResult }) {
           alignItems: "center",
         }}
       >
-        <div style={{ color: "#64748b", fontSize: 13, fontWeight: 600 }}>Scenario</div>
+        <div style={{ color: "var(--muted)", fontSize: 13, fontWeight: 600 }}>Scenario</div>
         <select
           value={scenario}
           onChange={(e) => setScenario(e.target.value)}
           style={{
             padding: "8px 12px",
             borderRadius: 10,
-            border: "1px solid rgba(148,163,184,0.35)",
-            background: "#fff",
+            border: "1px solid var(--border-strong)",
+            background: "var(--surface)",
             fontWeight: 700,
-            color: "#0f172a",
+            color: "var(--ink)",
           }}
         >
           <option value="All">All</option>
@@ -88,7 +88,7 @@ function ReconciliationResults({ reconResult }) {
             <thead>
               <tr>
                 {columns.map((col) => (
-                  <th key={col} style={{ position: "sticky", top: 0, background: "#f8fafc" }}>
+                  <th key={col} style={{ position: "sticky", top: 0, background: "var(--surface-2)" }}>
                     {col}
                   </th>
                 ))}
@@ -106,14 +106,14 @@ function ReconciliationResults({ reconResult }) {
           </table>
         </div>
       ) : (
-        <div style={{ marginTop: 12, color: "#64748b" }}>
+        <div style={{ marginTop: 12, color: "var(--muted)" }}>
           No preview rows available for the selected scenario.
         </div>
       )}
 
       {hasFilename && (
         <div style={{ marginTop: 18, marginBottom: 6 }}>
-          <div style={{ marginBottom: 6, color: "#64748b", fontSize: 13 }}>
+          <div style={{ marginBottom: 6, color: "var(--muted)", fontSize: 13 }}>
             Comparison complete. File ready for download.
           </div>
 
@@ -170,7 +170,7 @@ function ReconciliationResults({ reconResult }) {
               </button>
             </div>
           ) : (
-            <div style={{ color: "#64748b", fontSize: 13, marginTop: 8 }}>
+            <div style={{ color: "var(--muted)", fontSize: 13, marginTop: 8 }}>
               Download is not available yet.
             </div>
           )}

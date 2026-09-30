@@ -12,7 +12,7 @@ function SummaryCards({ summary }) {
 
   return (
     <div>
-      <h4 style={{ margin: "0 0 14px 0", fontWeight: 650, color: "rgba(15,23,42,0.9)" }}>
+      <h4 style={{ margin: "0 0 14px 0", fontWeight: 650, color: "var(--ink)" }}>
         Summary
       </h4>
       <SummaryGrid metrics={metrics} />

@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { BristleconeLogo } from "@bristlecone/canopy";
 import WizardStepBar from "./WizardStepBar";
+import ThemeToggle from "./ThemeToggle";
 import styles from "./appLayout.module.css";
 
 // Destinations are a flat, always-visible row — the redesign drops the
@@ -46,6 +47,8 @@ function AppLayout({ children }) {
               </Link>
             ))}
           </nav>
+
+          <ThemeToggle />
         </div>
 
         {activeKey === "reconciliation" && <WizardStepBar />}

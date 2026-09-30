@@ -71,13 +71,13 @@ function FileUploadCard({
     <div
       className="recon-upload-card"
       style={{
-        border: "1px solid rgba(229,231,235,0.85)",
+        border: "1px solid var(--border)",
         padding: 16,
         borderRadius: 14,
-        background: "rgba(255,255,255,0.85)",
+        background: "var(--surface)",
       }}
     >
-      <h3 style={{ marginTop: 0, fontSize: 16, fontWeight: 700, color: "rgba(15,23,42,0.92)" }}>{title}</h3>
+      <h3 style={{ marginTop: 0, fontSize: 16, fontWeight: 700, color: "var(--ink)" }}>{title}</h3>
 
 
       <div
@@ -89,18 +89,18 @@ function FileUploadCard({
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
         style={{
-          border: `1.5px dashed ${dragOver ? "#2563eb" : "rgba(148,163,184,0.6)"}`,
+          border: `1.5px dashed ${dragOver ? "var(--accent)" : "var(--border-strong)"}`,
           borderRadius: 10,
           padding: 16,
           textAlign: "center",
           cursor: "pointer",
-          background: dragOver ? "rgba(37,99,235,0.06)" : "transparent",
+          background: dragOver ? "var(--accent-tint)" : "transparent",
         }}
       >
-        <div style={{ fontSize: 13, color: "#475569", fontWeight: 600 }}>
+        <div style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 600 }}>
           Drag &amp; drop a file here, or click to choose
         </div>
-        <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Accepted: .xlsx, .xls, .csv</div>
+        <div style={{ fontSize: 12, color: "var(--muted-2)", marginTop: 2 }}>Accepted: .xlsx, .xls, .csv</div>
         <input
           ref={inputRef}
           type="file"
@@ -112,7 +112,7 @@ function FileUploadCard({
 
       {loading && <div style={{ marginTop: 8 }}>Loading preview…</div>}
       {error && (
-        <div style={{ marginTop: 8, color: "#b91c1c", fontSize: 13 }}>
+        <div style={{ marginTop: 8, color: "var(--missing)", fontSize: 13 }}>
           {error}
         </div>
       )}
@@ -126,15 +126,15 @@ function FileUploadCard({
               gap: 6,
               padding: "4px 10px",
               borderRadius: 999,
-              background: "rgba(16,185,129,0.12)",
-              color: "#047857",
+              background: "var(--match-bg)",
+              color: "var(--match)",
               fontWeight: 800,
               fontSize: 12,
             }}
           >
             ✓ {fileInfo.filename}
           </div>
-          <div style={{ marginTop: 6, color: "#64748b", fontWeight: 600, fontSize: 13 }}>
+          <div style={{ marginTop: 6, color: "var(--muted)", fontWeight: 600, fontSize: 13 }}>
             {fileInfo.rows} rows × {fileInfo.cols} cols
           </div>
 
@@ -145,7 +145,7 @@ function FileUploadCard({
 
           {fileInfo?.sheets?.length > 1 && (
             <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6 }}>Sheet</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>Sheet</div>
               <select
                 value={selectedSheet ?? ""}
                 onChange={async (e) => {
@@ -162,7 +162,7 @@ function FileUploadCard({
                     setLoading(false);
                   }
                 }}
-                style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #d1d5db" }}
+                style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid var(--border-strong)", background: "var(--surface)", color: "var(--ink)" }}
               >
                 {fileInfo.sheets.map((s) => (
                   <option key={s} value={s}>

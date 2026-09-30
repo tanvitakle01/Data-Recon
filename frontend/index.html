@@ -5,6 +5,14 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>frontend</title>
+    <!-- Apply a stored light/dark choice before first paint (see src/app/theme.js).
+         No stored choice = leave data-theme unset and follow the OS. -->
+    <script>
+      try {
+        var t = localStorage.getItem("dr-theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

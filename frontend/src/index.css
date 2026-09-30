@@ -99,7 +99,8 @@
      Inlined from Canopy's theme/globals.css :root block. Its font/body/heading
      resets are intentionally omitted so this app keeps its bundled Inter /
      JetBrains Mono typography. Canopy is a light design system, so these are
-     defined once (not re-themed for dark).
+     defined once — except --bcone-charcoal (Canopy's body-text color), which
+     the dark blocks below lift to --ink so labels/inputs stay readable.
 
      --bcone-teal/--bcone-blue are darkened versions of the same new
      --accent orange (#F89F5B/#FAB374 above) — NOT the exact hex. Canopy's
@@ -255,9 +256,11 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ---- Dark theme: redefine tokens only; components read through tokens ---- */
+/* ---- Dark theme: redefine tokens only; components read through tokens ----
+   Follows the OS unless the header toggle stored an explicit "light" choice
+   (data-theme="light" on <html>), which must beat a dark OS setting. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --ground: #0E0F14;
     --surface: #171923;
     --surface-2: #1F2230;
@@ -281,6 +284,7 @@
     --accent-tint-2: #4A3620;
     --accent-ring: rgba(255, 181, 119, 0.45);
     --accent-contrast: #171923;
+    --bcone-charcoal: #EDEEF3;
 
     /* No dark equivalent was specified for the near-white palette tints —
        fall back to a barely-tinted dark surface rather than an unchanged
@@ -334,6 +338,7 @@
   --accent-tint-2: #4A3620;
   --accent-ring: rgba(255, 181, 119, 0.45);
   --accent-contrast: #171923;
+  --bcone-charcoal: #EDEEF3;
   --tint-blue: #182430;
   --tint-yellow: #2A2818;
   --match: #4ADE80;   --match-bg: #10281A;   --match-bd: #1E5236;
@@ -352,6 +357,11 @@
   --glow-ambient: 0 6px 22px -10px rgba(0, 0, 0, 0.6);
   color-scheme: dark;
 }
+
+/* Canopy's Select hardcodes Tailwind bg-white; route it through --surface
+   (identical #FFF in light) so it doesn't render as a white block in dark.
+   Unlayered, so it outranks Tailwind's utilities layer. */
+select.bg-white { background-color: var(--surface); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }

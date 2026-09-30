@@ -10,7 +10,7 @@ function MetricCard({ metric }) {
           value={metric.value}
           fontSize={34}
           gap={2}
-          textColor="#0F172A"
+          textColor="var(--ink)"
           fontWeight={700}
         />
       </div>
